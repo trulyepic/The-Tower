@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+web-build/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+*.expo.*
+
+# Native generated folders (if prebuild is used later)
+ios/
+android/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# TypeScript cache
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# Installers / archives accidentally dropped in repo
+*.dmg
+
+# Large local asset libraries (keep local, do not commit)
+weapons-assets/
+apps/mobile/assets/archive/
+apps/mobile/dist/
+
+# Editor / IDE
+.vscode/
+.idea/
