@@ -1,21 +1,38 @@
+import { ImageSourcePropType } from "react-native";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../theme/colors";
+import { QUEST_TYPE_SPRITE } from "../data/uiSprites";
+import { s3AssetWithFallback } from "../lib/assetSource";
 
 export type AppTabId = "home" | "quests" | "inventory" | "class";
 
 interface TabItem {
   id: AppTabId;
   label: string;
-  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  icon: ImageSourcePropType;
 }
 
 const TAB_ITEMS: TabItem[] = [
-  { id: "home", label: "Camp", icon: "campfire" },
-  { id: "inventory", label: "Inventory", icon: "bag-personal" },
-  { id: "quests", label: "Guild", icon: "town-hall" },
-  { id: "class", label: "Class", icon: "shield-sword" },
+  { id: "home", label: "Camp", icon: QUEST_TYPE_SPRITE.adventure },
+  {
+    id: "inventory",
+    label: "Inventory",
+    icon: s3AssetWithFallback(
+      "game/materials/source/singles-update-1/utility/488_Iron_Bag_Leather_B.png",
+      require("../../assets/game/materials/source/singles-update-1/utility/488_Iron_Bag_Leather_B.png"),
+    ),
+  },
+  {
+    id: "quests",
+    label: "Guild",
+    icon: s3AssetWithFallback("ui/source/vol6/Combo Objects/Combo Objects_14.png", require("../../assets/ui/source/vol6/Combo Objects/Combo Objects_14.png")),
+  },
+  {
+    id: "class",
+    label: "Class",
+    icon: s3AssetWithFallback("game/characters/class/warrior-portrait.png", require("../../assets/game/characters/class/warrior-portrait.png")),
+  },
 ];
 
 interface AppTabsProps {
@@ -46,11 +63,7 @@ export const AppTabs = ({ activeTab, onChangeTab }: AppTabsProps) => {
               ]}
             >
               {isActive ? <View style={styles.activeMarker} /> : null}
-              <MaterialCommunityIcons
-                name={tab.icon}
-                size={18}
-                color={isActive ? "#eaf5ff" : isHovered ? "#bdd2ff" : colors.textMuted}
-              />
+              <Image source={tab.icon} style={[styles.tabIcon, isActive ? styles.tabIconActive : null]} resizeMode="contain" />
               <Text style={[styles.tabLabel, isActive ? styles.activeTabLabel : null]} numberOfLines={1}>
                 {tab.label}
               </Text>
@@ -124,6 +137,14 @@ const styles = StyleSheet.create({
     height: 3,
     borderRadius: 999,
     backgroundColor: "#ffe39b",
+  },
+  tabIcon: {
+    width: 19,
+    height: 19,
+    opacity: 0.88,
+  },
+  tabIconActive: {
+    opacity: 1,
   },
   tabLabel: {
     color: "#c5b08b",

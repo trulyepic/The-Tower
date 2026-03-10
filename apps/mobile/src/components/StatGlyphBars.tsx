@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 import { IconTooltip } from "./IconTooltip";
 import { colors } from "../theme/colors";
+import { BaseClassId } from "../types/game";
 
 interface StatGlyphBarsProps {
   stats: {
@@ -10,6 +11,7 @@ interface StatGlyphBarsProps {
     intelligence: number;
     vitality: number;
   };
+  classId?: BaseClassId;
   compact?: boolean;
 }
 
@@ -44,17 +46,30 @@ const STAT_META = [
   },
 ] as const;
 
-export const StatGlyphBars = ({ stats, compact = false }: StatGlyphBarsProps) => {
+export const StatGlyphBars = ({ stats, classId, compact = false }: StatGlyphBarsProps) => {
+  const intelligenceMeta =
+    classId === "mage"
+      ? { title: "Resolve", label: "Resolve: class skill resource and tactical control.", icon: "creation" }
+      : { title: "Resolve", label: "Resolve: class skill resource and tactical control.", icon: "target" };
+  const statMeta = STAT_META.map((entry) =>
+    entry.key === "intelligence"
+      ? { ...entry, title: intelligenceMeta.title, label: intelligenceMeta.label, icon: intelligenceMeta.icon }
+      : entry,
+  );
   return (
     <View style={[styles.grid, compact ? styles.gridCompact : null]}>
-      {STAT_META.map((meta) => {
+      {statMeta.map((meta) => {
         const value = stats[meta.key];
 
         return (
           <View key={meta.key} style={[styles.item, compact ? styles.itemCompact : null]}>
             <View style={[styles.iconWrap, compact ? styles.iconWrapCompact : null]}>
               <View style={styles.iconTile}>
-                <MaterialCommunityIcons name={meta.icon} size={compact ? 14 : 16} color={meta.color} />
+                <MaterialCommunityIcons
+                  name={meta.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                  size={compact ? 14 : 16}
+                  color={meta.color}
+                />
               </View>
               <View style={styles.metaWrap}>
                 <Text style={[styles.statTitle, compact ? styles.statTitleCompact : null]} numberOfLines={1}>

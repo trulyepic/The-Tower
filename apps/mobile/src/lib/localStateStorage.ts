@@ -1,15 +1,17 @@
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
-import { ActiveQuestState, BaseClassId, CharacterState, DailyTask } from "../types/game";
+import { ActiveQuestState, BaseClassId, CharacterState, DailyTask, StoryState } from "../types/game";
 
 const STORAGE_KEY = "web-rpg-mobile-state-v1";
 
 export interface PersistedGameState {
   selectedClass: BaseClassId | null;
   character: CharacterState | null;
+  classSequenceByClass?: Record<BaseClassId, number>;
   activeQuest: ActiveQuestState | null;
   dailies: DailyTask[];
   completedQuestCount: number;
+  storyState?: StoryState;
 }
 
 const getStateFilePath = (): string | null => {

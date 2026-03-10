@@ -7,13 +7,101 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     title: "Gate Of Ash",
     minLevel: 1,
     staminaCost: 3,
-    baseSuccessChance: 88,
-    requiredItems: [{ itemId: "torch", needed: 1 }],
+    baseSuccessChance: 82,
+    recommendedItems: [
+      { itemId: "torch", needed: 2 },
+      { itemId: "rope", needed: 1 },
+      { itemId: "healing-herb", needed: 2 },
+      { itemId: "antitoxin-vial", needed: 1 },
+      { itemId: "guard-tonic", needed: 1 },
+      { itemId: "grounding-tonic", needed: 1 },
+      { itemId: "ward-charm", needed: 1 },
+    ],
     normalEnemies: ["Ash Rat", "Dust Crawler"],
     subBosses: ["Gate Sentinel"],
     mainBosses: ["Warden Of Sparks"],
+    enemyRoster: {
+      normal: [
+        {
+          id: "f1-ash-rat",
+          name: "Ash Rat",
+          role: "normal",
+          level: 2,
+          health: 38,
+          icon: "spider",
+          description: "Scavenger beast that swarms from the ash trenches.",
+          mechanics: [
+            "Poison Bite: applies poison drain each wave. Counter supply: Antitoxin Vial.",
+            "Pack Rush: swarm pressure lowers stability if your speed is low.",
+          ],
+        },
+        {
+          id: "f1-dust-crawler",
+          name: "Dust Crawler",
+          role: "normal",
+          level: 3,
+          health: 52,
+          icon: "spider",
+          description: "Carapaced crawler that burrows through ember grit.",
+          mechanics: [
+            "Burrow Ambush: opening strike spikes damage. Counter supply: Torch.",
+          ],
+        },
+      ],
+      subBoss: [
+        {
+          id: "f1-gate-sentinel",
+          name: "Gate Sentinel",
+          role: "subBoss",
+          level: 5,
+          health: 120,
+          icon: "shield-sword-outline",
+          description: "Ancient armored guardian bound to the lower gate.",
+          mechanics: [
+            "Fortress Bulwark: suppresses your damage phase. Counter supply: Lockpick.",
+            "Crushing Sweep: heavy control hit. Counter supply: Guard Tonic.",
+          ],
+        },
+      ],
+      boss: [
+        {
+          id: "f1-warden-of-sparks",
+          name: "Warden Of Sparks",
+          role: "boss",
+          level: 7,
+          health: 190,
+          icon: "lightning-bolt-circle",
+          description: "A volatile flame warden channeling unstable arc charges.",
+          mechanics: [
+            "Arc Overcharge: burst arcs can collapse your wave chance. Counter supply: Grounding Tonic.",
+            "Spark Field: continuous shock attrition between phases. Counter supply: Ward Charm.",
+          ],
+        },
+      ],
+    },
     reward: { xp: 45, gold: 24, masteryXp: 16 },
-    bonusItemRewards: [{ itemId: "ore-iron", amount: 2, chance: 0.6 }],
+    guaranteedItemRewards: [
+      { itemId: "part-ash-rat-tail", amount: 1 },
+      { itemId: "part-dust-crawler-claw", amount: 1 },
+      { itemId: "part-sentinel-core", amount: 1 },
+      { itemId: "part-warden-spark", amount: 1 },
+    ],
+    bonusItemRewards: [
+      { itemId: "ore-iron", amount: 2, chance: 0.66 },
+      { itemId: "healing-herb", amount: 1, chance: 0.55 },
+      { itemId: "rope", amount: 1, chance: 0.46 },
+      { itemId: "torch", amount: 1, chance: 0.4 },
+      { itemId: "lockpick", amount: 1, chance: 0.12 },
+      { itemId: "focus-tonic", amount: 1, chance: 0.18 },
+      { itemId: "mana-tonic", amount: 1, chance: 0.14 },
+      { itemId: "health-potion", amount: 1, chance: 0.25 },
+      { itemId: "dust-nova", amount: 1, chance: 0.05 },
+      { itemId: "ward-charm", amount: 1, chance: 0.07 },
+      { itemId: "tower-crest-fragment", amount: 1, chance: 0.03 },
+      { itemId: "weapon-warrior-training-blade", amount: 1, chance: 0.045 },
+      { itemId: "weapon-ranger-training-spear", amount: 1, chance: 0.045 },
+      { itemId: "weapon-mage-training-staff", amount: 1, chance: 0.045 },
+    ],
   },
   {
     id: "tower-floor-2",
@@ -22,12 +110,19 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 2,
     staminaCost: 3,
     baseSuccessChance: 82,
-    requiredItems: [{ itemId: "healing-herb", needed: 2 }],
+    recommendedItems: [
+      { itemId: "healing-herb", needed: 3 },
+      { itemId: "rope", needed: 2 },
+      { itemId: "torch", needed: 1 },
+    ],
     normalEnemies: ["Thorn Viper", "Needle Imp"],
     subBosses: ["Briar Butcher"],
     mainBosses: ["Spine Matron"],
     reward: { xp: 54, gold: 30, masteryXp: 20 },
-    bonusItemRewards: [{ itemId: "healing-herb", amount: 2, chance: 0.5 }],
+    bonusItemRewards: [
+      { itemId: "healing-herb", amount: 2, chance: 0.5 },
+      { itemId: "buff-embershard-charm", amount: 1, chance: 0.12 },
+    ],
   },
   {
     id: "tower-floor-3",
@@ -36,7 +131,11 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 3,
     staminaCost: 4,
     baseSuccessChance: 75,
-    requiredItems: [{ itemId: "lockpick", needed: 1 }],
+    recommendedItems: [
+      { itemId: "lockpick", needed: 2 },
+      { itemId: "torch", needed: 1 },
+      { itemId: "healing-herb", needed: 2 },
+    ],
     normalEnemies: ["Clock Hound", "Brass Scout"],
     subBosses: ["Breaker Drone"],
     mainBosses: ["Cog Tyrant"],
@@ -50,12 +149,15 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 4,
     staminaCost: 4,
     baseSuccessChance: 69,
-    requiredItems: [{ itemId: "ward-charm", needed: 1 }],
+    recommendedItems: [{ itemId: "ward-charm", needed: 1 }],
     normalEnemies: ["Veil Shade", "Rune Bat"],
     subBosses: ["Hex Mirror"],
     mainBosses: ["The Pale Judge"],
     reward: { xp: 80, gold: 52, masteryXp: 30 },
-    bonusItemRewards: [{ itemId: "ward-charm", amount: 1, chance: 0.3 }],
+    bonusItemRewards: [
+      { itemId: "ward-charm", amount: 1, chance: 0.3 },
+      { itemId: "buff-gale-feather", amount: 1, chance: 0.1 },
+    ],
   },
   {
     id: "tower-floor-5",
@@ -64,7 +166,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 5,
     staminaCost: 5,
     baseSuccessChance: 63,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "torch", needed: 1 },
       { itemId: "ore-iron", needed: 2 },
     ],
@@ -81,7 +183,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 6,
     staminaCost: 5,
     baseSuccessChance: 56,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ingot-silver", needed: 1 },
       { itemId: "lockpick", needed: 1 },
     ],
@@ -98,7 +200,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 7,
     staminaCost: 6,
     baseSuccessChance: 49,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ward-charm", needed: 1 },
       { itemId: "ingot-steel", needed: 1 },
     ],
@@ -106,7 +208,10 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     subBosses: ["Thunder Warden"],
     mainBosses: ["Aerial Behemoth"],
     reward: { xp: 130, gold: 96, masteryXp: 52 },
-    bonusItemRewards: [{ itemId: "dust-nova", amount: 1, chance: 0.2 }],
+    bonusItemRewards: [
+      { itemId: "dust-nova", amount: 1, chance: 0.2 },
+      { itemId: "buff-arcane-sigil", amount: 1, chance: 0.06 },
+    ],
   },
   {
     id: "tower-floor-8",
@@ -115,7 +220,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 8,
     staminaCost: 6,
     baseSuccessChance: 43,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "dust-nova", needed: 1 },
       { itemId: "healing-herb", needed: 2 },
     ],
@@ -132,7 +237,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 9,
     staminaCost: 7,
     baseSuccessChance: 38,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ancient-core", needed: 1 },
       { itemId: "ward-charm", needed: 1 },
     ],
@@ -149,7 +254,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 10,
     staminaCost: 8,
     baseSuccessChance: 32,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ancient-core", needed: 1 },
       { itemId: "feather-special", needed: 1 },
       { itemId: "ingot-steel", needed: 1 },
@@ -158,6 +263,9 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     subBosses: ["Twin Heralds"],
     mainBosses: ["The First Crown"],
     reward: { xp: 210, gold: 170, masteryXp: 90 },
-    bonusItemRewards: [{ itemId: "weapon-warrior-emberblade", amount: 1, chance: 0.05 }],
+    bonusItemRewards: [
+      { itemId: "weapon-warrior-emberblade", amount: 1, chance: 0.05 },
+      { itemId: "buff-royal-crest", amount: 1, chance: 0.025 },
+    ],
   },
 ];

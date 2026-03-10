@@ -71,3 +71,23 @@ cd /Users/kin/web-rpg/apps/mobile
 npx expo run:ios
 ```
 
+## 6) S3 Asset Hosting (Current Setup)
+
+App asset registries are configured to load from S3 first.
+
+- Default asset base URL:
+  - `https://the-tower-game-assets-v01.s3.us-west-1.amazonaws.com/mobile-assets`
+- Optional override:
+  - `EXPO_PUBLIC_ASSET_BASE_URL=<your-asset-base-url>`
+
+Re-sync assets whenever you add or replace local files:
+
+```bash
+cd /Users/kin/web-rpg
+export AWS_PROFILE=tower-assets
+export AWS_REGION=us-west-1
+export BUCKET=the-tower-game-assets-v01
+export PREFIX=mobile-assets
+
+aws s3 sync apps/mobile/assets "s3://$BUCKET/$PREFIX/" --exclude ".DS_Store"
+```

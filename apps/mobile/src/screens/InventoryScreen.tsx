@@ -1,13 +1,24 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useMemo, useState } from "react";
-import { Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
 import { GameItemIcon } from "../components/GameItemIcon";
+import { HUD_ASSETS } from "../data/hudAssets";
 import { ITEM_BY_ID } from "../data/items";
 import { CURRENCY_SPRITES, getAvatarSprite } from "../data/uiSprites";
+import { TITLE_ICON_ART } from "../data/titleVisuals";
 import { getBuffRemainingSeconds, getBuffSlotLimit } from "../lib/buffs";
 import { getCharacterCombatStats } from "../lib/combat";
+import {
+  getDiscoveredTitleItems,
+  getTitleProgress,
+  getTitleRequiredProgress,
+  getTitleSlotLimit,
+  isTitleOwned,
+  isTitleUnlocked,
+} from "../lib/titles";
 import { CharacterState, ItemId, ItemRarity } from "../types/game";
 import { colors } from "../theme/colors";
 
@@ -16,6 +27,10 @@ interface InventoryScreenProps {
   onEquipWeapon: (itemId: ItemId) => { ok: boolean; reason?: string };
   onEquipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
   onUnequipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
+  onEquipTitle: (titleId: ItemId) => { ok: boolean; reason?: string };
+  onUnequipTitle: (titleId: ItemId) => { ok: boolean; reason?: string };
+  onUseSkillResourceItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
+  onUseHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
 }
 
 interface RarityTheme {
@@ -54,9 +69,24 @@ const rarityOrder: Record<ItemRarity, number> = {
   legendary: 3,
 };
 
-export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequipBuff }: InventoryScreenProps) => {
+export const InventoryScreen = ({
+  character,
+  onEquipWeapon,
+  onEquipBuff,
+  onUnequipBuff,
+  onEquipTitle,
+  onUnequipTitle,
+  onUseSkillResourceItem,
+  onUseHealthRecoveryItem,
+}: InventoryScreenProps) => {
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"ok" | "error">("ok");
+  const [itemInfoPanel, setItemInfoPanel] = useState<{
+    itemId: ItemId;
+    title: string;
+    rarity: ItemRarity;
+    lines: string[];
+  } | null>(null);
 
   useEffect(() => {
     if (!notice) {
@@ -92,7 +122,7 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
     () =>
       inventoryEntries
         .map(([itemId, amount]) => ({ item: ITEM_BY_ID[itemId], itemId, amount }))
-        .filter((entry) => entry.item?.category !== "weapon")
+        .filter((entry) => entry.item?.category === "material")
         .sort((a, b) => (a.item?.name ?? a.itemId).localeCompare(b.item?.name ?? b.itemId)),
     [inventoryEntries],
   );
@@ -117,6 +147,9 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
   const nowMs = Date.now();
   const equippedBuffIds = character.equippedBuffIds ?? [];
   const buffSlotLimit = getBuffSlotLimit(character.adventurerRank);
+  const titleSlotLimit = getTitleSlotLimit(character.progression.level);
+  const equippedTitleIds = character.equippedTitleIds ?? [];
+  const discoveredTitles = getDiscoveredTitleItems(character);
   const combat = getCharacterCombatStats(character);
 
   const handleEquip = (itemId: ItemId) => {
@@ -135,6 +168,64 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
     const result = onUnequipBuff(itemId);
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(result.ok ? "Buff unequipped." : result.reason ?? "Could not unequip buff.");
+  };
+
+  const handleEquipTitle = (titleId: ItemId) => {
+    const result = onEquipTitle(titleId);
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.ok ? "Title equipped." : result.reason ?? "Could not equip title.");
+  };
+
+  const handleUnequipTitle = (titleId: ItemId) => {
+    const result = onUnequipTitle(titleId);
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.ok ? "Title unequipped." : result.reason ?? "Could not unequip title.");
+  };
+  const handleUseConsumable = (itemId: ItemId) => {
+    const result =
+      itemId === "health-potion" ? onUseHealthRecoveryItem(itemId) : onUseSkillResourceItem(itemId);
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Item used." : "Could not use item."));
+  };
+
+  const openItemInfo = (itemId: ItemId) => {
+    const item = ITEM_BY_ID[itemId];
+    if (!item) {
+      return;
+    }
+    const lines: string[] = [];
+    if (item.category === "weapon") {
+      lines.push(`Required Level: ${item.requiredLevel ?? 1}`);
+      lines.push(`Class: ${(item.classRestriction ?? "Any").toUpperCase()}`);
+      lines.push(
+        `Stats: +${item.weaponStats?.attack ?? 0} ATK • +${item.weaponStats?.crit ?? 0}% CRIT • +${item.weaponStats?.speed ?? 0} SPD`,
+      );
+      if (item.description) {
+        lines.push(item.description);
+      }
+    } else if (item.category === "buff") {
+      lines.push(
+        `Buff: +${item.buffStats?.damageFlat ?? 0} ATK • +${item.buffStats?.critFlat ?? 0}% CRIT • +${item.buffStats?.speedFlat ?? 0} SPD`,
+      );
+      lines.push(
+        `Bonuses: +${item.buffStats?.questSuccessFlat ?? 0}% Quest Success`,
+      );
+      lines.push(`Duration: ${Math.floor((item.buffDurationSeconds ?? 0) / 60)}m ${(item.buffDurationSeconds ?? 0) % 60}s`);
+      if (item.description) {
+        lines.push(item.description);
+      }
+    } else {
+      if (item.description) {
+        lines.push(item.description);
+      }
+      lines.push("Use: Quest supplies, crafting, tower prep, and trade.");
+    }
+    setItemInfoPanel({
+      itemId,
+      title: item.name,
+      rarity: item.rarity,
+      lines,
+    });
   };
 
   return (
@@ -183,11 +274,11 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
               <Text style={styles.stashValue}>{character.gold}</Text>
             </View>
             <View style={styles.stashChip}>
-              <MaterialCommunityIcons name="sword-cross" size={15} color={colors.accent} />
+              <GameItemIcon itemId="weapon-warrior-training-blade" size={13} />
               <Text style={styles.stashValue}>{weaponEntries.length} Weapons</Text>
             </View>
             <View style={styles.stashChip}>
-              <MaterialCommunityIcons name="archive" size={15} color={colors.accentSecondary} />
+              <GameItemIcon itemId="ore-iron" size={13} />
               <Text style={styles.stashValue}>{materialEntries.length} Materials</Text>
             </View>
           </View>
@@ -298,9 +389,9 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
                     isLegendary ? styles.legendaryCardGlow : null,
                   ]}
                 >
-                  <View style={styles.weaponIconWrap}>
-                    <GameItemIcon itemId={itemId} size={28} />
-                  </View>
+                  <Pressable style={styles.weaponIconWrapLarge} onPress={() => openItemInfo(itemId)}>
+                    <GameItemIcon itemId={itemId} size={44} />
+                  </Pressable>
                   <View style={styles.weaponMain}>
                     <Text style={styles.weaponName}>{item.name}</Text>
                     <View style={styles.badgesRow}>
@@ -313,7 +404,7 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
                         </View>
                       ) : null}
                     </View>
-                    <Text style={styles.weaponOwned}>Owned x{amount}</Text>
+                    <Text style={styles.weaponOwned}>Owned x{amount} • Tap icon for details</Text>
                     <Text style={styles.weaponOwned}>
                       Requires Lv {item.requiredLevel ?? 1} • Proficiency{" "}
                       {character.progression.level >= (item.requiredLevel ?? 1) ? "100%" : "25%"}
@@ -367,9 +458,9 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
                     isLegendary ? styles.legendaryCardGlow : null,
                   ]}
                 >
-                  <View style={styles.weaponIconWrap}>
-                    <GameItemIcon itemId={itemId} size={26} />
-                  </View>
+                  <Pressable style={styles.weaponIconWrapLarge} onPress={() => openItemInfo(itemId)}>
+                    <GameItemIcon itemId={itemId} size={42} />
+                  </Pressable>
                   <View style={styles.weaponMain}>
                     <Text style={styles.weaponName}>{item.name}</Text>
                     <View style={styles.badgesRow}>
@@ -377,7 +468,7 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
                         <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{item.rarity.toUpperCase()}</Text>
                       </View>
                     </View>
-                    <Text style={styles.weaponOwned}>Owned x{amount}</Text>
+                    <Text style={styles.weaponOwned}>Owned x{amount} • Tap icon for details</Text>
                     <Text style={styles.weaponOwned}>
                       DMG +{item.buffStats?.damageFlat ?? 0} • CRIT +{item.buffStats?.critFlat ?? 0}% • SPD +{item.buffStats?.speedFlat ?? 0} • QUEST +{item.buffStats?.questSuccessFlat ?? 0}%
                     </Text>
@@ -408,6 +499,110 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
             end={{ x: 1, y: 1 }}
             style={styles.cardGradient}
           />
+          <Text style={styles.sectionTitle}>Title Archive ({equippedTitleIds.length}/{titleSlotLimit})</Text>
+          {discoveredTitles.length === 0 ? (
+            <Text style={styles.emptyText}>No discovered titles yet. Start quests to reveal title trails.</Text>
+          ) : discoveredTitles.map((title) => {
+            const unlocked = isTitleUnlocked(character, title);
+            const owned = isTitleOwned(character, title.id);
+            const isEquipped = equippedTitleIds.includes(title.id);
+            const slotsFull = equippedTitleIds.length >= titleSlotLimit;
+            const canEquip = owned && unlocked && (!slotsFull || isEquipped);
+            const rarityTheme = rarityThemeMap[title.rarity];
+            const isLegendary = title.rarity === "legendary";
+            const progress = getTitleProgress(character, title.id);
+            const progressNeed = getTitleRequiredProgress(title);
+            const progressPercent = Math.round((Math.min(progress, progressNeed) / Math.max(1, progressNeed)) * 100);
+            return (
+              <View
+                key={`title-${title.id}`}
+                style={[
+                  styles.weaponCard,
+                  { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
+                  isLegendary ? styles.legendaryCardGlow : null,
+                ]}
+              >
+                <Pressable
+                  style={styles.weaponIconWrapLarge}
+                  onPress={() =>
+                    setItemInfoPanel({
+                      itemId: title.id,
+                      title: title.name,
+                      rarity: title.rarity,
+                      lines: [
+                        title.flavor,
+                        `Ability: ${title.abilityLabel}`,
+                        `Requirement: Level ${title.minLevel}${title.classRestriction ? ` (${title.classRestriction.toUpperCase()})` : ""}`,
+                        `Bonuses: +${title.bonuses.damageFlat ?? 0} ATK • +${title.bonuses.critFlat ?? 0}% CRIT • +${title.bonuses.speedFlat ?? 0} SPD • +${title.bonuses.questSuccessFlat ?? 0}% Quest`,
+                      ],
+                    })
+                  }
+                >
+                  <ImageBackground
+                    source={HUD_ASSETS.slots[title.rarity]}
+                    style={styles.titleArchiveIconFrame}
+                    resizeMode="contain"
+                  >
+                    <Image source={TITLE_ICON_ART[title.id]} style={styles.titleArchiveIconImage} resizeMode="contain" />
+                  </ImageBackground>
+                </Pressable>
+                <View style={styles.weaponMain}>
+                  <Text style={styles.weaponName}>{title.name}</Text>
+                  <View style={styles.badgesRow}>
+                    <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
+                      <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{title.rarity.toUpperCase()}</Text>
+                    </View>
+                    {title.classRestriction ? (
+                      <View style={styles.classPill}>
+                        <Text style={styles.classText}>{title.classRestriction.toUpperCase()}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.weaponOwned}>{title.flavor}</Text>
+                  <Text style={styles.weaponOwned}>Tap icon for details</Text>
+                  <Text style={styles.weaponOwned}>
+                    Ability: {title.abilityLabel}
+                  </Text>
+                  <Text style={styles.weaponOwned}>Status: {owned ? "Earned" : "Not Earned"}</Text>
+                  <Text style={styles.weaponOwned}>
+                    Progress: {Math.min(progress, progressNeed)}/{progressNeed}
+                  </Text>
+                  <View style={styles.titleProgressTrack}>
+                    <View style={[styles.titleProgressFill, { width: `${progressPercent}%`, backgroundColor: rarityTheme.border }]} />
+                  </View>
+                  <Text style={styles.weaponOwned}>
+                    DMG +{title.bonuses.damageFlat ?? 0} • CRIT +{title.bonuses.critFlat ?? 0}% • SPD +{title.bonuses.speedFlat ?? 0} • QUEST +{title.bonuses.questSuccessFlat ?? 0}%
+                  </Text>
+                  {!owned || !unlocked ? (
+                    <Text style={styles.weaponOwned}>
+                      Requirement: {owned ? "" : "Earn title from achievements"}{!owned && !unlocked ? " • " : ""}{!unlocked ? `Level ${title.minLevel}${title.classRestriction ? ` (${title.classRestriction})` : ""}` : ""}
+                    </Text>
+                  ) : null}
+                </View>
+                  <Pressable
+                    onPress={() => (isEquipped ? handleUnequipTitle(title.id) : handleEquipTitle(title.id))}
+                    style={[styles.equipButtonWrap, (!canEquip && !isEquipped) ? styles.buttonDisabled : null]}
+                    disabled={!canEquip && !isEquipped}
+                  >
+                    <View style={styles.equipButton}>
+                      <Text style={styles.equipText}>
+                        {isEquipped ? "Unequip" : canEquip ? "Equip" : "Locked"}
+                      </Text>
+                    </View>
+                  </Pressable>
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.panel}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(198, 143, 67, 0.09)", "rgba(88, 57, 143, 0.05)", "rgba(21, 15, 35, 0.02)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.cardGradient}
+          />
           <Text style={styles.sectionTitle}>Materials Board</Text>
           <View style={styles.materialGrid}>
             {materialEntries.length === 0 ? (
@@ -417,25 +612,31 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
                 const rarity = item?.rarity ?? "common";
                 const rarityTheme = rarityThemeMap[rarity];
                 const isLegendary = rarity === "legendary";
+                const isUsableConsumable = itemId === "focus-tonic" || itemId === "mana-tonic" || itemId === "health-potion";
                 return (
-                  <View
+                  <Pressable
                     key={itemId}
                     style={[
                       styles.materialCard,
                       { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
                       isLegendary ? styles.legendaryCardGlow : null,
                     ]}
+                    onPress={() => openItemInfo(itemId)}
                   >
-                    {/* Materials use icon-first cards to reduce text clutter and feel more game-like. */}
                     <View style={styles.materialHead}>
-                      <GameItemIcon itemId={itemId} size={20} />
+                      <GameItemIcon itemId={itemId} size={34} />
                       <Text style={styles.materialName} numberOfLines={1}>{item?.name ?? itemId}</Text>
                     </View>
                     <View style={styles.materialFoot}>
                       <Text style={styles.materialCount}>x{amount}</Text>
                       <Text style={[styles.materialRarity, { color: rarityTheme.text }]}>{rarity.toUpperCase()}</Text>
                     </View>
-                  </View>
+                    {isUsableConsumable ? (
+                      <Pressable style={styles.materialUseButton} onPress={() => handleUseConsumable(itemId as ItemId)}>
+                        <Text style={styles.materialUseText}>Use</Text>
+                      </Pressable>
+                    ) : null}
+                  </Pressable>
                 );
               })
             )}
@@ -443,6 +644,54 @@ export const InventoryScreen = ({ character, onEquipWeapon, onEquipBuff, onUnequ
         </View>
 
       </ScrollView>
+      {itemInfoPanel ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setItemInfoPanel(null)}>
+          <View style={styles.infoOverlay}>
+            <View style={styles.infoModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(214, 160, 81, 0.14)", "rgba(96, 64, 154, 0.08)", "rgba(25, 18, 41, 0.02)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.infoHead}>
+                <View style={[styles.infoIconFrame, { borderColor: rarityThemeMap[itemInfoPanel.rarity].border }]}>
+                  <GameItemIcon itemId={itemInfoPanel.itemId} size={54} />
+                </View>
+                <View style={styles.infoHeadText}>
+                  <Text style={styles.infoTitle}>{itemInfoPanel.title}</Text>
+                  <View
+                    style={[
+                      styles.infoRarityPill,
+                      {
+                        borderColor: rarityThemeMap[itemInfoPanel.rarity].border,
+                        backgroundColor: rarityThemeMap[itemInfoPanel.rarity].bg,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.infoRarityText, { color: rarityThemeMap[itemInfoPanel.rarity].text }]}>
+                      {itemInfoPanel.rarity.toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+              <View style={styles.infoBody}>
+                {itemInfoPanel.lines.map((line, index) => (
+                  <Text key={`info-line-${index}`} style={styles.infoLine}>
+                    {line}
+                  </Text>
+                ))}
+              </View>
+              <Pressable onPress={() => setItemInfoPanel(null)} style={styles.infoCloseWrap}>
+                <View style={styles.infoCloseButton}>
+                  <Text style={styles.infoCloseText}>Close</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -653,6 +902,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  weaponIconWrapLarge: {
+    width: 66,
+    height: 66,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(176, 203, 255, 0.36)",
+    backgroundColor: "rgba(8, 18, 40, 0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  titleArchiveIconFrame: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  titleArchiveIconImage: {
+    width: 28,
+    height: 28,
+  },
   weaponMain: {
     flex: 1,
     gap: 2,
@@ -697,6 +966,20 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 11,
     fontWeight: "700",
+  },
+  titleProgressTrack: {
+    marginTop: 2,
+    width: "100%",
+    height: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#84673b",
+    backgroundColor: "rgba(28, 21, 39, 0.9)",
+    overflow: "hidden",
+  },
+  titleProgressFill: {
+    height: "100%",
+    borderRadius: 999,
   },
   equipButtonWrap: {
     minWidth: 72,
@@ -779,6 +1062,22 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.3,
   },
+  materialUseButton: {
+    marginTop: 2,
+    alignSelf: "flex-end",
+    borderWidth: 1,
+    borderColor: "#ca9b54",
+    backgroundColor: "rgba(85, 57, 20, 0.95)",
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  materialUseText: {
+    color: "#ffe2a8",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+  },
   noticeBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -801,5 +1100,95 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 12,
     fontWeight: "700",
+  },
+  infoOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(8, 8, 15, 0.66)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 18,
+  },
+  infoModal: {
+    width: "100%",
+    maxWidth: 430,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#8f7244",
+    backgroundColor: "rgba(33, 24, 45, 0.98)",
+    padding: 13,
+    gap: 10,
+    overflow: "hidden",
+    position: "relative",
+  },
+  infoHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  infoIconFrame: {
+    width: 76,
+    height: 76,
+    borderRadius: 13,
+    borderWidth: 1,
+    backgroundColor: "rgba(11, 18, 36, 0.84)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  infoHeadText: {
+    flex: 1,
+    gap: 6,
+  },
+  infoTitle: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: "900",
+    lineHeight: 21,
+  },
+  infoRarityPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  infoRarityText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  infoBody: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#866c42",
+    backgroundColor: "rgba(42, 31, 20, 0.9)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  infoLine: {
+    color: "#f0ddbe",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  infoCloseWrap: {
+    alignSelf: "flex-end",
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  infoCloseButton: {
+    borderWidth: 1,
+    borderColor: "#cfa35c",
+    backgroundColor: "rgba(92, 64, 25, 0.94)",
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  infoCloseText: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "800",
   },
 });
