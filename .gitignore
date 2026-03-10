@@ -39,8 +39,17 @@ pnpm-debug.log*
 
 # Large local asset libraries (keep local, do not commit)
 weapons-assets/
+various-assets/
 apps/mobile/assets/archive/
 apps/mobile/dist/
+apps/mobile/assets/game/characters/source/
+apps/mobile/assets/game/materials/source/
+apps/mobile/assets/game/quests/
+apps/mobile/assets/game/tower/
+apps/mobile/assets/ui/source/
+bandit.png
+bucket-policy.json
+cors.json
 
 # Editor / IDE
 .vscode/
