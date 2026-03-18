@@ -5,9 +5,11 @@ import { Image, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text,
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
 import { GameItemIcon } from "../components/GameItemIcon";
+import { HealthMeter } from "../components/HealthMeter";
 import { IconTooltip } from "../components/IconTooltip";
 import { ProgressBar } from "../components/ProgressBar";
 import { StatGlyphBars } from "../components/StatGlyphBars";
+import { StaminaMeter } from "../components/StaminaMeter";
 import { ABILITY_BY_ID } from "../data/abilities";
 import { HUD_ASSETS } from "../data/hudAssets";
 import { ITEM_BY_ID } from "../data/items";
@@ -164,6 +166,7 @@ export const HomeScreen = ({
   );
   const [comboInfoPanel, setComboInfoPanel] = useState<SkillPairCombo | null>(null);
   const [levelDetailsOpen, setLevelDetailsOpen] = useState(false);
+  const [weaponDetailsOpen, setWeaponDetailsOpen] = useState(false);
   const activeClass = classes.find((classDef) => classDef.id === character.classId) ?? null;
   const stats = getScaledCoreAttributes(character);
   const equippedWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : undefined;
@@ -247,8 +250,8 @@ export const HomeScreen = ({
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(
       result.ok
-        ? `Buff removed: ${ITEM_BY_ID[itemId]?.name ?? itemId}`
-        : result.reason ?? "Could not unequip buff.",
+        ? `Sigil removed: ${ITEM_BY_ID[itemId]?.name ?? itemId}`
+        : result.reason ?? "Could not unequip sigil.",
     );
   };
 
@@ -357,42 +360,227 @@ export const HomeScreen = ({
                     <View style={[styles.levelMiniFill, { width: `${Math.max(3, Math.min(100, levelXpPercent))}%` }]} />
                   </View>
                 </Pressable>
+                <View style={styles.licenseFloorBadge}>
+                <View style={styles.licenseFloorBadgeHead}>
+                  <MaterialCommunityIcons name="stairs" size={11} color="#ffe1a1" />
+                    <Text style={styles.licenseFloorBadgeLabel}>Floor</Text>
+                  </View>
+                  <Text style={styles.licenseFloorBadgeValue}>{character.towerProgress?.highestFloorCleared ?? 0}</Text>
+                </View>
               </View>
             </View>
-            <View style={styles.licenseAuthBar}>
-              <View style={styles.licenseAuthTextWrap}>
-                <Text style={styles.licenseAuthLabel}>Authenticated By</Text>
-                <Text style={styles.licenseAuthValue}>{guildMasterName}</Text>
-              </View>
-              <View style={styles.licenseSignatureWrap}>
-                <Text style={styles.licenseSignatureText}>E. Voss</Text>
-                <Text style={styles.licenseSignatureHint}>Guildmaster Sign</Text>
+            <View style={styles.licenseLoadoutGrid}>
+              <View style={styles.licenseLoadoutPanelFull}>
+                <View style={styles.licenseSectionHead}>
+                  <Text style={styles.licenseSectionTitle}>Weapon</Text>
+                  <View style={styles.licenseWeaponMetaRow}>
+                    {equippedWeapon ? (
+                      <View style={styles.licenseWeaponGradePill}>
+                        <Text style={styles.licenseWeaponGradeText}>{equippedWeapon.rarity.toUpperCase()}</Text>
+                      </View>
+                    ) : null}
+                    {equippedWeapon ? (
+                      <Text style={styles.licenseSectionMeta}>Lv {equippedWeapon.requiredLevel ?? 1}+</Text>
+                    ) : null}
+                  </View>
+                </View>
+                <Pressable
+                  disabled={!equippedWeapon}
+                  onPress={() => setWeaponDetailsOpen(true)}
+                  style={[styles.mainWeaponCard, styles.licenseWeaponCard]}
+                >
+                  <View style={styles.mainWeaponIconWrap}>
+                    {equippedWeapon ? <GameItemIcon itemId={equippedWeapon.id} size={42} /> : <View style={styles.emptyWeaponSlotLarge} />}
+                  </View>
+                  <View style={styles.mainWeaponText}>
+                    <Text
+                      style={styles.mainWeaponName}
+                      numberOfLines={2}
+                      ellipsizeMode="tail"
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.82}
+                    >
+                      {equippedWeapon ? equippedWeapon.name : "No Weapon Equipped"}
+                    </Text>
+                    <Text style={styles.mainWeaponMeta}>
+                      {equippedWeapon
+                        ? `${combat.weaponProficiencyPercent}% proficiency`
+                        : "Visit Guild Store to buy one"}
+                    </Text>
+                    {equippedWeapon ? (
+                      <View style={styles.weaponBonusRow}>
+                        <View style={styles.weaponBonusChip}>
+                          <GameItemIcon itemId="weapon-warrior-training-blade" size={12} />
+                          <Text style={styles.weaponBonusText}>+{weaponBonusAttack} ATK</Text>
+                        </View>
+                        <View style={styles.weaponBonusChip}>
+                          <GameItemIcon itemId="buff-arcane-sigil" size={12} />
+                          <Text style={styles.weaponBonusText}>+{weaponBonusCrit}% CRIT</Text>
+                        </View>
+                        <View style={styles.weaponBonusChip}>
+                          <GameItemIcon itemId="buff-gale-feather" size={12} />
+                          <Text style={styles.weaponBonusText}>+{weaponBonusSpeed} SPD</Text>
+                        </View>
+                      </View>
+                    ) : null}
+                  </View>
+                  {equippedWeapon ? (
+                    <Pressable onPress={handleUnequip} style={styles.unequipWrap}>
+                      <View style={styles.unequipButton}>
+                        <MaterialCommunityIcons name="sword-cross" size={14} color="#fff1cf" />
+                        <MaterialCommunityIcons
+                          name="close"
+                          size={11}
+                          color="#fff1cf"
+                          style={styles.unequipOverlayIcon}
+                        />
+                      </View>
+                    </Pressable>
+                  ) : null}
+                </Pressable>
               </View>
             </View>
 
+            <View style={styles.buffSlotHeader}>
+              <Text style={styles.buffSlotTitle}>Sigil Slots</Text>
+              <Text style={styles.buffSlotMeta}>
+                {equippedBuffs.length}/{buffSlotLimit} equipped
+              </Text>
+            </View>
+            <View style={styles.licenseSigilRow}>
+              {Array.from({ length: buffSlotLimit }).map((_, index) => {
+                const buff = equippedBuffs[index];
+                const active = buff ? isBuffActive(character, buff.id, pageNowMs) : false;
+                const buffAccent = buff ? getBuffAccent(buff.id) : null;
+                const remaining = buff ? getBuffRemainingSeconds(character, buff.id, pageNowMs) : 0;
+                return (
+                  <Pressable
+                    key={`buff-slot-${index}`}
+                    style={[
+                      styles.licenseSigilSlot,
+                      buffAccent ? { backgroundColor: buffAccent.softBg } : null,
+                      active ? styles.licenseSigilSlotActive : null,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.licenseSigilIconShell,
+                        buffAccent ? { borderColor: buffAccent.border } : null,
+                        active ? styles.licenseSigilIconShellActive : null,
+                      ]}
+                    >
+                      {buff ? (
+                        <GameItemIcon itemId={buff.id} size={26} />
+                      ) : (
+                        <MaterialCommunityIcons name="plus-circle-outline" size={22} color="#a58961" />
+                      )}
+                    </View>
+                    {buff ? (
+                      <>
+                        <View
+                          style={[
+                            styles.licenseSigilGradeBadge,
+                            buffAccent ? { borderColor: buffAccent.border, backgroundColor: buffAccent.softBg } : null,
+                          ]}
+                        >
+                          <Text style={[styles.licenseSigilGradeText, buffAccent ? { color: buffAccent.border } : null]}>
+                            {buff.rarity.slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                        <Text style={styles.licenseSigilTimerText}>
+                          {active
+                            ? `${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`
+                            : remaining > 0
+                              ? `P ${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`
+                              : ""}
+                        </Text>
+                        {active ? (
+                          <MaterialCommunityIcons name="check-decagram" size={12} color="#86efb0" style={styles.licenseSigilActiveMark} />
+                        ) : null}
+                        <Pressable onPress={() => handleUnequipBuff(buff.id)} style={styles.licenseSigilRemoveButton}>
+                          <MaterialCommunityIcons name="close" size={10} color="#ffe8bf" />
+                        </Pressable>
+                      </>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.buffSlotHeader}>
+              <Text style={styles.buffSlotTitle}>Title Slots</Text>
+              <Text style={styles.buffSlotMeta}>
+                {equippedTitles.length}/{titleSlotLimit} equipped
+              </Text>
+            </View>
+            <View style={styles.buffSlotRow}>
+              {Array.from({ length: titleSlotLimit }).map((_, index) => {
+                const title = equippedTitles[index];
+                const rarityTheme = title ? titleRarityThemeMap[title.rarity] : null;
+                return (
+                  <View
+                    key={`title-slot-${index}`}
+                    style={[
+                      styles.buffSlotCard,
+                      rarityTheme ? { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg } : null,
+                      title?.rarity === "legendary" ? styles.titleSlotLegendary : null,
+                    ]}
+                  >
+                    <View style={styles.buffSlotIconWrap}>
+                      {title ? (
+                        <ImageBackground
+                          source={HUD_ASSETS.slots[title.rarity]}
+                          style={styles.titleIconFrame}
+                          resizeMode="contain"
+                        >
+                          <Image source={TITLE_ICON_ART[title.id]} style={styles.titleIconImage} resizeMode="contain" />
+                        </ImageBackground>
+                      ) : (
+                        <MaterialCommunityIcons
+                          name="plus-circle-outline"
+                          size={18}
+                          color="#a58961"
+                        />
+                      )}
+                    </View>
+                    <View style={styles.buffSlotTextBlock}>
+                      <Text style={styles.buffSlotText} numberOfLines={1}>
+                        {title ? title.name : "Empty Title Slot"}
+                      </Text>
+                      {title ? (
+                        <View
+                          style={[
+                            styles.buffSlotGradePill,
+                            rarityTheme ? { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg } : null,
+                          ]}
+                        >
+                          <Text style={[styles.buffSlotGradeText, rarityTheme ? { color: rarityTheme.text } : null]}>
+                            {title.rarity.toUpperCase()}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            <HealthMeter
+              current={character.health}
+              max={character.healthCap}
+              compact
+              bare
+              containerStyle={styles.licenseHealthMeter}
+            />
+            <StaminaMeter
+              current={character.stamina}
+              max={character.staminaCap}
+              icon={CURRENCY_SPRITES.stamina}
+              compact
+              bare
+              containerStyle={styles.licenseHealthMeter}
+            />
             <View style={styles.licenseStatsRow}>
-              <View style={styles.licenseStat}>
-                <ImageBackground source={HUD_ASSETS.slots.rare} style={styles.licenseStatIconWrap} resizeMode="contain">
-                  <MaterialCommunityIcons name="heart-pulse" size={16} color="#ff9aa5" />
-                </ImageBackground>
-                <View style={styles.licenseStatTextWrap}>
-                  <Text style={styles.licenseStatValue}>
-                    {character.health}/{character.healthCap}
-                  </Text>
-                  <Text style={styles.licenseStatLabel}>Health</Text>
-                </View>
-                <IconTooltip text="Your combat HP. Tower mechanics and failed runs reduce this." />
-              </View>
-              <View style={styles.licenseStat}>
-                <ImageBackground source={HUD_ASSETS.slots.common} style={styles.licenseStatIconWrap} resizeMode="contain">
-                  <Image source={CURRENCY_SPRITES.stamina} style={styles.licenseAssetIcon} resizeMode="contain" />
-                </ImageBackground>
-                <View style={styles.licenseStatTextWrap}>
-                  <Text style={styles.licenseStatValue}>{character.stamina}/{character.staminaCap}</Text>
-                  <Text style={styles.licenseStatLabel}>Stamina</Text>
-                </View>
-                <IconTooltip text="Adventure stamina. Quests and tower attempts consume this." />
-              </View>
               <View style={styles.licenseStat}>
                 <ImageBackground source={HUD_ASSETS.slots.common} style={styles.licenseStatIconWrap} resizeMode="contain">
                   <Image source={CURRENCY_SPRITES.gold} style={styles.licenseAssetIcon} resizeMode="contain" />
@@ -455,64 +643,6 @@ export const HomeScreen = ({
                 <IconTooltip text="Starts neutral. Quest, NPC, and tower choices will push you toward Aetherbound or Abyssworn paths." />
               </View>
             </View>
-            <View style={styles.buffSlotHeader}>
-              <Text style={styles.buffSlotTitle}>Title Slots</Text>
-              <Text style={styles.buffSlotMeta}>
-                {equippedTitles.length}/{titleSlotLimit} equipped
-              </Text>
-            </View>
-            <View style={styles.buffSlotRow}>
-              {Array.from({ length: titleSlotLimit }).map((_, index) => {
-                const title = equippedTitles[index];
-                const rarityTheme = title ? titleRarityThemeMap[title.rarity] : null;
-                return (
-                  <View
-                    key={`title-slot-${index}`}
-                    style={[
-                      styles.buffSlotCard,
-                      rarityTheme ? { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg } : null,
-                      title?.rarity === "legendary" ? styles.titleSlotLegendary : null,
-                    ]}
-                  >
-                    <View style={styles.buffSlotIconWrap}>
-                      {title ? (
-                        <ImageBackground
-                          source={HUD_ASSETS.slots[title.rarity]}
-                          style={styles.titleIconFrame}
-                          resizeMode="contain"
-                        >
-                          <Image source={TITLE_ICON_ART[title.id]} style={styles.titleIconImage} resizeMode="contain" />
-                        </ImageBackground>
-                      ) : (
-                        <MaterialCommunityIcons
-                          name="plus-circle-outline"
-                          size={18}
-                          color="#a58961"
-                        />
-                      )}
-                    </View>
-                    <View style={styles.buffSlotTextBlock}>
-                      <Text style={styles.buffSlotText} numberOfLines={1}>
-                        {title ? title.name : "Empty Title Slot"}
-                      </Text>
-                      {title ? (
-                        <View
-                          style={[
-                            styles.buffSlotGradePill,
-                            rarityTheme ? { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg } : null,
-                          ]}
-                        >
-                          <Text style={[styles.buffSlotGradeText, rarityTheme ? { color: rarityTheme.text } : null]}>
-                            {title.rarity.toUpperCase()}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-
             <Text style={styles.abilitySlotHeader}>Skills</Text>
             <View style={styles.abilityMiniGrid}>
               <Pressable
@@ -520,16 +650,7 @@ export const HomeScreen = ({
                 style={[
                   styles.skillMiniBadge,
                   styles.skillMiniBadgeGridItem,
-                  {
-                    borderColor: SKILL_THEME_BY_ID[classAbility.id]?.border ?? "#58b4ff",
-                    backgroundColor: SKILL_THEME_BY_ID[classAbility.id]?.bg ?? "rgba(26, 47, 90, 0.92)",
-                  },
-                  skillActive
-                    ? {
-                        borderColor: SKILL_THEME_BY_ID[classAbility.id]?.activeBorder ?? "#9cefff",
-                        backgroundColor: SKILL_THEME_BY_ID[classAbility.id]?.activeBg ?? "rgba(22, 72, 122, 0.94)",
-                      }
-                    : null,
+                  styles.licenseSkillMiniBadge,
                   skillActive ? styles.skillMiniBadgeActive : null,
                 ]}
               >
@@ -537,16 +658,11 @@ export const HomeScreen = ({
                   <View
                     style={[
                       styles.abilityIconWrap,
+                      styles.licenseSkillIconWrap,
                       {
-                        borderColor: SKILL_THEME_BY_ID[classAbility.id]?.iconBorder ?? "#5ea9e1",
-                        backgroundColor: SKILL_THEME_BY_ID[classAbility.id]?.iconBg ?? "rgba(35, 71, 112, 0.9)",
+                        borderColor: "transparent",
+                        backgroundColor: "transparent",
                       },
-                      skillActive
-                        ? {
-                            borderColor: SKILL_THEME_BY_ID[classAbility.id]?.iconActiveBorder ?? "#8de9ff",
-                            backgroundColor: SKILL_THEME_BY_ID[classAbility.id]?.iconActiveBg ?? "rgba(44, 104, 163, 0.95)",
-                          }
-                        : null,
                       skillActive ? styles.abilityIconWrapActive : null,
                     ]}
                   >
@@ -557,60 +673,36 @@ export const HomeScreen = ({
                     />
                   </View>
                   <View>
-                    <Text style={[styles.skillMiniLabel, { color: SKILL_THEME_BY_ID[classAbility.id]?.label ?? "#9fdaff" }]}>Class Skill</Text>
                     <Text style={styles.skillMiniName}>{classAbility.name}</Text>
                   </View>
-                </View>
-                <View style={styles.skillMiniRight}>
-                  <Text style={styles.skillMiniMetaSmall}>Cost {classAbility.focusCost}</Text>
-                  <Text
-                    style={[
-                      styles.skillMiniState,
-                      { color: SKILL_THEME_BY_ID[classAbility.id]?.state ?? "#91f6ff" },
-                      !skillActive ? styles.skillMiniStateIdle : null,
-                    ]}
-                  >
-                    {skillActive ? "ACTIVE" : "READY"}
-                  </Text>
                 </View>
               </Pressable>
               {unlockedSkills
                 .filter((ability) => ability.id !== classAbility.id)
-                .map((ability) => (
+                .map((ability) => {
+                  const abilityActive = pendingAbilityIds.includes(ability.id);
+                  const abilityCooldownSec = getAbilityCooldownRemainingSeconds(character, ability.id, pageNowMs);
+                  return (
                   <Pressable
                     key={`extra-skill-${ability.id}`}
                     onPress={() => openSkillPanel(ability.id)}
                     style={[
                       styles.skillMiniBadge,
                       styles.skillMiniBadgeGridItem,
-                      {
-                        borderColor: SKILL_THEME_BY_ID[ability.id]?.border ?? "#58b4ff",
-                        backgroundColor: SKILL_THEME_BY_ID[ability.id]?.bg ?? "rgba(26, 47, 90, 0.92)",
-                      },
-                      pendingAbilityIds.includes(ability.id)
-                        ? {
-                            borderColor: SKILL_THEME_BY_ID[ability.id]?.activeBorder ?? "#9cefff",
-                            backgroundColor: SKILL_THEME_BY_ID[ability.id]?.activeBg ?? "rgba(22, 72, 122, 0.94)",
-                          }
-                        : null,
-                      pendingAbilityIds.includes(ability.id) ? styles.skillMiniBadgeActive : null,
+                      styles.licenseSkillMiniBadge,
+                      abilityActive ? styles.skillMiniBadgeActive : null,
                     ]}
                   >
                     <View style={styles.skillMiniLeft}>
                       <View
                         style={[
                           styles.abilityIconWrap,
+                          styles.licenseSkillIconWrap,
                           {
-                            borderColor: SKILL_THEME_BY_ID[ability.id]?.iconBorder ?? "#5ea9e1",
-                            backgroundColor: SKILL_THEME_BY_ID[ability.id]?.iconBg ?? "rgba(35, 71, 112, 0.9)",
+                            borderColor: "transparent",
+                            backgroundColor: "transparent",
                           },
-                          pendingAbilityIds.includes(ability.id)
-                            ? {
-                                borderColor: SKILL_THEME_BY_ID[ability.id]?.iconActiveBorder ?? "#8de9ff",
-                                backgroundColor: SKILL_THEME_BY_ID[ability.id]?.iconActiveBg ?? "rgba(44, 104, 163, 0.95)",
-                              }
-                            : null,
-                          pendingAbilityIds.includes(ability.id) ? styles.abilityIconWrapActive : null,
+                          abilityActive ? styles.abilityIconWrapActive : null,
                         ]}
                       >
                         <MaterialCommunityIcons
@@ -620,24 +712,12 @@ export const HomeScreen = ({
                         />
                       </View>
                       <View>
-                        <Text style={[styles.skillMiniLabel, { color: SKILL_THEME_BY_ID[ability.id]?.label ?? "#9fdaff" }]}>Class Skill</Text>
                         <Text style={styles.skillMiniName}>{ability.name}</Text>
                       </View>
                     </View>
-                    <View style={styles.skillMiniRight}>
-                      <Text style={styles.skillMiniMetaSmall}>Cost {ability.focusCost}</Text>
-                      <Text
-                        style={[
-                          styles.skillMiniState,
-                          { color: SKILL_THEME_BY_ID[ability.id]?.state ?? "#91f6ff" },
-                          !pendingAbilityIds.includes(ability.id) ? styles.skillMiniStateIdle : null,
-                        ]}
-                      >
-                        {pendingAbilityIds.includes(ability.id) ? "ACTIVE" : "READY"}
-                      </Text>
-                    </View>
                   </Pressable>
-                ))}
+                  );
+                })}
               {pendingComboCards.map((combo) => (
                 <Pressable
                   key={`combo-card-${combo.label}`}
@@ -703,7 +783,7 @@ export const HomeScreen = ({
             </View>
             {showStaminaStatusBox ? (
               <View style={styles.staminaRegenRow}>
-                <Image source={CURRENCY_SPRITES.stamina} style={styles.licenseAssetIcon} resizeMode="contain" />
+                <MaterialCommunityIcons name="alert-octagon-outline" size={16} color="#ffe1a7" />
                 <Text style={styles.staminaRegenText}>
                   {character.stamina >= character.staminaCap
                     ? "Stamina full (20/20). Regen resumes after spending stamina."
@@ -712,155 +792,12 @@ export const HomeScreen = ({
                 <IconTooltip text="Passive stamina recovery: +1 every 5 minutes until you reach the cap." />
               </View>
             ) : null}
-          </View>
-
-          <View style={styles.equipmentCard}>
-            <LinearGradient
-              pointerEvents="none"
-              colors={["rgba(223, 166, 80, 0.11)", "rgba(99, 63, 153, 0.06)", "rgba(33, 22, 49, 0.01)"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.cardGradient}
-            />
-            <View style={styles.equipmentTitleRow}>
-              <Text style={styles.equipmentTitle}>Equipped Loadout</Text>
-              <IconTooltip text="Current gear applied to your adventurer." />
-            </View>
-            <View style={styles.equipmentRow}>
-              <View style={styles.mainWeaponCard}>
-                <View style={styles.mainWeaponIconWrap}>
-                  {equippedWeapon ? <GameItemIcon itemId={equippedWeapon.id} size={42} /> : <View style={styles.emptyWeaponSlotLarge} />}
-                </View>
-                <View style={styles.mainWeaponText}>
-                  <Text
-                    style={styles.mainWeaponName}
-                    numberOfLines={2}
-                    ellipsizeMode="tail"
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.82}
-                  >
-                    {equippedWeapon ? equippedWeapon.name : "No Weapon Equipped"}
-                  </Text>
-                  <Text style={styles.mainWeaponMeta}>
-                    {equippedWeapon
-                      ? `Lv ${equippedWeapon.requiredLevel ?? 1}+ • ${combat.weaponProficiencyPercent}% proficiency`
-                      : "Visit Guild Store to buy one"}
-                  </Text>
-                  {equippedWeapon ? (
-                    <View style={styles.weaponBonusRow}>
-                      <View style={styles.weaponBonusChip}>
-                        <GameItemIcon itemId="weapon-warrior-training-blade" size={12} />
-                        <Text style={styles.weaponBonusText}>+{weaponBonusAttack} ATK</Text>
-                      </View>
-                      <View style={styles.weaponBonusChip}>
-                        <GameItemIcon itemId="buff-arcane-sigil" size={12} />
-                        <Text style={styles.weaponBonusText}>+{weaponBonusCrit}% CRIT</Text>
-                      </View>
-                      <View style={styles.weaponBonusChip}>
-                        <GameItemIcon itemId="buff-gale-feather" size={12} />
-                        <Text style={styles.weaponBonusText}>+{weaponBonusSpeed} SPD</Text>
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-                {equippedWeapon ? (
-                  <Pressable onPress={handleUnequip} style={styles.unequipWrap}>
-                    <View style={styles.unequipButton}>
-                      <MaterialCommunityIcons name="sword-cross" size={14} color="#fff1cf" />
-                      <MaterialCommunityIcons
-                        name="close"
-                        size={11}
-                        color="#fff1cf"
-                        style={styles.unequipOverlayIcon}
-                      />
-                    </View>
-                  </Pressable>
-                ) : null}
+            <View style={styles.licenseAuthBar}>
+              <Text style={styles.licenseAuthLine}>Authenticated by Guildmaster {guildMasterName}</Text>
+              <View style={styles.licenseSignatureWrap}>
+                <Text style={styles.licenseSignatureText}>E. Voss</Text>
+                <Text style={styles.licenseSignatureHint}>Guildmaster Sign</Text>
               </View>
-            </View>
-            <View style={styles.buffSlotHeader}>
-              <Text style={styles.buffSlotTitle}>Buff Slots</Text>
-              <Text style={styles.buffSlotMeta}>
-                {equippedBuffs.length}/{buffSlotLimit} equipped
-              </Text>
-            </View>
-            <View style={styles.buffSlotRow}>
-              {Array.from({ length: buffSlotLimit }).map((_, index) => {
-                const buff = equippedBuffs[index];
-                const active = buff ? isBuffActive(character, buff.id, pageNowMs) : false;
-                const buffAccent = buff ? getBuffAccent(buff.id) : null;
-                return (
-                  <View
-                    key={`buff-slot-${index}`}
-                    style={[
-                      styles.buffSlotCard,
-                      buffAccent
-                        ? {
-                            borderColor: buffAccent.border,
-                            backgroundColor: buffAccent.softBg,
-                          }
-                        : null,
-                      active ? styles.buffSlotCardActive : null,
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.buffSlotIconWrap,
-                        buffAccent
-                          ? {
-                              borderColor: buffAccent.border,
-                              backgroundColor: buffAccent.softBg,
-                            }
-                          : null,
-                      ]}
-                    >
-                      {buff ? (
-                        <GameItemIcon itemId={buff.id} size={19} />
-                      ) : (
-                        <MaterialCommunityIcons name="plus-circle-outline" size={18} color="#a58961" />
-                      )}
-                    </View>
-                    <View style={styles.buffSlotTextBlock}>
-                      <Text style={styles.buffSlotText} numberOfLines={1}>
-                        {buff ? buff.name : "Empty Buff Slot"}
-                      </Text>
-                      {buff ? (
-                        <View
-                          style={[
-                            styles.buffSlotGradePill,
-                            buffAccent ? { borderColor: buffAccent.border, backgroundColor: buffAccent.softBg } : null,
-                          ]}
-                        >
-                          <Text style={[styles.buffSlotGradeText, buffAccent ? { color: buffAccent.border } : null]}>
-                            {buff.rarity.toUpperCase()}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    {buff ? (
-                      <Text style={styles.buffSlotTimer}>
-                        {(() => {
-                          const remaining = getBuffRemainingSeconds(character, buff.id, pageNowMs);
-                          if (active) {
-                            return `${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`;
-                          }
-                          return remaining > 0
-                            ? `Paused ${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`
-                            : "Inactive";
-                        })()}
-                      </Text>
-                    ) : null}
-                    {active ? (
-                      <MaterialCommunityIcons name="check-decagram" size={13} color="#86efb0" />
-                    ) : null}
-                    {buff ? (
-                      <Pressable onPress={() => handleUnequipBuff(buff.id)} style={styles.buffRemoveButton}>
-                        <MaterialCommunityIcons name="close" size={11} color="#ffe8bf" />
-                      </Pressable>
-                    ) : null}
-                  </View>
-                );
-              })}
             </View>
           </View>
 
@@ -888,7 +825,7 @@ export const HomeScreen = ({
                 </View>
                 <Text style={styles.combatMetricValue}>{combat.damage}</Text>
                 <Text style={styles.combatMetricBonus}>
-                  WPN +{weaponBonusAttack} | SKILL +{pendingAbilityBonuses.damageFlat} | PASSIVE +{combat.passiveAbilityBonuses.damageFlat} | COMBO +{combat.comboBonuses.damageFlat} | BUFF +{combat.buffBonuses.damageFlat} | TITLE +{combat.titleBonuses.damageFlat}
+                  WPN +{weaponBonusAttack} | SKILL +{pendingAbilityBonuses.damageFlat} | PASSIVE +{combat.passiveAbilityBonuses.damageFlat} | COMBO +{combat.comboBonuses.damageFlat} | SIGIL +{combat.buffBonuses.damageFlat} | TITLE +{combat.titleBonuses.damageFlat}
                 </Text>
               </View>
               <View style={styles.combatMetricCard}>
@@ -898,7 +835,7 @@ export const HomeScreen = ({
                 </View>
                 <Text style={styles.combatMetricValue}>{combat.critChance}%</Text>
                 <Text style={styles.combatMetricBonus}>
-                  WPN +{weaponBonusCrit}% | SKILL +{pendingAbilityBonuses.critFlat}% | PASSIVE +{combat.passiveAbilityBonuses.critFlat}% | COMBO +{combat.comboBonuses.critFlat}% | BUFF +{combat.buffBonuses.critFlat}% | TITLE +{combat.titleBonuses.critFlat}%
+                  WPN +{weaponBonusCrit}% | SKILL +{pendingAbilityBonuses.critFlat}% | PASSIVE +{combat.passiveAbilityBonuses.critFlat}% | COMBO +{combat.comboBonuses.critFlat}% | SIGIL +{combat.buffBonuses.critFlat}% | TITLE +{combat.titleBonuses.critFlat}%
                 </Text>
               </View>
               <View style={styles.combatMetricCard}>
@@ -908,7 +845,7 @@ export const HomeScreen = ({
                 </View>
                 <Text style={styles.combatMetricValue}>{combat.speed}</Text>
                 <Text style={styles.combatMetricBonus}>
-                  WPN +{weaponBonusSpeed} | SKILL +{pendingAbilityBonuses.speedFlat} | PASSIVE +{combat.passiveAbilityBonuses.speedFlat} | COMBO +{combat.comboBonuses.speedFlat} | BUFF +{combat.buffBonuses.speedFlat} | TITLE +{combat.titleBonuses.speedFlat}
+                  WPN +{weaponBonusSpeed} | SKILL +{pendingAbilityBonuses.speedFlat} | PASSIVE +{combat.passiveAbilityBonuses.speedFlat} | COMBO +{combat.comboBonuses.speedFlat} | SIGIL +{combat.buffBonuses.speedFlat} | TITLE +{combat.titleBonuses.speedFlat}
                 </Text>
               </View>
             </View>
@@ -920,7 +857,7 @@ export const HomeScreen = ({
                 </View>
                 <Text style={styles.combatMetricValue}>Quest +{questSuccessTotal}% | Tower +{towerSuccessTotal}%</Text>
                 <Text style={styles.combatMetricBonus}>
-                  Quest: SKILL +{pendingAbilityBonuses.questSuccessFlat}% | PASSIVE +{combat.passiveAbilityBonuses.questSuccessFlat}% | COMBO +{combat.comboBonuses.questSuccessFlat}% | BUFF +{combat.buffBonuses.questSuccessFlat}% | TITLE +{combat.titleBonuses.questSuccessFlat}%
+                  Quest: SKILL +{pendingAbilityBonuses.questSuccessFlat}% | PASSIVE +{combat.passiveAbilityBonuses.questSuccessFlat}% | COMBO +{combat.comboBonuses.questSuccessFlat}% | SIGIL +{combat.buffBonuses.questSuccessFlat}% | TITLE +{combat.titleBonuses.questSuccessFlat}%
                 </Text>
                 <Text style={styles.combatMetricBonus}>
                   Tower: SKILL +{pendingAbilityBonuses.towerSuccessFlat}% | PASSIVE +{combat.passiveAbilityBonuses.towerSuccessFlat}% | COMBO +{combat.comboBonuses.towerSuccessFlat}%
@@ -930,8 +867,8 @@ export const HomeScreen = ({
 
             <View style={styles.weaponImpactRow}>
               <View style={styles.weaponImpactLabelWrap}>
-                <Text style={styles.weaponImpactTitle}>Active Buff Effects</Text>
-                <IconTooltip text="Only active buffs affect combat and tower success." />
+                <Text style={styles.weaponImpactTitle}>Active Sigil Effects</Text>
+                <IconTooltip text="Only active sigils affect combat and tower success." />
               </View>
               {activeBuffs.length > 0 ? (
                 <View style={styles.weaponImpactChips}>
@@ -946,7 +883,7 @@ export const HomeScreen = ({
                   ))}
                 </View>
               ) : (
-                <Text style={styles.weaponImpactEmpty}>No active buffs</Text>
+                <Text style={styles.weaponImpactEmpty}>No active sigils</Text>
               )}
             </View>
 
@@ -1004,7 +941,7 @@ export const HomeScreen = ({
               <View style={styles.weaponImpactChips}>
                 <View style={styles.weaponImpactChip}>
                   <GameItemIcon itemId="ward-charm" size={12} />
-                  <Text style={styles.weaponImpactText}>BUFF +{combat.buffBonuses.questSuccessFlat}%</Text>
+                  <Text style={styles.weaponImpactText}>SIGIL +{combat.buffBonuses.questSuccessFlat}%</Text>
                 </View>
                 <View style={styles.weaponImpactChip}>
                   <Image source={HUD_ASSETS.badges.rank} style={styles.weaponImpactBadgeIcon} resizeMode="contain" />
@@ -1145,6 +1082,82 @@ export const HomeScreen = ({
             <Text style={styles.abilityStatusText}>
               Level drives core attributes and combat growth. Mastery drives class-path progression and future unlocks.
             </Text>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={weaponDetailsOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setWeaponDetailsOpen(false)}
+      >
+        <View style={styles.skillModalBackdrop}>
+          <View style={styles.skillModalCard}>
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(255, 207, 113, 0.2)", "rgba(161, 98, 241, 0.15)", "rgba(24, 16, 37, 0.02)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.cardGradient}
+            />
+            {equippedWeapon ? (
+              <>
+                <View style={styles.abilityBanner}>
+                  <View style={styles.abilityBannerLeft}>
+                    <MaterialCommunityIcons name="sword-cross" size={14} color="#ffe0a4" />
+                    <Text style={styles.abilityBannerText}>Weapon Record</Text>
+                  </View>
+                  <Pressable onPress={() => setWeaponDetailsOpen(false)}>
+                    <MaterialCommunityIcons name="close-circle" size={20} color="#f1d8a8" />
+                  </Pressable>
+                </View>
+                <View style={styles.weaponDialogHead}>
+                  <Text style={styles.weaponDialogTitle}>{equippedWeapon.name}</Text>
+                  <View style={styles.weaponDialogGradePill}>
+                    <Text style={styles.weaponDialogGradeText}>{equippedWeapon.rarity.toUpperCase()}</Text>
+                  </View>
+                </View>
+                <View style={styles.weaponDialogHero}>
+                  <View style={styles.weaponDialogArtFrame}>
+                    {equippedWeapon.image ? (
+                      <Image source={equippedWeapon.image} style={styles.weaponDialogArt} resizeMode="contain" />
+                    ) : (
+                      <GameItemIcon itemId={equippedWeapon.id} size={72} />
+                    )}
+                  </View>
+                  <View style={styles.weaponDialogMetaCol}>
+                    <Text style={styles.weaponDialogMeta}>Required Level {equippedWeapon.requiredLevel ?? 1}</Text>
+                    <Text style={styles.weaponDialogMeta}>Proficiency {combat.weaponProficiencyPercent}%</Text>
+                    {equippedWeapon.description ? (
+                      <Text style={styles.weaponDialogDesc}>{equippedWeapon.description}</Text>
+                    ) : null}
+                  </View>
+                </View>
+                <View style={styles.weaponDialogStatsRow}>
+                  <View style={styles.weaponDialogStatCard}>
+                    <MaterialCommunityIcons name="sword-cross" size={16} color="#ffd786" />
+                    <Text style={styles.weaponDialogStatLabel}>Attack</Text>
+                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.attack ?? 0}</Text>
+                  </View>
+                  <View style={styles.weaponDialogStatCard}>
+                    <MaterialCommunityIcons name="star-four-points-outline" size={16} color="#ff78c9" />
+                    <Text style={styles.weaponDialogStatLabel}>Critical</Text>
+                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.crit ?? 0}%</Text>
+                  </View>
+                  <View style={styles.weaponDialogStatCard}>
+                    <MaterialCommunityIcons name="run-fast" size={16} color="#8de9a8" />
+                    <Text style={styles.weaponDialogStatLabel}>Speed</Text>
+                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.speed ?? 0}</Text>
+                  </View>
+                </View>
+                {equippedWeapon.lore ? (
+                  <View style={styles.weaponLorePanel}>
+                    <Text style={styles.weaponLoreTitle}>Lore</Text>
+                    <Text style={styles.weaponLoreText}>{equippedWeapon.lore}</Text>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -1333,6 +1346,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: 10,
     paddingVertical: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   noticeBannerOk: {
     borderColor: "#4e9a72",
@@ -1357,6 +1373,9 @@ const styles = StyleSheet.create({
     gap: 10,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   cardGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -1549,22 +1568,61 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#f1c978",
   },
+  licenseFloorBadge: {
+    minWidth: 52,
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#8ab5d8",
+    backgroundColor: "rgba(32, 54, 83, 0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    gap: 2,
+  },
+  licenseFloorBadgeHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  licenseFloorBadgeLabel: {
+    color: "#c9e4ff",
+    fontSize: 8,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  licenseFloorBadgeValue: {
+    color: "#e6f4ff",
+    fontSize: 18,
+    lineHeight: 19,
+    fontWeight: "900",
+  },
   licenseStatsRow: {
     flexDirection: "row",
     gap: 8,
     flexWrap: "wrap",
   },
+  licenseHealthMeter: {
+    marginBottom: 4,
+  },
   licenseAuthBar: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(181, 186, 197, 0.34)",
-    backgroundColor: "rgba(126, 135, 152, 0.14)",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    marginTop: 6,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
+  },
+  licenseAuthLine: {
+    flex: 1,
+    color: "rgba(221, 228, 241, 0.62)",
+    fontSize: 7,
+    fontWeight: "700",
+    letterSpacing: 0.35,
+    textTransform: "uppercase",
   },
   licenseAuthTextWrap: {
     flex: 1,
@@ -1584,22 +1642,160 @@ const styles = StyleSheet.create({
   },
   licenseSignatureWrap: {
     alignItems: "flex-end",
-    minWidth: 92,
+    minWidth: 74,
   },
   licenseSignatureText: {
-    color: "rgba(225, 232, 248, 0.8)",
-    fontSize: 17,
+    color: "rgba(225, 232, 248, 0.64)",
+    fontSize: 13,
     fontStyle: "italic",
     fontWeight: "700",
-    lineHeight: 18,
+    lineHeight: 14,
   },
   licenseSignatureHint: {
     marginTop: 1,
-    color: "rgba(186, 194, 212, 0.66)",
-    fontSize: 8,
+    color: "rgba(186, 194, 212, 0.52)",
+    fontSize: 7,
     fontWeight: "700",
     letterSpacing: 0.4,
     textTransform: "uppercase",
+  },
+  licenseLoadoutGrid: {
+    marginTop: 2,
+    gap: 4,
+  },
+  licenseLoadoutPanel: {
+    flex: 1,
+    minWidth: 230,
+    gap: 6,
+  },
+  licenseLoadoutPanelFull: {
+    width: "100%",
+    gap: 4,
+  },
+  licenseSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  licenseWeaponMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  licenseSectionTitle: {
+    color: "#f6e2b7",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
+  licenseSectionMeta: {
+    color: "#ceb68b",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  licenseWeaponGradePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d48d43",
+    backgroundColor: "rgba(107, 63, 19, 0.92)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  licenseWeaponGradeText: {
+    color: "#ffd89a",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  licenseWeaponCard: {
+    minHeight: 88,
+  },
+  licenseSigilRow: {
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  licenseSigilSlot: {
+    width: 58,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 3,
+    position: "relative",
+  },
+  licenseSigilSlotActive: {
+    shadowColor: "#b68bff",
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 5,
+  },
+  licenseSigilIconShell: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(159, 127, 75, 0.34)",
+    backgroundColor: "rgba(28, 20, 39, 0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  licenseSigilIconShellActive: {
+    shadowColor: "#b68bff",
+    shadowOpacity: 0.36,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  },
+  licenseSigilGradeBadge: {
+    position: "absolute",
+    right: 2,
+    top: -2,
+    minWidth: 14,
+    height: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#af8a4e",
+    backgroundColor: "rgba(63, 46, 23, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 2,
+  },
+  licenseSigilGradeText: {
+    color: "#f8dfaa",
+    fontSize: 8,
+    fontWeight: "900",
+    lineHeight: 9,
+  },
+  licenseSigilTimerText: {
+    color: "#f5d59a",
+    fontSize: 9,
+    fontWeight: "800",
+    textAlign: "center",
+    minHeight: 11,
+  },
+  licenseSigilActiveMark: {
+    position: "absolute",
+    left: 2,
+    bottom: 16,
+  },
+  licenseSigilRemoveButton: {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#c89b54",
+    backgroundColor: "rgba(87, 59, 23, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  licenseSigilColumn: {
+    gap: 6,
+  },
+  licenseSigilCard: {
+    minHeight: 58,
   },
   staminaRegenRow: {
     marginTop: 2,
@@ -2178,6 +2374,116 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.7,
   },
+  weaponDialogHead: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  weaponDialogTitle: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  weaponDialogGradePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d48d43",
+    backgroundColor: "rgba(107, 63, 19, 0.92)",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  weaponDialogGradeText: {
+    color: "#ffd89a",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  weaponDialogHero: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+  },
+  weaponDialogArtFrame: {
+    width: 104,
+    height: 104,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#a9854d",
+    backgroundColor: "rgba(34, 24, 48, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  weaponDialogArt: {
+    width: 86,
+    height: 86,
+  },
+  weaponDialogMetaCol: {
+    flex: 1,
+    gap: 4,
+  },
+  weaponDialogMeta: {
+    color: "#ecd8b2",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  weaponDialogDesc: {
+    color: "#d7c3a0",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  weaponDialogStatsRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    gap: 8,
+  },
+  weaponDialogStatCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#977442",
+    backgroundColor: "rgba(58, 41, 23, 0.88)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 2,
+    alignItems: "center",
+  },
+  weaponDialogStatLabel: {
+    color: "#e7d4af",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  weaponDialogStatValue: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  weaponLorePanel: {
+    marginTop: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#8f7243",
+    backgroundColor: "rgba(46, 33, 58, 0.93)",
+    padding: 10,
+    gap: 6,
+  },
+  weaponLoreTitle: {
+    color: "#ffe5b9",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.55,
+  },
+  weaponLoreText: {
+    color: "#e8d7bb",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
   abilityHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -2221,6 +2527,18 @@ const styles = StyleSheet.create({
   skillMiniBadgeGridItem: {
     width: "48.5%",
     minHeight: 62,
+  },
+  licenseSkillMiniBadge: {
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+    minHeight: 40,
+  },
+  licenseSkillIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 0,
   },
   skillMiniBadgeActive: {
     shadowColor: "#f4ce8f",
@@ -2314,6 +2632,11 @@ const styles = StyleSheet.create({
     color: "#aebcd3",
     textShadowColor: "transparent",
     textShadowRadius: 0,
+  },
+  skillMiniStateCooldown: {
+    color: "#ffd487",
+    textShadowColor: "rgba(255, 205, 128, 0.5)",
+    textShadowRadius: 4,
   },
   skillModalBackdrop: {
     flex: 1,
@@ -2443,6 +2766,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     marginTop: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   dailyCard: {
     flexDirection: "row",
@@ -2455,6 +2781,9 @@ const styles = StyleSheet.create({
     padding: 12,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   dailyIconSprite: {
     width: 20,
@@ -2487,6 +2816,9 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 2 },
     elevation: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   allySpecialBadge: {
     alignSelf: "flex-start",

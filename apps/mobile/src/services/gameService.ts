@@ -25,6 +25,8 @@ import {
   RankUpTrialDefinition,
   TowerFloorDefinition,
   TowerOutcome,
+  TowerWaveKey,
+  TowerWaveOutcome,
 } from "../types/game";
 
 const STAMINA_RECOVERY_PER_CLAIM = 1;
@@ -66,6 +68,21 @@ export interface AttemptRankUpResult {
   outcome?: RankUpOutcome;
 }
 
+export interface ResolveTowerWaveResult {
+  ok: boolean;
+  reason?: string;
+  character?: CharacterState;
+  outcome?: TowerWaveOutcome;
+}
+
+export interface FinalizeTowerFloorResult {
+  ok: boolean;
+  reason?: string;
+  character?: CharacterState;
+  dailies?: DailyTask[];
+  outcome?: TowerOutcome;
+}
+
 export interface GameService {
   createCharacter: (name: string, classId: BaseClassId, avatarId: AvatarId, classSequence: number) => CharacterState;
   startQuest: (input: {
@@ -101,6 +118,7 @@ export interface GameService {
     dailies: DailyTask[];
     floor: TowerFloorDefinition | undefined;
     committedItems?: Record<ItemId, number>;
+    externalSuccessFlat?: number;
   }) => ConquerTowerFloorResult;
   attemptRankUp: (input: {
     character: CharacterState | null;
@@ -109,6 +127,17 @@ export interface GameService {
     committedItems?: Record<ItemId, number>;
     nowMs: number;
   }) => AttemptRankUpResult;
+  resolveTowerWave: (input: {
+    character: CharacterState | null;
+    floor: TowerFloorDefinition | undefined;
+    wave: TowerWaveKey;
+    committedItems?: Record<ItemId, number>;
+  }) => ResolveTowerWaveResult;
+  finalizeTowerFloor: (input: {
+    character: CharacterState | null;
+    dailies: DailyTask[];
+    floor: TowerFloorDefinition | undefined;
+  }) => FinalizeTowerFloorResult;
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
@@ -289,6 +318,17 @@ export const hasTowerAccess = (
     };
   }
 
+  if (floor.requiredRank) {
+    const playerRankIndex = RANK_ORDER.indexOf(character.adventurerRank);
+    const requiredRankIndex = RANK_ORDER.indexOf(floor.requiredRank);
+    if (playerRankIndex < requiredRankIndex) {
+      return {
+        allowed: false,
+        reason: `Requires Rank ${floor.requiredRank}.`,
+      };
+    }
+  }
+
   if (character.stamina < floor.staminaCost) {
     return {
       allowed: false,
@@ -303,6 +343,7 @@ export const calculateTowerSuccessChance = (
   character: CharacterState,
   floor: TowerFloorDefinition,
   committedItems?: Record<ItemId, number>,
+  externalSuccessFlat = 0,
 ): number => {
   const selectedItems = committedItems ?? {};
   const recommendedTotal = floor.recommendedItems.reduce((sum, requirement) => sum + requirement.needed, 0);
@@ -346,7 +387,8 @@ export const calculateTowerSuccessChance = (
     combatStats.towerSuccessBonus +
     abilityModifier +
     mechanicPressure.successModifier +
-    overlevelBonus;
+    overlevelBonus +
+    externalSuccessFlat;
   return clamp(Math.round(chance), 6, 95);
 };
 
@@ -360,23 +402,84 @@ export interface TowerPhaseChances {
 const getCounterItemFromMechanic = (mechanic: string): ItemId | undefined => {
   const keyword = mechanic.toLowerCase();
   if (keyword.includes("poison bite")) return "antitoxin-vial";
+  if (keyword.includes("venom thorn") || keyword.includes("hook rend") || keyword.includes("thorn cage")) return "thorn-salve";
+  if (keyword.includes("coil snare") || keyword.includes("lariat")) return "rope";
   if (keyword.includes("bulwark")) return "lockpick";
+  if (keyword.includes("needle volley")) return "guard-tonic";
   if (keyword.includes("crushing sweep") || keyword.includes("hammer sweep")) return "guard-tonic";
   if (keyword.includes("arc overcharge") || keyword.includes("overcharge")) return "grounding-tonic";
+  if (keyword.includes("heartseed pulse")) return "ward-charm";
   if (keyword.includes("spark field")) return "ward-charm";
-  if (keyword.includes("burrow")) return "torch";
+  if (keyword.includes("burrow") || keyword.includes("flash skitter")) return "torch";
   return undefined;
 };
 
 const getMechanicEventMeta = (mechanic: string): { icon: string; severity: "low" | "medium" | "high" } => {
   const keyword = mechanic.toLowerCase();
   if (keyword.includes("poison")) return { icon: "biohazard", severity: "high" };
+  if (keyword.includes("thorn") || keyword.includes("hook rend")) return { icon: "needle", severity: "high" };
+  if (keyword.includes("snare") || keyword.includes("lariat")) return { icon: "source-branch", severity: "medium" };
+  if (keyword.includes("needle volley")) return { icon: "weather-windy", severity: "medium" };
+  if (keyword.includes("heartseed")) return { icon: "heart-flash", severity: "high" };
   if (keyword.includes("overcharge") || keyword.includes("spark")) return { icon: "lightning-bolt", severity: "high" };
   if (keyword.includes("bulwark")) return { icon: "shield-sword-outline", severity: "medium" };
   if (keyword.includes("sweep") || keyword.includes("hammer")) return { icon: "hammer-wrench", severity: "medium" };
   if (keyword.includes("burrow")) return { icon: "tunnel", severity: "medium" };
   if (keyword.includes("rush")) return { icon: "run-fast", severity: "low" };
   return { icon: "alert-circle", severity: "low" };
+};
+
+const getMechanicStatusProfile = (
+  mechanic: string,
+): {
+  badName: string;
+  goodName: string;
+  icon: string;
+} => {
+  const keyword = mechanic.toLowerCase();
+  if (keyword.includes("poison bite")) {
+    return { badName: "Poisoned", goodName: "Poison Guard", icon: "biohazard" };
+  }
+  if (keyword.includes("venom thorn")) {
+    return { badName: "Bleeding", goodName: "Thorn Sealed", icon: "needle" };
+  }
+  if (keyword.includes("coil snare") || keyword.includes("lariat")) {
+    return { badName: "Snared", goodName: "Slipline Ready", icon: "source-branch" };
+  }
+  if (keyword.includes("needle volley")) {
+    return { badName: "Peppered", goodName: "Volley Guarded", icon: "weather-windy" };
+  }
+  if (keyword.includes("flash skitter")) {
+    return { badName: "Blinded", goodName: "Sight Held", icon: "torch" };
+  }
+  if (keyword.includes("hook rend")) {
+    return { badName: "Rended", goodName: "Rend Bound", icon: "hook" };
+  }
+  if (keyword.includes("thorn cage")) {
+    return { badName: "Pinned", goodName: "Cage Split", icon: "pine-tree-box" };
+  }
+  if (keyword.includes("heartseed pulse")) {
+    return { badName: "Drained", goodName: "Pulse Warded", icon: "heart-flash" };
+  }
+  if (keyword.includes("pack rush")) {
+    return { badName: "Overrun", goodName: "Formation Held", icon: "run-fast" };
+  }
+  if (keyword.includes("burrow")) {
+    return { badName: "Ambushed", goodName: "Ambush Read", icon: "tunnel" };
+  }
+  if (keyword.includes("bulwark")) {
+    return { badName: "Guard Broken", goodName: "Guard Breached", icon: "shield-sword-outline" };
+  }
+  if (keyword.includes("crushing sweep") || keyword.includes("hammer sweep")) {
+    return { badName: "Staggered", goodName: "Sweep Guarded", icon: "hammer-wrench" };
+  }
+  if (keyword.includes("arc overcharge") || keyword.includes("overcharge")) {
+    return { badName: "Overcharged", goodName: "Arc Grounded", icon: "lightning-bolt" };
+  }
+  if (keyword.includes("spark field")) {
+    return { badName: "Shocked", goodName: "Field Warded", icon: "flash-outline" };
+  }
+  return { badName: mechanic.split(":")[0].trim(), goodName: "Countered", icon: "alert-circle" };
 };
 
 const buildTowerEncounterLog = (
@@ -496,8 +599,9 @@ export const calculateTowerPhaseChances = (
   character: CharacterState,
   floor: TowerFloorDefinition,
   committedItems?: Record<ItemId, number>,
+  externalSuccessFlat = 0,
 ): TowerPhaseChances => {
-  const base = calculateTowerSuccessChance(character, floor, committedItems);
+  const base = calculateTowerSuccessChance(character, floor, committedItems, externalSuccessFlat);
   const mechanicPressure = calculateTowerMechanicPressure(character, floor, committedItems ?? {});
   const levels = getFloorEnemyLevelAverages(floor);
   const levelEdgeNormal = clamp((character.progression.level - levels.normal) * 1.5, -10, 10);
@@ -743,6 +847,7 @@ export const mockGameService: GameService = {
       focus: 12,
       focusCap: 12,
       focusLastTickAtMs: Date.now(),
+      noviceEmergencyReviveAvailableAtMs: 0,
       adventurerRank: "F",
       equippedWeaponId: null,
       ownedTitleIds: [],
@@ -764,6 +869,7 @@ export const mockGameService: GameService = {
         torch: 1,
         "healing-herb": 1,
       },
+      knownTowerEnemyIds: [],
       towerProgress: {
         highestFloorCleared: 0,
       },
@@ -800,8 +906,8 @@ export const mockGameService: GameService = {
     if (character.stamina < quest.staminaCost) {
       return { ok: false, reason: "Not enough stamina." };
     }
-    if (character.health <= 0) {
-      return { ok: false, reason: "You are incapacitated. Visit Guild NPC for revival." };
+    if (character.health <= 1) {
+      return { ok: false, reason: "Your being is fractured. Visit the Archmage in the guild." };
     }
     const questHealthGate = getQuestHealthGateMin(character);
     if (character.health < questHealthGate) {
@@ -1233,7 +1339,311 @@ export const mockGameService: GameService = {
       },
     };
   },
-  conquerTowerFloor: ({ character, dailies, floor, committedItems }) => {
+  resolveTowerWave: ({ character, floor, wave, committedItems }) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!floor) {
+      return { ok: false, reason: "Floor not found." };
+    }
+    if (character.health <= 1) {
+      return { ok: false, reason: "Your being is fractured. Visit the Archmage in the guild." };
+    }
+    const access = hasTowerAccess(character, floor);
+    if (!access.allowed) {
+      return { ok: false, reason: access.reason };
+    }
+    const roster = floor.enemyRoster;
+    const waveUnits = roster
+      ? wave === "normal"
+        ? roster.normal
+        : wave === "subBoss"
+          ? roster.subBoss
+          : roster.boss
+      : [];
+    const selectedItems = committedItems ?? {};
+    const nextInventory = { ...(character.inventory ?? {}) };
+    for (const [itemId, amount] of Object.entries(selectedItems)) {
+      const count = Math.max(0, Math.floor(amount));
+      if (count <= 0) {
+        continue;
+      }
+      const owned = nextInventory[itemId] ?? 0;
+      if (owned < count) {
+        return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
+      }
+      nextInventory[itemId] = owned - count;
+    }
+    const hasOverlevelAdvantage = character.progression.level - floor.minLevel >= 10;
+    const playerDamageMultiplier = hasOverlevelAdvantage ? 1.5 : 1;
+    const enemyDamageMultiplier = hasOverlevelAdvantage ? 0.5 : 1;
+    const combatStats = getCharacterCombatStats(character);
+    const abilityBonuses = getPendingAbilityBonuses(character);
+    const playerDamagePerTurn = Math.max(1, Math.round((combatStats.damage + abilityBonuses.damageFlat) * playerDamageMultiplier));
+    let runningHealth = character.health;
+    let countered = 0;
+    let triggered = 0;
+    const lines: string[] = [];
+    const enemyBattles: NonNullable<TowerWaveOutcome["enemyBattles"]> = [];
+    const statusEffectMap: Record<
+      string,
+      { name: string; icon: string; tone: "good" | "bad" | "neutral"; value: number }
+    > = {};
+    for (const unit of waveUnits) {
+      if (runningHealth <= 0) {
+        break;
+      }
+      const enemyHealth = Math.max(
+        1,
+        unit.health ??
+          (unit.role === "boss"
+            ? 170 + floor.minLevel * 12
+            : unit.role === "subBoss"
+              ? 110 + floor.minLevel * 10
+              : 40 + floor.minLevel * 6),
+      );
+      const turnsToDefeat = Math.max(1, Math.ceil(enemyHealth / playerDamagePerTurn));
+      const baseEnemyDamagePerTurn = Math.max(
+        1,
+        Math.round((unit.level * 1.8 + (unit.role === "boss" ? 14 : unit.role === "subBoss" ? 10 : 6)) * enemyDamageMultiplier),
+      );
+      let mechanicDamagePerTurn = 0;
+      const triggeredMechanicsForUnit: Array<{ id: string; name: string; icon: string; valuePerTurn: number }> = [];
+      for (const mechanic of unit.mechanics ?? []) {
+        const counterItemId = getCounterItemFromMechanic(mechanic);
+        const hasCounter = counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false;
+        const mechanicName = mechanic.split(":")[0].trim();
+        const { icon, severity } = getMechanicEventMeta(mechanic);
+        const statusProfile = getMechanicStatusProfile(mechanic);
+        if (hasCounter) {
+          countered += 1;
+          lines.push(`${unit.name}: ${ITEM_BY_ID[counterItemId!]?.name ?? counterItemId} neutralized ${mechanic.split(":")[0]}.`);
+          const key = `counter:${statusProfile.goodName}`;
+          statusEffectMap[key] = {
+            name: statusProfile.goodName,
+            icon: statusProfile.icon,
+            tone: "good",
+            value: (statusEffectMap[key]?.value ?? 0) + 1,
+          };
+        } else {
+          triggered += 1;
+          const valuePerTurn = severity === "high" ? 3 : severity === "medium" ? 2 : 1;
+          mechanicDamagePerTurn += valuePerTurn;
+          lines.push(`${unit.name}: ${mechanicName} connected.`);
+          triggeredMechanicsForUnit.push({
+            id: statusProfile.badName.toLowerCase().replace(/\s+/g, "-"),
+            name: statusProfile.badName,
+            icon: statusProfile.icon || icon,
+            valuePerTurn,
+          });
+        }
+      }
+      const damageTaken = turnsToDefeat * (baseEnemyDamagePerTurn + mechanicDamagePerTurn);
+      runningHealth = Math.max(0, runningHealth - damageTaken);
+      for (const entry of triggeredMechanicsForUnit) {
+        const key = `trigger:${entry.id}`;
+        statusEffectMap[key] = {
+          name: entry.name,
+          icon: entry.icon,
+          tone: "bad",
+          value: (statusEffectMap[key]?.value ?? 0) + entry.valuePerTurn * turnsToDefeat,
+        };
+      }
+      lines.push(`${unit.name}: defeated in ${turnsToDefeat} turns. Damage taken ${damageTaken}.`);
+      enemyBattles.push({
+        enemyId: unit.id,
+        enemyName: unit.name,
+        enemyIcon: unit.icon,
+        enemyRole: unit.role,
+        enemyLevel: unit.level,
+        enemyHealth,
+        turnsToDefeat,
+        playerDamagePerTurn,
+        damageTaken,
+        events: [
+          {
+            mechanic: "Direct Clash",
+            countered: false,
+            positive: true,
+            resultText: `Enemy HP ${enemyHealth}. Defeated in ${turnsToDefeat} turns.`,
+            icon: "sword-cross",
+          },
+          ...((unit.mechanics ?? []).length > 0
+            ? ((): NonNullable<TowerWaveOutcome["enemyBattles"]>[number]["events"] => {
+                const battleEvents: NonNullable<TowerWaveOutcome["enemyBattles"]>[number]["events"] = [];
+                for (const mechanic of unit.mechanics ?? []) {
+                  const counterItemId = getCounterItemFromMechanic(mechanic);
+                  const hasCounter = counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false;
+                  const mechanicName = mechanic.split(":")[0].trim();
+                  const { icon } = getMechanicEventMeta(mechanic);
+                  if (hasCounter) {
+                    battleEvents.push({
+                      mechanic: mechanicName,
+                      counterItemId,
+                      countered: true,
+                      positive: true,
+                      resultText: `${ITEM_BY_ID[counterItemId!]?.name ?? counterItemId} countered this mechanic.`,
+                      icon,
+                    });
+                  } else {
+                    battleEvents.push({
+                      mechanic: mechanicName,
+                      counterItemId,
+                      countered: false,
+                      positive: false,
+                      resultText: "Mechanic connected and raised incoming damage.",
+                      icon,
+                    });
+                  }
+                }
+                return battleEvents;
+              })()
+            : [
+                {
+                  mechanic: "No Special Mechanic",
+                  countered: false,
+                  positive: true,
+                  resultText: "Standard clash. No special mechanic interrupted the exchange.",
+                  icon: "shield-sun-outline",
+                },
+              ]),
+        ],
+      });
+    }
+    const waveStaminaCost = Math.max(1, Math.round(floor.staminaCost / 3));
+    const nextStamina = Math.max(0, character.stamina - waveStaminaCost);
+    const success = runningHealth > 0;
+    const healthDelta = runningHealth - character.health;
+    const nextCharacter: CharacterState = {
+      ...character,
+      health: runningHealth,
+      stamina: nextStamina,
+      inventory: nextInventory,
+      knownTowerEnemyIds: Array.from(
+        new Set([...(character.knownTowerEnemyIds ?? []), ...waveUnits.map((unit) => unit.id)]),
+      ),
+    };
+    return {
+      ok: true,
+      character: nextCharacter,
+      outcome: {
+        floorNumber: floor.floorNumber,
+        wave,
+        success,
+        healthDelta,
+        countered,
+        triggered,
+        summary: `${wave === "normal" ? "Normal Wave" : wave === "subBoss" ? "Sub-Boss" : "Main Boss"} ${
+          success ? "cleared" : "failed"
+        }.`,
+        lines,
+        enemyBattles,
+        statusEffects: Object.entries(statusEffectMap).map(([id, value]) => ({
+          id,
+          name: value.name,
+          icon: value.icon,
+          tone: value.tone,
+          detail:
+            value.tone === "bad"
+              ? `HP -${value.value} / enc`
+              : value.tone === "good"
+                ? `Negated x${value.value}`
+                : `${value.value}`,
+        })),
+        conditionalEncounter:
+          floor.floorNumber === 1 && success
+            ? (() => {
+                const poisonTriggered = Object.keys(statusEffectMap).some((key) => key.includes("trigger:poisoned"));
+                const disciplinedPreparation =
+                  (committedItems?.["antitoxin-vial"] ?? 0) >= 1 &&
+                  (committedItems?.torch ?? 0) >= 1 &&
+                  !poisonTriggered;
+                if (!poisonTriggered && !disciplinedPreparation) {
+                  return undefined;
+                }
+                return {
+                  id: "tower-floor1-lyra-intercept",
+                  npcName: "Lyra Ashstep",
+                  npcTitle: "Ember Scout",
+                  classId: "ranger" as const,
+                  avatarId: "ranger-3" as const,
+                  contactStyle: poisonTriggered ? ("rescued" as const) : ("disciplined" as const),
+                  triggerPhase: "normal" as const,
+                  message: poisonTriggered
+                    ? "Lyra steps from the ash veil: \"Poison already found your blood. Follow my ember marks and the deeper lanes won't take you as easily.\""
+                    : "Lyra steps from the ash with a measured nod: \"You prepared before the Tower forced the lesson on you. Keep that habit, and you may live long enough to matter.\"",
+                  acceptLabel: "Take Lyra's Advice",
+                  declineLabel: "Push On Alone",
+                  acceptOutcome: poisonTriggered
+                    ? "Lyra traces a safer route through the ash vents and leaves a silent mark only you can read."
+                    : "Lyra leaves a cleaner ember line, a small reward for the discipline she just witnessed.",
+                  declineOutcome: poisonTriggered
+                    ? "You refuse the scout line and continue deeper under the same pressure."
+                    : "You refuse the offered route even after earning Lyra's respect.",
+                };
+              })()
+            : undefined,
+      },
+    };
+  },
+  finalizeTowerFloor: ({ character, dailies, floor }) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!floor) {
+      return { ok: false, reason: "Floor not found." };
+    }
+    if (character.health <= 1) {
+      return { ok: false, reason: "Cannot finalize while your being is fractured." };
+    }
+    const nextInventory = { ...(character.inventory ?? {}) };
+    for (const guaranteedItem of floor.guaranteedItemRewards ?? []) {
+      nextInventory[guaranteedItem.itemId] = (nextInventory[guaranteedItem.itemId] ?? 0) + guaranteedItem.amount;
+    }
+    const gainedItems =
+      floor.bonusItemRewards
+        ?.filter((reward) => Math.random() <= reward.chance)
+        .map((reward) => ({ itemId: reward.itemId, amount: reward.amount })) ?? [];
+    for (const gainedItem of gainedItems) {
+      nextInventory[gainedItem.itemId] = (nextInventory[gainedItem.itemId] ?? 0) + gainedItem.amount;
+    }
+    const nextProgression = applyProgressGain(character.progression, floor.reward.xp, floor.reward.masteryXp);
+    const nextHealthCap = getDerivedHealthCap({
+      ...character,
+      progression: nextProgression,
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...character,
+      progression: nextProgression,
+    });
+    const nextCharacter: CharacterState = {
+      ...character,
+      progression: nextProgression,
+      gold: character.gold + floor.reward.gold,
+      healthCap: nextHealthCap,
+      health: clamp(character.health, 0, nextHealthCap),
+      focusCap: nextFocusCap,
+      focus: Math.min(character.focus, nextFocusCap),
+      inventory: nextInventory,
+      towerProgress: {
+        highestFloorCleared: Math.max(character.towerProgress?.highestFloorCleared ?? 0, floor.floorNumber),
+      },
+    };
+    return {
+      ok: true,
+      character: nextCharacter,
+      dailies: dailies.map((daily) =>
+        daily.id === "d1" ? { ...daily, progress: Math.min(daily.target, daily.progress + 1) } : daily,
+      ),
+      outcome: {
+        success: true,
+        floorNumber: floor.floorNumber,
+        successChance: 100,
+        summary: `Floor ${floor.floorNumber} finalized. Rewards and drops transferred to inventory.`,
+      },
+    };
+  },
+  conquerTowerFloor: ({ character, dailies, floor, committedItems, externalSuccessFlat = 0 }) => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
@@ -1241,8 +1651,8 @@ export const mockGameService: GameService = {
     if (!floor) {
       return { ok: false, reason: "Floor not found." };
     }
-    if (character.health <= 0) {
-      return { ok: false, reason: "You are incapacitated. Visit Guild NPC for revival." };
+    if (character.health <= 1) {
+      return { ok: false, reason: "Your being is fractured. Visit the Archmage in the guild." };
     }
 
     const access = hasTowerAccess(character, floor);
@@ -1273,7 +1683,7 @@ export const mockGameService: GameService = {
       }
     }
 
-    const phaseChances = calculateTowerPhaseChances(character, floor, selectedItems);
+    const phaseChances = calculateTowerPhaseChances(character, floor, selectedItems, externalSuccessFlat);
     const successChance = phaseChances.overall;
     const mechanicPressure = calculateTowerMechanicPressure(character, floor, selectedItems);
     const supplyUsage = floor.recommendedItems.map((requirement) => ({
@@ -1385,8 +1795,15 @@ export const mockGameService: GameService = {
         });
         encounterLog.push({
           phase: phase.key,
+          enemyId: unit.id,
           enemyName: unit.name,
           enemyIcon: unit.icon,
+          enemyRole: unit.role,
+          enemyLevel: unit.level,
+          enemyHealth,
+          turnsToDefeat,
+          playerDamagePerTurn,
+          damageTaken,
           attempted: true,
           events: enemyEvents,
         });
@@ -1414,6 +1831,46 @@ export const mockGameService: GameService = {
     const clearNormal = phaseResults.find((phase) => phase.phase === "normal")?.success ?? true;
     const clearSubBoss = phaseResults.find((phase) => phase.phase === "subBoss")?.success ?? true;
     const clearBoss = phaseResults.find((phase) => phase.phase === "boss")?.success ?? true;
+    const poisonPressureTriggered = encounterLog.some(
+      (entry) =>
+        entry.phase === "normal" &&
+        entry.events.some(
+          (event) =>
+            !event.countered &&
+            event.mechanic.toLowerCase().includes("poison bite"),
+        ),
+    );
+    const disciplinedPreparation =
+      floor.floorNumber === 1 &&
+      (committedItems?.["antitoxin-vial"] ?? 0) >= 1 &&
+      (committedItems?.torch ?? 0) >= 1 &&
+      !poisonPressureTriggered;
+    const conditionalEncounter =
+      floor.floorNumber === 1 && clearNormal && (poisonPressureTriggered || disciplinedPreparation)
+        ? {
+                id: "tower-floor1-lyra-intercept",
+                npcName: "Lyra Ashstep",
+                npcTitle: "Ember Scout",
+                classId: "ranger" as const,
+                avatarId: "ranger-3" as const,
+                contactStyle: poisonPressureTriggered ? ("rescued" as const) : ("disciplined" as const),
+                triggerPhase: "normal" as const,
+                message:
+                  poisonPressureTriggered
+                    ? "Lyra intercepts your climb: \"You are carrying poison stress from the first wave. I can keep the ash from finishing what your prep started if you listen now.\""
+                    : "Lyra steps out of the ash with a thin, approving smile: \"You brought the right counters before the Tower forced them into your blood. Few novices do that. Want the cleaner route?\"",
+                acceptLabel: "Take Lyra's Advice",
+                declineLabel: "Push On Alone",
+                acceptOutcome:
+                  poisonPressureTriggered
+                    ? "Lyra marks a safer line through the ruins and steadies the climb before your early mistakes cost more."
+                    : "Lyra marks a cleaner ember line through the ruins, rewarding the discipline you already showed.",
+                declineOutcome:
+                  poisonPressureTriggered
+                    ? "You ignore the warning and continue with the ash still remembering your mistake."
+                    : "You turn down the scout line and continue on your own, even after earning Lyra's respect.",
+              }
+            : undefined;
     const success = runningHealth > 0;
     const pendingAbilityIds = character.pendingAbilityIds ?? (character.pendingAbilityId ? [character.pendingAbilityId] : []);
     const pendingAbilities = pendingAbilityIds
@@ -1448,6 +1905,12 @@ export const mockGameService: GameService = {
       let failCharacter: CharacterState = {
         ...baseCharacter,
         inventory: nextInventory,
+        knownTowerEnemyIds: Array.from(
+          new Set([
+            ...(baseCharacter.knownTowerEnemyIds ?? []),
+            ...encounterLog.map((entry) => entry.enemyId).filter((enemyId): enemyId is string => Boolean(enemyId)),
+          ]),
+        ),
         health: runningHealth,
       };
       const consumedLabel =
@@ -1456,7 +1919,7 @@ export const mockGameService: GameService = {
           : "";
       let failSummary = `${consumedLabel}Floor ${floor.floorNumber} failed at ${failedPhase}. Improve prep supplies and counter mechanics.`;
       if (failCharacter.health <= 0) {
-        failSummary += " You collapsed at 0 HP and need revival from the Guild NPC.";
+        failSummary += " The tower cast you out at the brink of death. Restore your being with the Archmage before returning.";
       }
       return {
         ok: true,
@@ -1473,6 +1936,7 @@ export const mockGameService: GameService = {
           mechanicEvents,
           supplyUsage,
           phaseResults,
+          conditionalEncounter,
           summary: failSummary,
         },
       };
@@ -1512,6 +1976,12 @@ export const mockGameService: GameService = {
       focusCap: nextFocusCap,
       focus: Math.min(baseCharacter.focus, nextFocusCap),
       inventory: nextInventory,
+      knownTowerEnemyIds: Array.from(
+        new Set([
+          ...(baseCharacter.knownTowerEnemyIds ?? []),
+          ...encounterLog.map((entry) => entry.enemyId).filter((enemyId): enemyId is string => Boolean(enemyId)),
+        ]),
+      ),
       towerProgress: {
         highestFloorCleared: Math.max(
           baseCharacter.towerProgress?.highestFloorCleared ?? 0,
@@ -1525,7 +1995,7 @@ export const mockGameService: GameService = {
         : "";
     let successSummary = `${consumedLabel}Floor ${floor.floorNumber} conquered through all encounter phases.`;
     if (nextCharacter.health <= 0) {
-      successSummary += " You cleared the floor but collapsed at 0 HP. Visit Guild NPC for revival.";
+      successSummary += " You cleared the floor but the tower cast you out before your final breath. Restore your being with the Archmage.";
     }
 
     return {
@@ -1545,6 +2015,7 @@ export const mockGameService: GameService = {
         mechanicEvents,
         supplyUsage,
         phaseResults,
+        conditionalEncounter,
         summary: successSummary,
       },
     };

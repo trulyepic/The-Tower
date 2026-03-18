@@ -680,8 +680,10 @@ const styles = StyleSheet.create({
   titlePlate: {
     height: 54,
     width: "100%",
+    maxWidth: 1180,
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "center",
   },
   title: {
     color: "#fff0ce",
@@ -698,6 +700,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(34,26,46,0.95)",
     padding: 10,
     gap: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   heroGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -742,6 +747,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(31, 73, 34, 0.9)",
     paddingHorizontal: 10,
     paddingVertical: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   noticeText: {
     color: "#ecffd2",
@@ -755,6 +763,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(36, 28, 49, 0.96)",
     padding: 10,
     gap: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   sectionHeadRow: {
     flexDirection: "row",

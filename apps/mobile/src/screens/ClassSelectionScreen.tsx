@@ -217,6 +217,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   kicker: {
     color: "#b8a17a",
@@ -279,6 +282,9 @@ const styles = StyleSheet.create({
     gap: 8,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   cardGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -311,6 +317,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   sectionTitle: {
     color: colors.textPrimary,
@@ -340,6 +349,9 @@ const styles = StyleSheet.create({
   },
   classGrid: {
     gap: 10,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   classCard: {
     borderRadius: 16,
@@ -472,6 +484,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(48, 35, 21, 0.95)",
     paddingHorizontal: 12,
     paddingVertical: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   selectionHintText: {
     color: colors.textSecondary,
@@ -499,8 +514,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   actionWrap: {
-    alignSelf: "stretch",
     width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   createButtonDisabled: {
     opacity: 0.45,

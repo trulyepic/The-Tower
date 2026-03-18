@@ -22,12 +22,139 @@ export type ItemRarity = "common" | "rare" | "epic" | "legendary";
 export type ItemCategory = "material" | "weapon" | "buff";
 export type QuestType = "gather" | "adventure" | "dungeon";
 export type RescueNpcStatus = "locked" | "available" | "refused_once" | "accepted" | "gone";
+export type LyraQuestStatus = "locked" | "available" | "completed";
+export type LyraQuestResolution = "none" | "unresolved" | "returned" | "kept" | "reported";
+export type LyraContactStyle = "rescued" | "disciplined";
+export type MainQuestStageId =
+  | "mq-guild-banner"
+  | "mq-ashen-threshold"
+  | "mq-lyra-contact"
+  | "mq-ember-map"
+  | "mq-lyra-judgment"
+  | "mq-rank-e-ascent"
+  | "mq-thorn-corridor"
+  | "mq-beyond-beginnings";
 export type WarriorPathChoice = "knight" | "berserker";
+export type StoryCheckpointTrigger = "quest_clear" | "tower_clear" | "level_up";
+export type ClimberTrend = "up" | "down" | "steady";
+export type TowerWaveKey = "normal" | "subBoss" | "boss";
+
+export interface ClimberEntry {
+  id: string;
+  name: string;
+  classId: BaseClassId;
+  avatarId: AvatarId;
+  level: number;
+  floor: number;
+  trend: ClimberTrend;
+}
+
+export interface StoryNpcProfile {
+  id: string;
+  name: string;
+  title: string;
+  role: string;
+  level: number;
+  floorReached: number;
+  avatarId: AvatarId;
+  classId: BaseClassId;
+  sequenceId: number;
+  department: "story";
+  licenseLabel: string;
+  authBody: string;
+  signature: string;
+  summary?: string;
+  avatarOverride?: ImageSourcePropType;
+}
+
+export interface FloorEncounterBonusState {
+  encounterId: string;
+  floorNumber: number;
+  attemptNumber: number;
+  towerSuccessFlat: number;
+}
+
+export interface FloorEncounterEventDefinition {
+  id: string;
+  floorNumber: number;
+  npcName: string;
+  npcTitle: string;
+  classId: BaseClassId;
+  avatarId: AvatarId;
+  line: string;
+  acceptLine: string;
+  declineLine: string;
+  recurrenceEveryAttempts: number;
+  firstAttempt: number;
+  towerSuccessFlat: number;
+}
 
 export interface StoryState {
   rescueNpcStatus: RescueNpcStatus;
   rescueNpcUnreadCount: number;
+  npcDispositionById: Record<string, number>;
+  npcInteractionCountById: Record<string, number>;
+  lyraMet: boolean;
+  lyraTrust: number;
+  lyraHelpAccepted: number;
+  lyraHelpDeclined: number;
+  lyraQuestStatus: LyraQuestStatus;
+  lyraQuestResolution: LyraQuestResolution;
+  lyraFirstContactStyle?: LyraContactStyle;
+  lyraAshDebt: boolean;
+  mainQuestStageId: MainQuestStageId;
+  mainQuestLog: MainQuestLogEntry[];
+  mainQuestUnreadCount: number;
   warriorPathGuideNoticeShown?: boolean;
+  climberRivals: ClimberEntry[];
+  lastLeaderboardRank?: number;
+  floorAttemptByNumber: Record<string, number>;
+  floorEncounterProgressById: Record<
+    string,
+    {
+      seen: number;
+      accepted: number;
+      declined: number;
+    }
+  >;
+  floorEncounterDecisionByAttempt: Record<string, "accepted" | "declined">;
+  activeFloorEncounterBonus: FloorEncounterBonusState | null;
+  encounteredNpcProfiles: StoryNpcProfile[];
+  nextStoryNpcSequence: number;
+}
+
+export interface MainQuestLogEntry {
+  id: string;
+  stageId: MainQuestStageId;
+  chapter: string;
+  title: string;
+  message: string;
+  icon: keyof typeof import("@expo/vector-icons").MaterialCommunityIcons.glyphMap;
+  loggedAtMs: number;
+}
+
+export interface MainQuestObjective {
+  id: string;
+  label: string;
+  detail: string;
+  done: boolean;
+  icon: keyof typeof import("@expo/vector-icons").MaterialCommunityIcons.glyphMap;
+}
+
+export interface MainQuestTracker {
+  stageId: MainQuestStageId;
+  chapter: string;
+  title: string;
+  summary: string;
+  currentDirective: string;
+  stakes: string;
+  icon: keyof typeof import("@expo/vector-icons").MaterialCommunityIcons.glyphMap;
+  accent: string;
+  progressIndex: number;
+  totalStages: number;
+  objectives: MainQuestObjective[];
+  notificationTitle: string;
+  notificationMessage: string;
 }
 
 export interface HelpfulNpcAlly {
@@ -106,6 +233,7 @@ export interface CharacterState {
   focus: number;
   focusCap: number;
   focusLastTickAtMs: number;
+  noviceEmergencyReviveAvailableAtMs: number;
   adventurerRank: AdventurerRank;
   equippedWeaponId: ItemId | null;
   ownedTitleIds: TitleId[];
@@ -123,6 +251,9 @@ export interface CharacterState {
   equippedPassiveAbilityIds?: AbilityId[];
   affinity: number;
   inventory: Record<ItemId, number>;
+  knownTowerEnemyIds?: string[];
+  appraisedItemIds?: ItemId[];
+  purchasedFloorIntelNumbers?: number[];
   alliedNpcIds?: string[];
   towerProgress: {
     highestFloorCleared: number;
@@ -197,6 +328,7 @@ export interface StoryNotification {
   id: string;
   title: string;
   message: string;
+  variant?: "guild" | "leaderboard" | "tower-collapse" | "main-quest";
 }
 
 export interface DailyTask {
@@ -211,9 +343,13 @@ export interface ItemDefinition {
   id: ItemId;
   name: string;
   description?: string;
+  lore?: string;
   icon: string;
   rarity: ItemRarity;
   category: ItemCategory;
+  isRemnant?: boolean;
+  requiresAppraisal?: boolean;
+  sellValue?: number;
   classRestriction?: BaseClassId;
   requiredLevel?: number;
   weaponStats?: {
@@ -231,7 +367,25 @@ export interface ItemDefinition {
   image?: ImageSourcePropType;
 }
 
+export interface CraftRecipeDefinition {
+  id: string;
+  name: string;
+  description: string;
+  unlockLevel?: number;
+  unlockRank?: AdventurerRank;
+  unlockFloorCleared?: number;
+  output: {
+    itemId: ItemId;
+    amount: number;
+  };
+  ingredients: Array<{
+    itemId: ItemId;
+    amount: number;
+  }>;
+}
+
 export interface QuestOutcome {
+  questId?: string;
   success: boolean;
   successChance: number;
   summary: string;
@@ -254,6 +408,7 @@ export interface TowerFloorDefinition {
   floorNumber: number;
   title: string;
   minLevel: number;
+  requiredRank?: AdventurerRank;
   staminaCost: number;
   baseSuccessChance: number;
   recommendedItems: {
@@ -293,7 +448,18 @@ export interface TowerEnemyUnit {
   icon: string;
   portrait?: number;
   description: string;
+  lore?: string;
+  weaknessNotes?: string[];
+  weaknessItemIds?: ItemId[];
   mechanics?: string[];
+}
+
+export interface FloorIntelDefinition {
+  floorNumber: number;
+  title: string;
+  price: number;
+  summary: string;
+  reveals: string[];
 }
 
 export interface TowerOutcome {
@@ -306,8 +472,15 @@ export interface TowerOutcome {
   emergencyReviveTriggered?: boolean;
   encounterLog?: {
     phase: "normal" | "subBoss" | "boss";
+    enemyId?: string;
     enemyName: string;
     enemyIcon: string;
+    enemyRole?: "normal" | "subBoss" | "boss";
+    enemyLevel?: number;
+    enemyHealth?: number;
+    turnsToDefeat?: number;
+    playerDamagePerTurn?: number;
+    damageTaken?: number;
     attempted: boolean;
     events: {
       mechanic: string;
@@ -339,6 +512,71 @@ export interface TowerOutcome {
     success: boolean;
     chance: number;
   }[];
+  conditionalEncounter?: {
+    id: string;
+    npcName: string;
+    npcTitle: string;
+    classId: BaseClassId;
+    avatarId: AvatarId;
+    contactStyle?: LyraContactStyle;
+    triggerPhase: "normal" | "subBoss" | "boss";
+    message: string;
+    acceptLabel: string;
+    declineLabel: string;
+    acceptOutcome: string;
+    declineOutcome: string;
+  };
+}
+
+export interface TowerWaveOutcome {
+  floorNumber: number;
+  wave: TowerWaveKey;
+  success: boolean;
+  healthDelta: number;
+  countered: number;
+  triggered: number;
+  summary: string;
+  lines: string[];
+  enemyBattles?: {
+    enemyId?: string;
+    enemyName: string;
+    enemyIcon: string;
+    enemyRole?: "normal" | "subBoss" | "boss";
+    enemyLevel: number;
+    enemyHealth: number;
+    turnsToDefeat: number;
+    playerDamagePerTurn: number;
+    damageTaken: number;
+    events: {
+      mechanic: string;
+      counterItemId?: ItemId;
+      countered: boolean;
+      resultText: string;
+      positive: boolean;
+      icon: string;
+    }[];
+  }[];
+  statusEffects?: {
+    id: string;
+    name: string;
+    icon: string;
+    tone: "good" | "bad" | "neutral";
+    detail: string;
+  }[];
+  conditionalEncounter?: {
+    id: string;
+    npcName: string;
+    npcTitle: string;
+    classId: BaseClassId;
+    avatarId: AvatarId;
+    contactStyle?: LyraContactStyle;
+    triggerPhase: "normal" | "subBoss" | "boss";
+    message: string;
+    acceptLabel: string;
+    declineLabel: string;
+    acceptOutcome: string;
+    declineOutcome: string;
+  };
 }
 
 export interface RankUpTrialDefinition {

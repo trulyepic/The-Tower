@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { ABILITY_BY_ID } from "../data/abilities";
 import { BASE_CLASSES } from "../data/classes";
+import { CRAFT_RECIPES } from "../data/crafting";
 import { INITIAL_DAILIES } from "../data/dailies";
+import { FLOOR_ENCOUNTER_EVENTS, INITIAL_RIVAL_CLIMBERS } from "../data/floorStory";
 import { getGuildMasterForRank } from "../data/guild";
 import { ITEM_BY_ID } from "../data/items";
+import { deriveMainQuestTracker } from "../data/mainQuest";
 import { QUESTS } from "../data/quests";
 import { RANK_UP_TRIALS } from "../data/rankTrials";
 import { getMaxRankForLevel, getRankOrderIndex } from "../data/rankProgression";
@@ -45,27 +48,108 @@ import {
   DailyTask,
   ItemId,
   HelpfulNpcAlly,
+  MainQuestTracker,
   QuestOutcome,
   QuestDefinition,
   RankUpOutcome,
   RankUpTrialDefinition,
   RescueNpcStatus,
+  ClimberEntry,
+  FloorEncounterEventDefinition,
+  StoryCheckpointTrigger,
+  StoryNpcProfile,
   StoryNotification,
   StoryState,
+  TowerWaveKey,
+  TowerWaveOutcome,
   TowerFloorDefinition,
   TowerOutcome,
 } from "../types/game";
 
 const STAMINA_REGEN_INTERVAL_MS = 5 * 60 * 1000;
 const STAMINA_REGEN_TICK_MS = 30 * 1000;
+const NOVICE_EMERGENCY_REVIVE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const RESCUE_QUEST_ID = "quest-aldric-child-rescue";
+const LYRA_QUEST_ID = "quest-lyra-ember-maps";
+const FLOOR_INTEL_QUEST_UNLOCKS: Partial<Record<string, number>> = {
+  "gather-shrine-wards": 1,
+  "gather-briar-resin": 2,
+};
+const FLOOR_INTEL_NPC_UNLOCKS: Partial<Record<string, number>> = {
+  [LYRA_QUEST_ID]: 1,
+};
+const LYRA_CONDITIONAL_ENCOUNTER_ID = "tower-floor1-lyra-intercept";
+const ALDRIC_NPC_ID = "npc-aldric-vale";
 const ALDRIC_ALLY_ID = "ally-aldric-vale";
 const MAX_EQUIPPED_PASSIVES = 2;
+const TOWER_USABLE_CONSUMABLE_IDS: ItemId[] = ["antitoxin-vial", "guard-tonic", "grounding-tonic"];
+
+const mergeTowerStatusEffects = (
+  current: NonNullable<TowerWaveOutcome["statusEffects"]>,
+  incoming: NonNullable<TowerWaveOutcome["statusEffects"]>,
+): NonNullable<TowerWaveOutcome["statusEffects"]> => {
+  const next = new Map(current.map((entry) => [entry.id, entry]));
+  for (const effect of incoming) {
+    next.set(effect.id, effect);
+  }
+  return Array.from(next.values());
+};
+
+const clearTowerStatusesForConsumable = (
+  current: NonNullable<TowerWaveOutcome["statusEffects"]>,
+  itemId: ItemId,
+): NonNullable<TowerWaveOutcome["statusEffects"]> => {
+  if (itemId === "antitoxin-vial") {
+    return current.filter((entry) => !entry.id.includes("poison") && !entry.name.toLowerCase().includes("poison"));
+  }
+  if (itemId === "guard-tonic") {
+    return current.filter(
+      (entry) =>
+        !entry.id.includes("stagger") &&
+        !entry.id.includes("overrun") &&
+        !entry.id.includes("guard-broken") &&
+        !entry.name.toLowerCase().includes("stagger") &&
+        !entry.name.toLowerCase().includes("overrun") &&
+        !entry.name.toLowerCase().includes("guard broken"),
+    );
+  }
+  if (itemId === "grounding-tonic") {
+    return current.filter(
+      (entry) =>
+        !entry.id.includes("shock") &&
+        !entry.id.includes("overcharged") &&
+        !entry.name.toLowerCase().includes("shock") &&
+        !entry.name.toLowerCase().includes("overcharged"),
+    );
+  }
+  return current;
+};
 
 const DEFAULT_STORY_STATE: StoryState = {
   rescueNpcStatus: "locked",
   rescueNpcUnreadCount: 0,
+  npcDispositionById: {},
+  npcInteractionCountById: {},
+  lyraMet: false,
+  lyraTrust: 0,
+  lyraHelpAccepted: 0,
+  lyraHelpDeclined: 0,
+  lyraQuestStatus: "locked",
+  lyraQuestResolution: "none",
+  lyraFirstContactStyle: undefined,
+  lyraAshDebt: false,
+  mainQuestStageId: "mq-guild-banner",
+  mainQuestLog: [],
+  mainQuestUnreadCount: 0,
   warriorPathGuideNoticeShown: false,
+  climberRivals: INITIAL_RIVAL_CLIMBERS,
+  lastLeaderboardRank: undefined,
+  floorAttemptByNumber: {},
+  floorEncounterProgressById: {},
+  floorEncounterDecisionByAttempt: {},
+  activeFloorEncounterBonus: null,
+  encounteredNpcProfiles: [],
+  nextStoryNpcSequence: 100,
 };
 
 const ALDRIC_ALLY_TEMPLATE = {
@@ -88,6 +172,116 @@ const RESCUE_REWARD_WEAPON_BY_CLASS: Record<BaseClassId, ItemId> = {
   warrior: "weapon-warrior-emberblade",
   ranger: "weapon-ranger-dawnhunt-spear",
   mage: "weapon-mage-veilbloom-staff",
+};
+const DOWNSTATE_HP = 1;
+
+const LYRA_PROFILE_BASE = {
+  id: LYRA_CONDITIONAL_ENCOUNTER_ID,
+  name: "Lyra Ashstep",
+  title: "Ember Scout",
+  role: "Ash-Route Scout",
+  level: 3,
+  floorReached: 1,
+  avatarId: "ranger-3" as const,
+  classId: "ranger" as const,
+  licenseLabel: "Field Scout License",
+  authBody: "Adventurers Guild • Unofficial Tower Field Log",
+  signature: "L.A.",
+  summary: "A lower-floor scout who appears only when the tower's ash lanes start drawing blood.",
+};
+
+const ALDRIC_PROFILE_BASE = {
+  id: ALDRIC_NPC_ID,
+  name: "Aldric Vale",
+  title: "Desperate Father",
+  role: "Guild Petitioning Adventurer",
+  level: 5,
+  floorReached: 0,
+  avatarId: "warrior-3" as const,
+  classId: "warrior" as const,
+  licenseLabel: "Adventurer License",
+  authBody: "Adventurers Guild • Petitioning Member",
+  signature: "A. Vale",
+  summary: "A father asking the guild for help after his daughter was taken by bandits beyond the safe roads.",
+};
+
+const getFloorAttemptNumber = (floorNumber: number, story: StoryState): number =>
+  (story.floorAttemptByNumber[String(floorNumber)] ?? 0) + 1;
+
+const getFloorEncounterDecisionKey = (encounterId: string, attemptNumber: number): string =>
+  `${encounterId}:${attemptNumber}`;
+
+const getAvailableFloorEncounter = (
+  floorNumber: number,
+  story: StoryState,
+): { encounter: FloorEncounterEventDefinition; attemptNumber: number } | null => {
+  const encounter = FLOOR_ENCOUNTER_EVENTS.find((entry) => entry.floorNumber === floorNumber);
+  if (!encounter) {
+    return null;
+  }
+  const attemptNumber = getFloorAttemptNumber(floorNumber, story);
+  if (attemptNumber < encounter.firstAttempt) {
+    return null;
+  }
+  const cycleOffset = attemptNumber - encounter.firstAttempt;
+  if (cycleOffset % Math.max(1, encounter.recurrenceEveryAttempts) !== 0) {
+    return null;
+  }
+  return { encounter, attemptNumber };
+};
+
+const updateRivalClimbersByTrigger = (
+  currentRivals: ClimberEntry[],
+  trigger: StoryCheckpointTrigger,
+): ClimberEntry[] => {
+  return currentRivals.map((rival) => {
+    const floorGainChance =
+      trigger === "tower_clear" ? 0.7 : trigger === "quest_clear" ? 0.45 : 0.35;
+    const levelGainChance =
+      trigger === "tower_clear" ? 0.55 : trigger === "quest_clear" ? 0.3 : 0.7;
+    const floorJump = Math.random() < floorGainChance ? (Math.random() < 0.2 ? 2 : 1) : 0;
+    const levelGain = Math.random() < levelGainChance ? 1 : 0;
+    const nextFloor = Math.max(1, Math.min(50, rival.floor + floorJump));
+    const nextLevel = Math.max(1, Math.min(100, rival.level + levelGain));
+    return {
+      ...rival,
+      floor: nextFloor,
+      level: nextLevel,
+      trend: nextFloor > rival.floor ? "up" : nextFloor < rival.floor ? "down" : "steady",
+    };
+  });
+};
+
+const upsertEncounteredStoryNpc = (
+  story: StoryState,
+  profile: Omit<StoryNpcProfile, "sequenceId" | "department"> & { sequenceId?: number },
+): Pick<StoryState, "encounteredNpcProfiles" | "nextStoryNpcSequence"> => {
+  const existingIndex = story.encounteredNpcProfiles.findIndex((entry) => entry.id === profile.id);
+  if (existingIndex >= 0) {
+    const nextProfiles = [...story.encounteredNpcProfiles];
+    nextProfiles[existingIndex] = {
+      ...nextProfiles[existingIndex],
+      ...profile,
+      department: "story",
+      sequenceId: nextProfiles[existingIndex].sequenceId,
+    };
+    return {
+      encounteredNpcProfiles: nextProfiles,
+      nextStoryNpcSequence: story.nextStoryNpcSequence,
+    };
+  }
+  const nextSequence = profile.sequenceId ?? story.nextStoryNpcSequence;
+  return {
+    encounteredNpcProfiles: [
+      ...story.encounteredNpcProfiles,
+      {
+        ...profile,
+        sequenceId: nextSequence,
+        department: "story",
+      },
+    ],
+    nextStoryNpcSequence: Math.max(story.nextStoryNpcSequence, nextSequence + 1),
+  };
 };
 
 const applyStaminaRegen = (character: CharacterState, nowMs: number): CharacterState => {
@@ -243,8 +437,23 @@ const normalizeAffinity = (character: CharacterState): CharacterState => ({
   affinity: Math.max(-100, Math.min(100, Math.round(character.affinity ?? 0))),
 });
 
+const normalizeKnownTowerIntel = (character: CharacterState): CharacterState => ({
+  ...character,
+  knownTowerEnemyIds: Array.from(new Set(character.knownTowerEnemyIds ?? [])),
+});
+
+const normalizeAppraisedItems = (character: CharacterState): CharacterState => ({
+  ...character,
+  appraisedItemIds: Array.from(new Set(character.appraisedItemIds ?? [])),
+  purchasedFloorIntelNumbers: Array.from(new Set(character.purchasedFloorIntelNumbers ?? [])),
+});
+
 const normalizeCharacterState = (character: CharacterState): CharacterState =>
-  normalizeAffinity(normalizeAbilityLoadout(normalizeTitleLoadout(normalizeRankForLevel(applyDerivedVitals(character)))));
+  normalizeAppraisedItems(
+    normalizeKnownTowerIntel(
+    normalizeAffinity(normalizeAbilityLoadout(normalizeTitleLoadout(normalizeRankForLevel(applyDerivedVitals(character))))),
+    ),
+  );
 
 export interface GameState {
   classes: BaseClassDefinition[];
@@ -257,6 +466,9 @@ export interface GameState {
   lastQuestOutcome: QuestOutcome | null;
   completedQuestCount: number;
   lastTowerOutcome: TowerOutcome | null;
+  lastTowerWaveOutcome: TowerWaveOutcome | null;
+  towerStatusEffects: NonNullable<TowerWaveOutcome["statusEffects"]>;
+  towerPreparedItemIds: ItemId[];
   lastRankUpOutcome: RankUpOutcome | null;
   levelUpEvent: {
     fromLevel: number;
@@ -280,7 +492,13 @@ export interface GameState {
     reason: string;
   } | null;
   storyState: StoryState;
+  mainQuestTracker: MainQuestTracker | null;
   storyNotification: StoryNotification | null;
+  encounteredNpcProfiles: StoryNpcProfile[];
+  climberLeaderboard: Array<ClimberEntry & { isPlayer?: boolean; rank: number }>;
+  activeFloorEncounter:
+    | { encounter: FloorEncounterEventDefinition; attemptNumber: number; decision?: "accepted" | "declined" }
+    | null;
   helpfulAllies: HelpfulNpcAlly[];
   isHydrated: boolean;
   currentGuildMasterName: string;
@@ -293,6 +511,12 @@ export interface GameState {
   resetGame: () => void;
   resetTowerProgress: () => void;
   devIncreaseLevel: () => { ok: boolean; reason?: string };
+  devRestoreAdventurer: () => { ok: boolean; reason?: string };
+  devFractureAdventurer: () => { ok: boolean; reason?: string };
+  devAdvanceTowerFloor: () => { ok: boolean; reason?: string };
+  devResetAppraisals: () => { ok: boolean; reason?: string };
+  devTriggerLyraQuest: () => { ok: boolean; reason?: string };
+  devTriggerAldricQuest: () => { ok: boolean; reason?: string };
   getQuestSuccessChance: (questId: string, committedItems?: Record<ItemId, number>) => number;
   getQuestAccess: (questId: string) => { allowed: boolean; reason?: string };
   getTowerSuccessChance: (floorNumber: number, committedItems?: Record<ItemId, number>) => number;
@@ -307,6 +531,9 @@ export interface GameState {
     classRestriction?: BaseClassId,
   ) => { ok: boolean; reason?: string };
   sellGuildItem: (itemId: ItemId, unitPrice: number, amount?: number) => { ok: boolean; reason?: string };
+  craftRecipe: (recipeId: string) => { ok: boolean; reason?: string };
+  appraiseItem: (itemId: ItemId) => { ok: boolean; reason?: string };
+  buyFloorIntel: (floorNumber: number, price: number) => { ok: boolean; reason?: string };
   requestGuildMageRecovery: () => { ok: boolean; reason?: string };
   equipWeapon: (itemId: ItemId) => { ok: boolean; reason?: string };
   unequipWeapon: () => { ok: boolean; reason?: string };
@@ -320,15 +547,35 @@ export interface GameState {
   deactivateClassAbility: (abilityId?: ItemId) => { ok: boolean; reason?: string };
   useSkillResourceItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
+  useTowerConsumableItem: (itemId: ItemId) => { ok: boolean; reason?: string };
   startQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   claimQuest: () => { ok: boolean; reason?: string };
+  resolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
   conquerTowerFloor: (floorNumber: number, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
+  resolveTowerWave: (
+    floorNumber: number,
+    wave: TowerWaveKey,
+    committedItems?: Record<ItemId, number>,
+  ) => { ok: boolean; reason?: string; outcome?: TowerWaveOutcome };
+  finalizeTowerFloor: (floorNumber: number) => { ok: boolean; reason?: string };
   attemptRankUp: (committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   clearLevelUpEvent: () => void;
   clearLevelDownEvent: () => void;
   dismissStoryNotification: () => void;
+  markMainQuestViewed: () => void;
+  recordNpcInteraction: (npcId: string, dispositionDelta?: number, interactionDelta?: number) => void;
   markNpcTabOpened: () => void;
   respondRescueNpcRequest: (accept: boolean) => { ok: boolean; reason?: string; status?: RescueNpcStatus };
+  respondFloorEncounter: (
+    floorNumber: number,
+    encounterId: string,
+    accept: boolean,
+  ) => { ok: boolean; reason?: string };
+  respondTowerConditionalEncounter: (
+    encounterId: string,
+    accept: boolean,
+    contactStyle?: "rescued" | "disciplined",
+  ) => { ok: boolean; reason?: string };
 }
 
 export const useGameState = (): GameState => {
@@ -344,6 +591,9 @@ export const useGameState = (): GameState => {
   const [dailies, setDailies] = useState<DailyTask[]>(INITIAL_DAILIES);
   const [completedQuestCount, setCompletedQuestCount] = useState(0);
   const [lastTowerOutcome, setLastTowerOutcome] = useState<TowerOutcome | null>(null);
+  const [lastTowerWaveOutcome, setLastTowerWaveOutcome] = useState<TowerWaveOutcome | null>(null);
+  const [towerStatusEffects, setTowerStatusEffects] = useState<NonNullable<TowerWaveOutcome["statusEffects"]>>([]);
+  const [towerPreparedItemIds, setTowerPreparedItemIds] = useState<ItemId[]>([]);
   const [lastRankUpOutcome, setLastRankUpOutcome] = useState<RankUpOutcome | null>(null);
   const [levelUpEvent, setLevelUpEvent] = useState<GameState["levelUpEvent"]>(null);
   const [levelDownEvent, setLevelDownEvent] = useState<GameState["levelDownEvent"]>(null);
@@ -351,6 +601,17 @@ export const useGameState = (): GameState => {
   const [storyNotification, setStoryNotification] = useState<StoryNotification | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
   const currentGuildMaster = getGuildMasterForRank(character?.adventurerRank);
+  const mainQuestTracker = useMemo(
+    () =>
+      character
+        ? deriveMainQuestTracker({
+            character,
+            completedQuestCount,
+            storyState,
+          })
+        : null,
+    [character, completedQuestCount, storyState],
+  );
 
   const captureLevelUpEvent = (previous: CharacterState | null, next: CharacterState | null) => {
     if (!previous || !next) {
@@ -371,6 +632,7 @@ export const useGameState = (): GameState => {
         vitality: after.vitality - before.vitality,
       },
     });
+    applyClimberCheckpointUpdate("level_up", next);
   };
   const captureLevelDownEvent = (previous: CharacterState | null, next: CharacterState | null, reason: string) => {
     if (!previous || !next) {
@@ -391,6 +653,58 @@ export const useGameState = (): GameState => {
         vitality: Math.max(0, before.vitality - after.vitality),
       },
       reason,
+    });
+  };
+
+  const applyClimberCheckpointUpdate = (
+    trigger: StoryCheckpointTrigger,
+    nextCharacter: CharacterState,
+  ) => {
+    let summary = "";
+    setStoryState((current) => {
+      const nextRivals = updateRivalClimbersByTrigger(current.climberRivals, trigger);
+      const leaderboard = [
+        ...nextRivals.map((entry) => ({ ...entry, isPlayer: false })),
+        {
+          id: "player",
+          name: nextCharacter.name,
+          classId: nextCharacter.classId,
+          avatarId: nextCharacter.avatarId,
+          level: nextCharacter.progression.level,
+          floor: nextCharacter.towerProgress?.highestFloorCleared ?? 0,
+          trend: "steady" as const,
+          isPlayer: true,
+        },
+      ].sort((a, b) => {
+        if (b.floor !== a.floor) {
+          return b.floor - a.floor;
+        }
+        if (b.level !== a.level) {
+          return b.level - a.level;
+        }
+        return a.name.localeCompare(b.name);
+      });
+      const nextRank = leaderboard.findIndex((entry) => entry.isPlayer) + 1;
+      const previousRank = current.lastLeaderboardRank ?? nextRank;
+      const movedUp = nextRank < previousRank;
+      const movedDown = nextRank > previousRank;
+      if (movedUp) {
+        summary = `Leaderboard updated: you climbed to #${nextRank}.`;
+      } else if (movedDown) {
+        summary = `Leaderboard updated: you slipped to #${nextRank}.`;
+      } else {
+        summary = `Leaderboard updated: holding position #${nextRank}.`;
+      }
+      return {
+        ...current,
+        climberRivals: nextRivals,
+        lastLeaderboardRank: nextRank,
+      };
+    });
+    setStoryNotification({
+      id: `climber-${trigger}-${Date.now()}`,
+      title: "Climber Board Update",
+      message: summary,
     });
   };
 
@@ -424,6 +738,7 @@ export const useGameState = (): GameState => {
                 {},
               pausedBuffRemainingMs: state.character.pausedBuffRemainingMs ?? {},
               inventory: state.character.inventory ?? {},
+              knownTowerEnemyIds: state.character.knownTowerEnemyIds ?? [],
               towerProgress: state.character.towerProgress ?? { highestFloorCleared: 0 },
               health: state.character.health ?? 100,
               healthCap: state.character.healthCap ?? 100,
@@ -431,6 +746,7 @@ export const useGameState = (): GameState => {
               focus: state.character.focus ?? 12,
               focusCap: state.character.focusCap ?? 12,
               focusLastTickAtMs: state.character.focusLastTickAtMs ?? Date.now(),
+              noviceEmergencyReviveAvailableAtMs: state.character.noviceEmergencyReviveAvailableAtMs ?? 0,
               pendingAbilityId: state.character.pendingAbilityId ?? null,
               pendingAbilityIds:
                 state.character.pendingAbilityIds ??
@@ -509,10 +825,11 @@ export const useGameState = (): GameState => {
       return;
     }
 
-    setStoryState({
+    setStoryState((current) => ({
+      ...current,
       rescueNpcStatus: "available",
       rescueNpcUnreadCount: 1,
-    });
+    }));
     setStoryNotification({
       id: "npc-rescue-intro",
       title: "Guild Notice",
@@ -541,6 +858,100 @@ export const useGameState = (): GameState => {
   }, [isHydrated, character, storyState.warriorPathGuideNoticeShown]);
 
   useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
+    if (!storyState.lyraMet || storyState.lyraQuestStatus !== "locked") {
+      return;
+    }
+    if (storyState.lyraHelpAccepted > 0 || storyState.lyraHelpDeclined < 1) {
+      return;
+    }
+    if (completedQuestCount < 2) {
+      return;
+    }
+
+    setStoryState((current) => ({
+      ...current,
+      lyraQuestStatus: "available",
+      lyraQuestResolution: "none",
+      lyraTrust: Math.max(current.lyraTrust, 1),
+      npcDispositionById: {
+        ...current.npcDispositionById,
+        [LYRA_CONDITIONAL_ENCOUNTER_ID]: Math.max(
+          0,
+          Math.min(100, (current.npcDispositionById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 34) + 8),
+        ),
+      },
+      npcInteractionCountById: {
+        ...current.npcInteractionCountById,
+        [LYRA_CONDITIONAL_ENCOUNTER_ID]: (current.npcInteractionCountById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 0) + 1,
+      },
+    }));
+    setStoryNotification((current) =>
+      current?.id === "lyra-quest-reconcile"
+        ? current
+        : {
+            id: "lyra-quest-reconcile",
+            title: "Ash Marks Reappear",
+            message:
+              "Though you refused her once, Lyra has left another quiet posting. Your recent work proved you may still be worth trusting.",
+            variant: "guild",
+          },
+    );
+  }, [
+    isHydrated,
+    character,
+    completedQuestCount,
+    storyState.lyraMet,
+    storyState.lyraQuestStatus,
+    storyState.lyraHelpAccepted,
+    storyState.lyraHelpDeclined,
+  ]);
+
+  useEffect(() => {
+    if (!isHydrated || !character || !mainQuestTracker) {
+      return;
+    }
+    if (storyState.mainQuestStageId === mainQuestTracker.stageId && storyState.mainQuestLog.length > 0) {
+      return;
+    }
+
+    const logEntry = {
+      id: `main-quest-${mainQuestTracker.stageId}`,
+      stageId: mainQuestTracker.stageId,
+      chapter: mainQuestTracker.chapter,
+      title: mainQuestTracker.title,
+      message: mainQuestTracker.currentDirective,
+      icon: mainQuestTracker.icon,
+      loggedAtMs: Date.now(),
+    };
+
+    setStoryState((current) => {
+      if (current.mainQuestStageId === mainQuestTracker.stageId && current.mainQuestLog.length > 0) {
+        return current;
+      }
+      return {
+        ...current,
+        mainQuestStageId: mainQuestTracker.stageId,
+        mainQuestLog: [logEntry, ...current.mainQuestLog.filter((entry) => entry.stageId !== mainQuestTracker.stageId)].slice(0, 12),
+        mainQuestUnreadCount: current.mainQuestUnreadCount + 1,
+      };
+    });
+
+    setStoryNotification((current) =>
+      current
+        ? current
+        : {
+            id: `main-quest-notice-${mainQuestTracker.stageId}`,
+            title: mainQuestTracker.notificationTitle,
+            message: mainQuestTracker.notificationMessage,
+            variant: "main-quest",
+          },
+    );
+  }, [isHydrated, character, mainQuestTracker, storyState.mainQuestLog.length, storyState.mainQuestStageId]);
+
+  useEffect(() => {
     if (!isHydrated) {
       return;
     }
@@ -562,6 +973,9 @@ export const useGameState = (): GameState => {
     setActiveQuest(null);
     setLastQuestOutcome(null);
     setLastTowerOutcome(null);
+    setLastTowerWaveOutcome(null);
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
     setLastRankUpOutcome(null);
     setLevelUpEvent(null);
     setLevelDownEvent(null);
@@ -576,7 +990,16 @@ export const useGameState = (): GameState => {
     setCharacter((current) =>
       current ? normalizeCharacterState({ ...current, towerProgress: { highestFloorCleared: 0 } }) : current,
     );
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
+    setStoryState((current) => ({
+      ...current,
+      floorAttemptByNumber: {},
+      floorEncounterDecisionByAttempt: {},
+      activeFloorEncounterBonus: null,
+    }));
     setLastTowerOutcome(null);
+    setLastTowerWaveOutcome(null);
   };
 
   const devIncreaseLevel = () => {
@@ -612,6 +1035,137 @@ export const useGameState = (): GameState => {
     return { ok: true, reason: `Dev level increased: ${currentCharacter.progression.level} -> ${nextLevel}` };
   };
 
+  const devRestoreAdventurer = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        health: currentCharacter.healthCap,
+        stamina: currentCharacter.staminaCap,
+        focus: currentCharacter.focusCap,
+      }),
+    );
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
+    return { ok: true, reason: "Dev restore applied: HP, stamina, and focus refilled." };
+  };
+
+  const devFractureAdventurer = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    setCharacter(normalizeCharacterState({ ...currentCharacter, health: DOWNSTATE_HP }));
+    setStoryNotification({
+      id: `story-dev-fracture-${Date.now()}`,
+      title: "The Tower Casts You Out",
+      message: "Your being has been forced into a fractured state for testing. Visit the Archmage to restore it.",
+      variant: "tower-collapse",
+    });
+    return { ok: true, reason: "Dev fracture applied. Adventurer set to fractured state." };
+  };
+
+  const devAdvanceTowerFloor = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const currentCleared = currentCharacter.towerProgress?.highestFloorCleared ?? 0;
+    const nextCleared = Math.min(TOWER_FLOORS.length, currentCleared + 1);
+    if (nextCleared === currentCleared) {
+      return { ok: false, reason: "Tower already at max implemented floor." };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        towerProgress: { highestFloorCleared: nextCleared },
+      }),
+    );
+    setLastTowerOutcome(null);
+    setLastTowerWaveOutcome(null);
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
+    return { ok: true, reason: `Dev tower advance applied. Highest cleared floor is now ${nextCleared}.` };
+  };
+
+  const devTriggerLyraQuest = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setStoryState((current) => {
+      const npcState = upsertEncounteredStoryNpc(current, {
+        ...LYRA_PROFILE_BASE,
+      });
+      return {
+        ...current,
+        ...npcState,
+        lyraMet: true,
+        lyraTrust: Math.max(current.lyraTrust, 18),
+        lyraHelpAccepted: Math.max(current.lyraHelpAccepted, 1),
+        lyraQuestStatus: current.lyraQuestStatus === "completed" ? "completed" : "available",
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [LYRA_CONDITIONAL_ENCOUNTER_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 58))),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [LYRA_CONDITIONAL_ENCOUNTER_ID]: Math.max(1, current.npcInteractionCountById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 0),
+        },
+      };
+    });
+    setStoryNotification({
+      id: `story-dev-lyra-${Date.now()}`,
+      title: "Lyra Thread Opened",
+      message: "Lyra Ashstep has been added to the guild records and her current quest is now available for testing.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Lyra trigger applied. Lyra's quest is available." };
+  };
+
+  const devTriggerAldricQuest = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setStoryState((current) => {
+      const npcState = upsertEncounteredStoryNpc(current, {
+        ...ALDRIC_PROFILE_BASE,
+      });
+      return {
+        ...current,
+        ...npcState,
+        rescueNpcStatus: current.rescueNpcStatus === "accepted" ? "accepted" : "available",
+        rescueNpcUnreadCount: 1,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [ALDRIC_NPC_ID]: Math.max(0, Math.min(100, current.npcDispositionById[ALDRIC_NPC_ID] ?? 42)),
+        },
+      };
+    });
+    setStoryNotification({
+      id: `story-dev-aldric-${Date.now()}`,
+      title: "Guild Petition Added",
+      message: "Aldric Vale is now waiting in the guild hall so his rescue quest can be tested.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Aldric trigger applied. His guild petition is available." };
+  };
+
+  const devResetAppraisals = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        appraisedItemIds: [],
+      }),
+    );
+    return { ok: true, reason: "All appraisals cleared for testing." };
+  };
+
   const createCharacter = (name: string, avatarId: AvatarId) => {
     if (!selectedClass || character) {
       return;
@@ -619,6 +1173,11 @@ export const useGameState = (): GameState => {
 
     const nextSequence = (classSequenceByClass[selectedClass] ?? 0) + 1;
     const created = mockGameService.createCharacter(name, selectedClass, avatarId, nextSequence);
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
+    setLastTowerOutcome(null);
+    setLastTowerWaveOutcome(null);
+    setStoryNotification(null);
     setCharacter(normalizeCharacterState(created));
     setClassSequenceByClass((current) => ({ ...current, [selectedClass]: nextSequence }));
   };
@@ -701,10 +1260,23 @@ export const useGameState = (): GameState => {
 
   const availableQuests = useMemo(
     () =>
-      QUESTS.filter((quest) =>
-        quest.id === RESCUE_QUEST_ID ? storyState.rescueNpcStatus === "accepted" : true,
-      ),
-    [storyState.rescueNpcStatus],
+      character
+        ? QUESTS.filter((quest) => {
+            const playerRankIndex = getRankOrderIndex(character.adventurerRank);
+            const questRankIndex = getRankOrderIndex(quest.rank);
+            if (questRankIndex > playerRankIndex) {
+              return false;
+            }
+            if (quest.id === RESCUE_QUEST_ID) {
+              return storyState.rescueNpcStatus === "accepted";
+            }
+            if (quest.id === LYRA_QUEST_ID) {
+              return storyState.lyraQuestStatus === "available";
+            }
+            return true;
+          })
+        : [],
+    [character, storyState.rescueNpcStatus, storyState.lyraQuestStatus],
   );
 
   const startQuest = (questId: string, committedItems?: Record<ItemId, number>) => {
@@ -758,6 +1330,8 @@ export const useGameState = (): GameState => {
     let nextCharacter = result.character;
     let nextOutcome = result.outcome ?? null;
     let claimReason = result.outcome?.summary;
+    let grantedFloorIntel: number | null = null;
+    let floorIntelSource = "";
     if (result.outcome?.success && activeQuest?.questId === RESCUE_QUEST_ID) {
       const alreadyAllied = (nextCharacter.alliedNpcIds ?? []).includes(ALDRIC_ALLY_ID);
       if (!alreadyAllied) {
@@ -782,20 +1356,184 @@ export const useGameState = (): GameState => {
         claimReason = updatedSummary;
       }
     }
+    if (result.outcome?.success && activeQuest?.questId === LYRA_QUEST_ID) {
+      setStoryState((current) => {
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...LYRA_PROFILE_BASE,
+          summary: "Lyra waits to see what you do with the recovered ember satchel before deciding how far she can trust you.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          lyraQuestResolution: "unresolved",
+          lyraQuestStatus: "completed",
+        };
+      });
+    }
+    if (result.outcome?.success && activeQuest?.questId) {
+      const questIntelFloor = FLOOR_INTEL_QUEST_UNLOCKS[activeQuest.questId];
+      if (questIntelFloor && !(nextCharacter.purchasedFloorIntelNumbers ?? []).includes(questIntelFloor)) {
+        nextCharacter = normalizeCharacterState({
+          ...nextCharacter,
+          purchasedFloorIntelNumbers: [...(nextCharacter.purchasedFloorIntelNumbers ?? []), questIntelFloor],
+        });
+        grantedFloorIntel = questIntelFloor;
+        floorIntelSource = "board";
+      }
+    }
 
     captureLevelUpEvent(currentCharacter, nextCharacter);
     captureLevelDownEvent(currentCharacter, nextCharacter, "Rank trial penalty");
     setCharacter(normalizeCharacterState(nextCharacter));
     setDailies(result.dailies);
     if (nextOutcome) {
-      setLastQuestOutcome(nextOutcome);
+      setLastQuestOutcome({
+        ...nextOutcome,
+        questId: activeQuest?.questId,
+      });
     }
     if (result.outcome?.success) {
       setCompletedQuestCount((count) => count + 1);
+      applyClimberCheckpointUpdate("quest_clear", nextCharacter);
+      if (grantedFloorIntel !== null) {
+        setStoryNotification({
+          id: `floor-intel-quest-${activeQuest?.questId}-${grantedFloorIntel}`,
+          title: `Floor ${grantedFloorIntel} Intel Logged`,
+          message:
+            floorIntelSource === "board"
+              ? `Guild board records from ${quest?.title ?? "this contract"} have been copied into your ledger. Floor ${grantedFloorIntel} weaknesses, optional drops, and hidden aids are now documented.`
+              : `New field notes have been added to your guild ledger for Floor ${grantedFloorIntel}.`,
+          variant: "guild",
+        });
+        claimReason = `${claimReason ?? "Quest cleared."} Floor ${grantedFloorIntel} intel was added to your guild ledger.`;
+      }
     }
     setActiveQuest(null);
     setLastRankUpOutcome(null);
     return { ok: true, reason: claimReason };
+  };
+
+  const resolveLyraQuestChoice = (choice: "returned" | "kept" | "reported") => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (storyState.lyraQuestStatus !== "completed" || storyState.lyraQuestResolution !== "unresolved") {
+      return { ok: false, reason: "Lyra has no unresolved request right now." };
+    }
+
+    let dispositionDelta = 0;
+    let trustDelta = 0;
+    let summary = "";
+    let notificationTitle = "";
+    let notificationBody = "";
+    let nextCharacter = character;
+    const ashDebt = storyState.lyraAshDebt;
+    let grantedFloorIntel: number | null = null;
+
+    if (choice === "returned") {
+      dispositionDelta = ashDebt ? 12 : 16;
+      trustDelta = ashDebt ? 1 : 2;
+      nextCharacter = normalizeCharacterState({
+        ...character,
+        inventory: {
+          ...character.inventory,
+          "ward-charm": (character.inventory["ward-charm"] ?? 0) + 1,
+        },
+      });
+      summary = ashDebt
+        ? "You returned the satchel unopened. Lyra accepts the restraint, though the ash-debt between you only begins to cool rather than vanish."
+        : "You returned the satchel unopened. Lyra accepts the restraint and leaves you a Warding Seal in silent thanks.";
+      notificationTitle = "Lyra Accepts Your Restraint";
+      notificationBody = ashDebt
+        ? "You returned the satchel untouched. Lyra acknowledges the restraint, but she has not forgotten that your first meeting began as a rescue."
+        : "You returned the satchel untouched. Lyra now sees you as someone who can hold dangerous truth without grabbing for it.";
+      const intelFloor = FLOOR_INTEL_NPC_UNLOCKS[LYRA_QUEST_ID];
+      if (intelFloor && !(nextCharacter.purchasedFloorIntelNumbers ?? []).includes(intelFloor)) {
+        nextCharacter = normalizeCharacterState({
+          ...nextCharacter,
+          purchasedFloorIntelNumbers: [...(nextCharacter.purchasedFloorIntelNumbers ?? []), intelFloor],
+        });
+        grantedFloorIntel = intelFloor;
+      }
+    } else if (choice === "kept") {
+      dispositionDelta = ashDebt ? 5 : 8;
+      trustDelta = ashDebt ? 0 : 1;
+      nextCharacter = normalizeCharacterState({
+        ...character,
+        inventory: {
+          ...character.inventory,
+          "grounding-tonic": (character.inventory["grounding-tonic"] ?? 0) + 1,
+        },
+      });
+      summary = ashDebt
+        ? "You studied the satchel in secret. Lyra reads the caution, but the memory of dragging you out of a poisoned lane makes her slower to forgive."
+        : "You studied the satchel in secret and kept what you learned to yourself. Lyra senses the caution, but not full obedience.";
+      notificationTitle = "Lyra Notes Your Caution";
+      notificationBody = ashDebt
+        ? "You kept the maps and their secrets close. Lyra recognizes the instinct to survive, but the rescue still hangs between you."
+        : "You kept the maps and their secrets close. Lyra does not fully approve, but she recognizes your instinct to survive before speaking.";
+      const intelFloor = FLOOR_INTEL_NPC_UNLOCKS[LYRA_QUEST_ID];
+      if (intelFloor && !(nextCharacter.purchasedFloorIntelNumbers ?? []).includes(intelFloor)) {
+        nextCharacter = normalizeCharacterState({
+          ...nextCharacter,
+          purchasedFloorIntelNumbers: [...(nextCharacter.purchasedFloorIntelNumbers ?? []), intelFloor],
+        });
+        grantedFloorIntel = intelFloor;
+      }
+    } else {
+      dispositionDelta = ashDebt ? -24 : -18;
+      trustDelta = ashDebt ? -3 : -2;
+      nextCharacter = normalizeCharacterState({
+        ...character,
+        gold: character.gold + 18,
+      });
+      summary = ashDebt
+        ? "You reported the satchel to guild command. Lyra learns of it quickly, and the fact that she once had to pull you out of the ash only deepens the insult."
+        : "You reported the satchel to guild command. Lyra learns of it quickly and her trust hardens into distance.";
+      notificationTitle = "Word Reaches Lyra";
+      notificationBody = ashDebt
+        ? "Guild command now has a copy of the ember route report. Lyra will remember that she rescued you first and was repaid with exposure."
+        : "Guild command now has a copy of the ember route report. Lyra will remember who opened that door.";
+    }
+
+    setCharacter(nextCharacter);
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...LYRA_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        lyraTrust: Math.max(0, current.lyraTrust + trustDelta),
+        lyraQuestResolution: choice,
+        lyraAshDebt: choice === "returned" ? false : current.lyraAshDebt,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [LYRA_CONDITIONAL_ENCOUNTER_ID]: Math.max(
+            0,
+            Math.min(100, (current.npcDispositionById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 34) + dispositionDelta),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [LYRA_CONDITIONAL_ENCOUNTER_ID]: (current.npcInteractionCountById[LYRA_CONDITIONAL_ENCOUNTER_ID] ?? 0) + 1,
+        },
+      };
+    });
+    setStoryNotification({
+      id: `lyra-quest-complete-${choice}`,
+      title: notificationTitle,
+      message:
+        grantedFloorIntel !== null
+          ? `${notificationBody} Lyra's field notes also open your Floor ${grantedFloorIntel} intel ledger.`
+          : notificationBody,
+      variant: "guild",
+    });
+    return {
+      ok: true,
+      reason: grantedFloorIntel !== null ? `${summary} Floor ${grantedFloorIntel} intel was added to your guild ledger.` : summary,
+    };
   };
 
   const conquerTowerFloor = (floorNumber: number, committedItems?: Record<ItemId, number>) => {
@@ -804,11 +1542,20 @@ export const useGameState = (): GameState => {
       setCharacter(normalizeCharacterState(currentCharacter));
     }
     const floor = TOWER_FLOORS.find((item) => item.floorNumber === floorNumber);
+    const attemptNumber = getFloorAttemptNumber(floorNumber, storyState);
+    const activeEncounterBonus = storyState.activeFloorEncounterBonus;
+    const encounterBonusFlat =
+      activeEncounterBonus &&
+      activeEncounterBonus.floorNumber === floorNumber &&
+      activeEncounterBonus.attemptNumber === attemptNumber
+        ? activeEncounterBonus.towerSuccessFlat
+        : 0;
     const result = mockGameService.conquerTowerFloor({
       character: currentCharacter,
       dailies,
       floor,
       committedItems,
+      externalSuccessFlat: encounterBonusFlat,
     });
 
     if (!result.ok || !result.character || !result.dailies) {
@@ -820,7 +1567,120 @@ export const useGameState = (): GameState => {
     setDailies(result.dailies);
     setLastTowerOutcome(result.outcome ?? null);
     setLastRankUpOutcome(null);
+    setStoryState((current) => {
+      const conditionalEncounter = result.outcome?.conditionalEncounter;
+      const upserted = conditionalEncounter
+        ? upsertEncounteredStoryNpc(current, {
+            id: conditionalEncounter.id,
+            name: conditionalEncounter.npcName,
+            title: conditionalEncounter.npcTitle,
+            role: "Tower Encounter Witness",
+            level: Math.max(1, floorNumber + 2),
+            floorReached: floorNumber,
+            avatarId: conditionalEncounter.avatarId,
+            classId: conditionalEncounter.classId,
+            licenseLabel: "Field Encounter License",
+            authBody: "Adventurers Guild • Tower Field Log",
+            signature: conditionalEncounter.npcName
+              .split(" ")
+              .map((part) => `${part.charAt(0)}.`)
+              .join(""),
+            summary: conditionalEncounter.message,
+          })
+        : {
+            encounteredNpcProfiles: current.encounteredNpcProfiles,
+            nextStoryNpcSequence: current.nextStoryNpcSequence,
+          };
+      return {
+        ...current,
+        ...upserted,
+        floorAttemptByNumber: {
+          ...current.floorAttemptByNumber,
+          [String(floorNumber)]: attemptNumber,
+        },
+        activeFloorEncounterBonus: null,
+      };
+    });
+    if (result.outcome?.success) {
+      applyClimberCheckpointUpdate("tower_clear", result.character);
+    }
     return { ok: true, reason: result.outcome?.summary };
+  };
+
+  const resolveTowerWave = (
+    floorNumber: number,
+    wave: TowerWaveKey,
+    committedItems?: Record<ItemId, number>,
+  ) => {
+    const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
+    if (currentCharacter && currentCharacter !== character) {
+      setCharacter(normalizeCharacterState(currentCharacter));
+    }
+    const floor = TOWER_FLOORS.find((item) => item.floorNumber === floorNumber);
+    const mergedCommittedItems = {
+      ...(committedItems ?? {}),
+      ...Object.fromEntries(towerPreparedItemIds.map((itemId) => [itemId, Math.max(1, committedItems?.[itemId] ?? 1)])),
+    } as Record<ItemId, number>;
+    const result = mockGameService.resolveTowerWave({
+      character: currentCharacter,
+      floor,
+      wave,
+      committedItems: mergedCommittedItems,
+    });
+    if (!result.ok || !result.character || !result.outcome) {
+      return { ok: false, reason: result.reason ?? "Unable to resolve wave." };
+    }
+    const collapsedInTower = result.character.health <= DOWNSTATE_HP;
+    const nextCharacter = collapsedInTower
+      ? normalizeCharacterState({
+          ...result.character,
+          health: DOWNSTATE_HP,
+        })
+      : normalizeCharacterState(result.character);
+    captureLevelDownEvent(currentCharacter, nextCharacter, "Tower wave collapse");
+    setCharacter(nextCharacter);
+    setLastTowerWaveOutcome(result.outcome);
+    if (collapsedInTower) {
+      setTowerStatusEffects([]);
+      setTowerPreparedItemIds([]);
+      setStoryNotification({
+        id: `tower-collapse-${floorNumber}-${wave}-${Date.now()}`,
+        title: "The Tower Casts You Out",
+        message:
+          "A hush of ancient mercy closes around you. The tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again.",
+        variant: "tower-collapse",
+      });
+    } else {
+      setTowerStatusEffects((current) => mergeTowerStatusEffects(current, result.outcome?.statusEffects ?? []));
+      setTowerPreparedItemIds([]);
+    }
+    return { ok: true, reason: result.outcome.summary, outcome: result.outcome };
+  };
+
+  const finalizeTowerFloor = (floorNumber: number) => {
+    const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
+    if (currentCharacter && currentCharacter !== character) {
+      setCharacter(normalizeCharacterState(currentCharacter));
+    }
+    const floor = TOWER_FLOORS.find((item) => item.floorNumber === floorNumber);
+    const result = mockGameService.finalizeTowerFloor({
+      character: currentCharacter,
+      dailies,
+      floor,
+    });
+    if (!result.ok || !result.character || !result.dailies) {
+      return { ok: false, reason: result.reason ?? "Unable to finalize floor." };
+    }
+    captureLevelUpEvent(currentCharacter, result.character);
+    setCharacter(normalizeCharacterState(result.character));
+    setDailies(result.dailies);
+    setLastTowerOutcome(result.outcome ?? null);
+    setLastTowerWaveOutcome(null);
+    setTowerStatusEffects([]);
+    setTowerPreparedItemIds([]);
+    setLastRankUpOutcome(null);
+    applyClimberCheckpointUpdate("tower_clear", result.character);
+    return { ok: true, reason: result.outcome?.summary ?? `Floor ${floorNumber} finalized.` };
   };
 
   const canClaimQuest = useMemo(
@@ -843,8 +1703,8 @@ export const useGameState = (): GameState => {
     if (!quest || !currentCharacter) {
       return { allowed: false, reason: "Character unavailable." };
     }
-    if (currentCharacter.health <= 0) {
-      return { allowed: false, reason: "Incapacitated. Visit Guild NPC for revival." };
+    if (currentCharacter.health <= DOWNSTATE_HP) {
+      return { allowed: false, reason: "Your being is fractured. Visit the Archmage in the guild." };
     }
     const healthGate = Math.ceil(currentCharacter.healthCap * 0.5);
     if (currentCharacter.health < healthGate) {
@@ -859,7 +1719,15 @@ export const useGameState = (): GameState => {
     if (!floor || !currentCharacter) {
       return 0;
     }
-    return calculateTowerSuccessChance(currentCharacter, floor, committedItems);
+    const attemptNumber = getFloorAttemptNumber(floorNumber, storyState);
+    const activeEncounterBonus = storyState.activeFloorEncounterBonus;
+    const encounterBonusFlat =
+      activeEncounterBonus &&
+      activeEncounterBonus.floorNumber === floorNumber &&
+      activeEncounterBonus.attemptNumber === attemptNumber
+        ? activeEncounterBonus.towerSuccessFlat
+        : 0;
+    return calculateTowerSuccessChance(currentCharacter, floor, committedItems, encounterBonusFlat);
   };
 
   const getTowerAccess = (floorNumber: number): { allowed: boolean; reason?: string } => {
@@ -868,8 +1736,8 @@ export const useGameState = (): GameState => {
     if (!floor || !currentCharacter) {
       return { allowed: false, reason: "Character unavailable." };
     }
-    if (currentCharacter.health <= 0) {
-      return { allowed: false, reason: "Incapacitated. Visit Guild NPC for revival." };
+    if (currentCharacter.health <= DOWNSTATE_HP) {
+      return { allowed: false, reason: "Your being is fractured. Visit the Archmage in the guild." };
     }
     return hasTowerAccess(currentCharacter, floor);
   };
@@ -969,15 +1837,104 @@ export const useGameState = (): GameState => {
     return { ok: true };
   };
 
+  const craftRecipe = (recipeId: string) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const recipe = CRAFT_RECIPES.find((entry) => entry.id === recipeId);
+    if (!recipe) {
+      return { ok: false, reason: "Unknown recipe." };
+    }
+    for (const ingredient of recipe.ingredients) {
+      if ((character.inventory[ingredient.itemId] ?? 0) < ingredient.amount) {
+        return { ok: false, reason: `Missing ${ITEM_BY_ID[ingredient.itemId]?.name ?? ingredient.itemId}.` };
+      }
+    }
+    const nextInventory = { ...character.inventory };
+    for (const ingredient of recipe.ingredients) {
+      nextInventory[ingredient.itemId] = Math.max(0, (nextInventory[ingredient.itemId] ?? 0) - ingredient.amount);
+    }
+    nextInventory[recipe.output.itemId] = (nextInventory[recipe.output.itemId] ?? 0) + recipe.output.amount;
+    setCharacter(normalizeCharacterState({ ...character, inventory: nextInventory }));
+    return { ok: true, reason: `${ITEM_BY_ID[recipe.output.itemId]?.name ?? recipe.output.itemId} crafted.` };
+  };
+
+  const appraiseItem = (itemId: ItemId) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const item = ITEM_BY_ID[itemId];
+    if (!item) {
+      return { ok: false, reason: "Unknown item." };
+    }
+    if (!item.requiresAppraisal) {
+      return { ok: false, reason: `${item.name} does not need appraisal.` };
+    }
+    if ((character.inventory[itemId] ?? 0) <= 0) {
+      return { ok: false, reason: `${item.name} is not in your inventory.` };
+    }
+    if ((character.appraisedItemIds ?? []).includes(itemId)) {
+      return { ok: false, reason: `${item.name} has already been appraised.` };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        appraisedItemIds: [...(character.appraisedItemIds ?? []), itemId],
+      }),
+    );
+    return { ok: true, reason: `Appraisal complete: ${item.name}. Bran records it in the guild ledger.` };
+  };
+
+  const buyFloorIntel = (floorNumber: number, price: number) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if ((character.purchasedFloorIntelNumbers ?? []).includes(floorNumber)) {
+      return { ok: false, reason: `Floor ${floorNumber} intel already purchased.` };
+    }
+    if (character.gold < price) {
+      return { ok: false, reason: `Need ${price}g for Floor ${floorNumber} intel.` };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        gold: character.gold - price,
+        purchasedFloorIntelNumbers: [...(character.purchasedFloorIntelNumbers ?? []), floorNumber],
+      }),
+    );
+    return { ok: true, reason: `Purchased Floor ${floorNumber} guild intel.` };
+  };
+
   const requestGuildMageRecovery = () => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
-    if (character.health > 0) {
-      return { ok: false, reason: "Guild revival is only available when HP is 0." };
+    if (character.health > DOWNSTATE_HP) {
+      return { ok: false, reason: "Archmage restoration is only available when your being is fractured." };
     }
     if (character.progression.level <= 1) {
-      return { ok: false, reason: "Guild mage recovery requires at least Level 2." };
+      const nowMs = Date.now();
+      const nextAvailableAt = character.noviceEmergencyReviveAvailableAtMs ?? 0;
+      if (nextAvailableAt > nowMs) {
+        const remainingMs = Math.max(0, nextAvailableAt - nowMs);
+        const minutes = Math.floor(remainingMs / (60 * 1000));
+        const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
+        return {
+          ok: false,
+          reason: `Mercy Thread is sealed for ${minutes}:${seconds.toString().padStart(2, "0")}.`,
+        };
+      }
+      const partialHealth = Math.max(1, Math.ceil(character.healthCap * 0.5));
+      const recoveredCharacter = {
+        ...character,
+        health: partialHealth,
+        noviceEmergencyReviveAvailableAtMs: nowMs + NOVICE_EMERGENCY_REVIVE_COOLDOWN_MS,
+      };
+      setCharacter(normalizeCharacterState(recoveredCharacter));
+      return {
+        ok: true,
+        reason: "Mercy Thread cast complete. Vitality restored to 50% with no level toll. The thread is now sealed.",
+      };
     }
 
     const downgradedProgression = applyLevelLoss(character.progression, 1);
@@ -1012,7 +1969,7 @@ export const useGameState = (): GameState => {
       },
       "10th-Level Mage Recovery",
     );
-    return { ok: true, reason: "10th-circle mage revived you to full health. Level -1 applied." };
+    return { ok: true, reason: "Veilweave Restoration complete. Full vitality restored. Level toll -1 applied." };
   };
 
   const equipWeapon = (itemId: ItemId) => {
@@ -1355,14 +2312,15 @@ export const useGameState = (): GameState => {
     }
 
     const currentCharacter = applyTimedState(character, Date.now());
-    if (itemId && itemId !== "health-potion") {
+    if (itemId && itemId !== "health-potion" && itemId !== "healing-herb") {
       return { ok: false, reason: "This item does not restore health." };
     }
-    const owned = currentCharacter.inventory["health-potion"] ?? 0;
+    const consumeItemId: ItemId = itemId === "healing-herb" ? "healing-herb" : "health-potion";
+    const owned = currentCharacter.inventory[consumeItemId] ?? 0;
     if (owned <= 0) {
-      return { ok: false, reason: "No Health Potion in inventory." };
+      return { ok: false, reason: `No ${ITEM_BY_ID[consumeItemId]?.name ?? consumeItemId} in inventory.` };
     }
-    const restoreAmount = 35;
+    const restoreAmount = consumeItemId === "healing-herb" ? 12 : 35;
     const nextHealth = currentCharacter.health + restoreAmount;
     setCharacter(
       normalizeCharacterState({
@@ -1370,14 +2328,59 @@ export const useGameState = (): GameState => {
         health: nextHealth,
         inventory: {
           ...(currentCharacter.inventory ?? {}),
-          "health-potion": owned - 1,
+          [consumeItemId]: owned - 1,
         },
       }),
     );
-    return { ok: true, reason: `Health Potion used. Recovered ${nextHealth - currentCharacter.health} HP.` };
+    const itemLabel = ITEM_BY_ID[consumeItemId]?.name ?? consumeItemId;
+    return { ok: true, reason: `${itemLabel} used. Recovered ${nextHealth - currentCharacter.health} HP.` };
+  };
+
+  const useTowerConsumableItem = (itemId: ItemId) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!TOWER_USABLE_CONSUMABLE_IDS.includes(itemId)) {
+      return { ok: false, reason: "This item is not usable in the tower." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const owned = currentCharacter.inventory[itemId] ?? 0;
+    if (owned <= 0) {
+      return { ok: false, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} not in inventory.` };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        inventory: {
+          ...(currentCharacter.inventory ?? {}),
+          [itemId]: Math.max(0, owned - 1),
+        },
+      }),
+    );
+    setTowerPreparedItemIds((current) => (current.includes(itemId) ? current : [...current, itemId]));
+    setTowerStatusEffects((current) => clearTowerStatusesForConsumable(current, itemId));
+    return { ok: true, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} is ready for your next tower exchange.` };
   };
 
   const dismissStoryNotification = () => setStoryNotification(null);
+  const markMainQuestViewed = () =>
+    setStoryState((current) =>
+      current.mainQuestUnreadCount > 0 ? { ...current, mainQuestUnreadCount: 0 } : current,
+    );
+
+  const recordNpcInteraction = (npcId: string, dispositionDelta = 0, interactionDelta = 1) => {
+    setStoryState((current) => ({
+      ...current,
+      npcDispositionById: {
+        ...current.npcDispositionById,
+        [npcId]: Math.max(0, Math.min(100, (current.npcDispositionById[npcId] ?? 50) + dispositionDelta)),
+      },
+      npcInteractionCountById: {
+        ...current.npcInteractionCountById,
+        [npcId]: Math.max(0, (current.npcInteractionCountById[npcId] ?? 0) + interactionDelta),
+      },
+    }));
+  };
 
   const markNpcTabOpened = () => {
     setStoryState((current) =>
@@ -1395,10 +2398,22 @@ export const useGameState = (): GameState => {
     }
 
     if (accept) {
-      setStoryState({
+      setStoryState((current) => ({
+        ...current,
         rescueNpcStatus: "accepted",
         rescueNpcUnreadCount: 0,
-      });
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [ALDRIC_NPC_ID]: Math.max(
+            0,
+            Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) + 20),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+        },
+      }));
       setStoryNotification(null);
       return {
         ok: true,
@@ -1408,7 +2423,22 @@ export const useGameState = (): GameState => {
     }
 
     if (currentStatus === "available") {
-      setStoryState((current) => ({ ...current, rescueNpcStatus: "refused_once", rescueNpcUnreadCount: 0 }));
+      setStoryState((current) => ({
+        ...current,
+        rescueNpcStatus: "refused_once",
+        rescueNpcUnreadCount: 0,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [ALDRIC_NPC_ID]: Math.max(
+            0,
+            Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) - 12),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+        },
+      }));
       return {
         ok: true,
         reason: "Aldric pleads again: \"Please, she is all I have. I beg you... reconsider.\"",
@@ -1416,11 +2446,178 @@ export const useGameState = (): GameState => {
       };
     }
 
-    setStoryState((current) => ({ ...current, rescueNpcStatus: "gone", rescueNpcUnreadCount: 0 }));
+    setStoryState((current) => ({
+      ...current,
+      rescueNpcStatus: "gone",
+      rescueNpcUnreadCount: 0,
+      npcDispositionById: {
+        ...current.npcDispositionById,
+        [ALDRIC_NPC_ID]: Math.max(
+          0,
+          Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) - 28),
+        ),
+      },
+      npcInteractionCountById: {
+        ...current.npcInteractionCountById,
+        [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+      },
+    }));
     return {
       ok: true,
       reason: "You refused again. Aldric quietly leaves the guild hall.",
       status: "gone" as RescueNpcStatus,
+    };
+  };
+
+  const respondFloorEncounter = (floorNumber: number, encounterId: string, accept: boolean) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const available = getAvailableFloorEncounter(floorNumber, storyState);
+    if (!available || available.encounter.id !== encounterId) {
+      return { ok: false, reason: "No active floor encounter right now." };
+    }
+    const decisionKey = getFloorEncounterDecisionKey(encounterId, available.attemptNumber);
+    if (storyState.floorEncounterDecisionByAttempt[decisionKey]) {
+      return { ok: false, reason: "Encounter already resolved for this attempt." };
+    }
+    const progress = storyState.floorEncounterProgressById[encounterId] ?? {
+      seen: 0,
+      accepted: 0,
+      declined: 0,
+    };
+    const nextProgress = {
+      seen: progress.seen + 1,
+      accepted: progress.accepted + (accept ? 1 : 0),
+      declined: progress.declined + (accept ? 0 : 1),
+    };
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        id: available.encounter.id,
+        name: available.encounter.npcName,
+        title: available.encounter.npcTitle,
+        role: "Tower Encounter Scout",
+        level: Math.max(1, floorNumber + 1),
+        floorReached: floorNumber,
+        avatarId: available.encounter.avatarId,
+        classId: available.encounter.classId,
+        licenseLabel: "Field Encounter License",
+        authBody: "Adventurers Guild • Tower Field Log",
+        signature: available.encounter.npcName
+          .split(" ")
+          .map((part) => `${part.charAt(0)}.`)
+          .join(""),
+        summary: available.encounter.line,
+      });
+      return {
+        ...current,
+        ...upserted,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [encounterId]: Math.max(0, Math.min(100, (current.npcDispositionById[encounterId] ?? 50) + (accept ? 10 : -8))),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [encounterId]: (current.npcInteractionCountById[encounterId] ?? 0) + 1,
+        },
+        floorEncounterProgressById: {
+          ...current.floorEncounterProgressById,
+          [encounterId]: nextProgress,
+        },
+        floorEncounterDecisionByAttempt: {
+          ...current.floorEncounterDecisionByAttempt,
+          [decisionKey]: accept ? "accepted" : "declined",
+        },
+        activeFloorEncounterBonus: accept
+          ? {
+              encounterId,
+              floorNumber,
+              attemptNumber: available.attemptNumber,
+              towerSuccessFlat: available.encounter.towerSuccessFlat,
+            }
+          : null,
+      };
+    });
+    return {
+      ok: true,
+      reason: accept ? available.encounter.acceptLine : available.encounter.declineLine,
+    };
+  };
+
+  const respondTowerConditionalEncounter = (
+    encounterId: string,
+    accept: boolean,
+    contactStyle: "rescued" | "disciplined" = "rescued",
+  ) => {
+    if (encounterId !== LYRA_CONDITIONAL_ENCOUNTER_ID) {
+      return { ok: false, reason: "Unknown conditional encounter." };
+    }
+    setStoryState((current) => {
+      const trustGain = accept ? (contactStyle === "disciplined" ? 2 : 1) : 0;
+      const dispositionShift = accept
+        ? contactStyle === "disciplined"
+          ? 22
+          : 10
+        : contactStyle === "disciplined"
+          ? -6
+          : -10;
+      const nextTrust = Math.max(0, current.lyraTrust + trustGain);
+      const nextQuestStatus =
+        accept && current.lyraQuestStatus === "locked"
+          ? "available"
+          : current.lyraQuestStatus;
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...LYRA_PROFILE_BASE,
+        summary: accept
+          ? contactStyle === "disciplined"
+            ? "Lyra marked an ember-safe route after noticing your discipline in the ash lanes."
+            : "Lyra marked an ember-safe route after dragging your climb back from poison pressure."
+          : contactStyle === "disciplined"
+            ? "Lyra offered a hidden route after noticing your discipline, but you chose to push on without her guidance."
+            : "Lyra offered a hidden route, but you chose to push on after forcing a rescue.",
+      });
+      return {
+        ...current,
+        ...upserted,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [encounterId]: Math.max(0, Math.min(100, (current.npcDispositionById[encounterId] ?? 34) + dispositionShift)),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [encounterId]: (current.npcInteractionCountById[encounterId] ?? 0) + 1,
+        },
+        lyraMet: true,
+        lyraTrust: nextTrust,
+        lyraHelpAccepted: current.lyraHelpAccepted + (accept ? 1 : 0),
+        lyraHelpDeclined: current.lyraHelpDeclined + (accept ? 0 : 1),
+        lyraQuestStatus: nextQuestStatus,
+        lyraFirstContactStyle: current.lyraFirstContactStyle ?? contactStyle,
+        lyraAshDebt: current.lyraAshDebt || contactStyle === "rescued",
+      };
+    });
+    if (accept) {
+      setStoryNotification((current) =>
+        current?.id === "lyra-quest-unlock"
+          ? current
+          : {
+              id: "lyra-quest-unlock",
+              title: "A Quiet Request Appears",
+              message:
+                "Lyra Ashstep has left a discreet guild posting for you: recover a lost ember satchel from the ash lanes.",
+              variant: "guild",
+            },
+      );
+    }
+    return {
+      ok: true,
+      reason: accept
+        ? contactStyle === "disciplined"
+          ? "Lyra noticed your discipline and trusted you with more. New quest unlocked: Lyra's Ember Map Recovery."
+          : "Lyra steadied your climb after a rough first wave. New quest unlocked: Lyra's Ember Map Recovery."
+        : contactStyle === "disciplined"
+          ? "Lyra offered respect and route knowledge, but you chose to push on alone."
+          : "Lyra watches in silence and lets you pass after a costly first wave. She will remember the refusal.",
     };
   };
 
@@ -1443,6 +2640,63 @@ export const useGameState = (): GameState => {
     ];
   }, [character]);
 
+  const climberLeaderboard = useMemo<Array<ClimberEntry & { isPlayer?: boolean; rank: number }>>(() => {
+    if (!character) {
+      return storyState.climberRivals
+        .slice()
+        .sort((a, b) => (b.floor !== a.floor ? b.floor - a.floor : b.level - a.level))
+        .map((entry, index) => ({ ...entry, rank: index + 1 }));
+    }
+    const combined = [
+      ...storyState.climberRivals.map((entry) => ({ ...entry, isPlayer: false })),
+      {
+        id: "player",
+        name: character.name,
+        classId: character.classId,
+        avatarId: character.avatarId,
+        level: character.progression.level,
+        floor: character.towerProgress?.highestFloorCleared ?? 0,
+        trend: "steady" as const,
+        isPlayer: true,
+      },
+    ]
+      .sort((a, b) => {
+        if (b.floor !== a.floor) {
+          return b.floor - a.floor;
+        }
+        if (b.level !== a.level) {
+          return b.level - a.level;
+        }
+        return a.name.localeCompare(b.name);
+      })
+      .map((entry, index) => ({ ...entry, rank: index + 1 }));
+    return combined;
+  }, [character, storyState.climberRivals]);
+
+  const activeFloorEncounter = useMemo<
+    { encounter: FloorEncounterEventDefinition; attemptNumber: number; decision?: "accepted" | "declined" } | null
+  >(() => {
+    if (!character) {
+      return null;
+    }
+    const nextFloor = (character.towerProgress?.highestFloorCleared ?? 0) + 1;
+    const available = getAvailableFloorEncounter(nextFloor, storyState);
+    if (!available) {
+      return null;
+    }
+    const decision =
+      storyState.floorEncounterDecisionByAttempt[
+        getFloorEncounterDecisionKey(available.encounter.id, available.attemptNumber)
+      ];
+    return {
+      ...available,
+      decision,
+    };
+  }, [
+    character,
+    storyState,
+  ]);
+
   return {
     classes: BASE_CLASSES,
     quests: availableQuests,
@@ -1454,11 +2708,18 @@ export const useGameState = (): GameState => {
     lastQuestOutcome,
     completedQuestCount,
     lastTowerOutcome,
+    lastTowerWaveOutcome,
+    towerStatusEffects,
+    towerPreparedItemIds,
     lastRankUpOutcome,
     levelUpEvent,
     levelDownEvent,
     storyState,
+    mainQuestTracker,
     storyNotification,
+    encounteredNpcProfiles: storyState.encounteredNpcProfiles,
+    climberLeaderboard,
+    activeFloorEncounter,
     helpfulAllies,
     isHydrated,
     currentGuildMasterName: `${currentGuildMaster.title} ${currentGuildMaster.name}`,
@@ -1471,6 +2732,12 @@ export const useGameState = (): GameState => {
     resetGame,
     resetTowerProgress,
     devIncreaseLevel,
+    devRestoreAdventurer,
+    devFractureAdventurer,
+    devAdvanceTowerFloor,
+    devResetAppraisals,
+    devTriggerLyraQuest,
+    devTriggerAldricQuest,
     getQuestSuccessChance,
     getQuestAccess,
     getTowerSuccessChance,
@@ -1480,6 +2747,9 @@ export const useGameState = (): GameState => {
     getRankTrialSuccessChance,
     buyGuildItem,
     sellGuildItem,
+    craftRecipe,
+    appraiseItem,
+    buyFloorIntel,
     requestGuildMageRecovery,
     equipWeapon,
     unequipWeapon,
@@ -1493,14 +2763,22 @@ export const useGameState = (): GameState => {
     deactivateClassAbility,
     useSkillResourceItem,
     useHealthRecoveryItem,
+    useTowerConsumableItem,
     startQuest,
     claimQuest,
+    resolveLyraQuestChoice,
     conquerTowerFloor,
+    resolveTowerWave,
+    finalizeTowerFloor,
     attemptRankUp,
     clearLevelUpEvent,
     clearLevelDownEvent,
     dismissStoryNotification,
+    markMainQuestViewed,
+    recordNpcInteraction,
     markNpcTabOpened,
     respondRescueNpcRequest,
+    respondFloorEncounter,
+    respondTowerConditionalEncounter,
   };
 };

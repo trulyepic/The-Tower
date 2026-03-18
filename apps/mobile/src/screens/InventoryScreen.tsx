@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useMemo, useState } from "react";
-import { Image, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Image, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
 import { GameItemIcon } from "../components/GameItemIcon";
@@ -24,6 +24,8 @@ import { colors } from "../theme/colors";
 
 interface InventoryScreenProps {
   character: CharacterState;
+  towerModeActive: boolean;
+  towerPreparedItemIds: ItemId[];
   onEquipWeapon: (itemId: ItemId) => { ok: boolean; reason?: string };
   onEquipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
   onUnequipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
@@ -31,6 +33,7 @@ interface InventoryScreenProps {
   onUnequipTitle: (titleId: ItemId) => { ok: boolean; reason?: string };
   onUseSkillResourceItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   onUseHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
+  onUseTowerConsumableItem: (itemId: ItemId) => { ok: boolean; reason?: string };
 }
 
 interface RarityTheme {
@@ -71,6 +74,8 @@ const rarityOrder: Record<ItemRarity, number> = {
 
 export const InventoryScreen = ({
   character,
+  towerModeActive,
+  towerPreparedItemIds,
   onEquipWeapon,
   onEquipBuff,
   onUnequipBuff,
@@ -78,13 +83,21 @@ export const InventoryScreen = ({
   onUnequipTitle,
   onUseSkillResourceItem,
   onUseHealthRecoveryItem,
+  onUseTowerConsumableItem,
 }: InventoryScreenProps) => {
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"ok" | "error">("ok");
+  const [consumableToast, setConsumableToast] = useState<{
+    itemId: ItemId;
+    title: string;
+    detail: string;
+    tone: "ok" | "error";
+  } | null>(null);
   const [itemInfoPanel, setItemInfoPanel] = useState<{
     itemId: ItemId;
     title: string;
     rarity: ItemRarity;
+    hideRarity?: boolean;
     lines: string[];
   } | null>(null);
 
@@ -95,6 +108,14 @@ export const InventoryScreen = ({
     const timer = setTimeout(() => setNotice(""), 2200);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!consumableToast) {
+      return;
+    }
+    const timer = setTimeout(() => setConsumableToast(null), 2400);
+    return () => clearTimeout(timer);
+  }, [consumableToast]);
 
   const inventoryEntries = useMemo(
     () => Object.entries(character.inventory ?? {}).filter(([, amount]) => amount > 0),
@@ -145,12 +166,53 @@ export const InventoryScreen = ({
 
   const equippedWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : undefined;
   const nowMs = Date.now();
+  const healthPulse = useRef(new Animated.Value(0)).current;
+  const focusPulse = useRef(new Animated.Value(0)).current;
   const equippedBuffIds = character.equippedBuffIds ?? [];
   const buffSlotLimit = getBuffSlotLimit(character.adventurerRank);
   const titleSlotLimit = getTitleSlotLimit(character.progression.level);
   const equippedTitleIds = character.equippedTitleIds ?? [];
   const discoveredTitles = getDiscoveredTitleItems(character);
   const combat = getCharacterCombatStats(character);
+
+  const triggerPulse = (animatedValue: Animated.Value) => {
+    animatedValue.stopAnimation();
+    animatedValue.setValue(0);
+    Animated.sequence([
+      Animated.timing(animatedValue, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+      Animated.timing(animatedValue, {
+        toValue: 0,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const healthPulseStyle = {
+    transform: [
+      {
+        scale: healthPulse.interpolate({
+          inputRange: [0, 1],
+          outputRange: [1, 1.07],
+        }),
+      },
+    ],
+  };
+
+  const focusPulseStyle = {
+    transform: [
+      {
+        scale: focusPulse.interpolate({
+          inputRange: [0, 1],
+          outputRange: [1, 1.07],
+        }),
+      },
+    ],
+  };
 
   const handleEquip = (itemId: ItemId) => {
     const result = onEquipWeapon(itemId);
@@ -161,13 +223,13 @@ export const InventoryScreen = ({
   const handleEquipBuff = (itemId: ItemId) => {
     const result = onEquipBuff(itemId);
     setNoticeTone(result.ok ? "ok" : "error");
-    setNotice(result.ok ? "Buff equipped." : result.reason ?? "Could not equip buff.");
+    setNotice(result.ok ? "Sigil equipped." : result.reason ?? "Could not equip sigil.");
   };
 
   const handleUnequipBuff = (itemId: ItemId) => {
     const result = onUnequipBuff(itemId);
     setNoticeTone(result.ok ? "ok" : "error");
-    setNotice(result.ok ? "Buff unequipped." : result.reason ?? "Could not unequip buff.");
+    setNotice(result.ok ? "Sigil unequipped." : result.reason ?? "Could not unequip sigil.");
   };
 
   const handleEquipTitle = (titleId: ItemId) => {
@@ -183,14 +245,55 @@ export const InventoryScreen = ({
   };
   const handleUseConsumable = (itemId: ItemId) => {
     const result =
-      itemId === "health-potion" ? onUseHealthRecoveryItem(itemId) : onUseSkillResourceItem(itemId);
+      itemId === "health-potion" || itemId === "healing-herb"
+        ? onUseHealthRecoveryItem(itemId)
+        : itemId === "focus-tonic" || itemId === "mana-tonic"
+          ? onUseSkillResourceItem(itemId)
+          : onUseTowerConsumableItem(itemId);
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(result.reason ?? (result.ok ? "Item used." : "Could not use item."));
+    const detailByItem: Partial<Record<ItemId, string>> = {
+      "healing-herb": "+12 HP",
+      "health-potion": "+35 HP",
+      "focus-tonic": "+6 Focus",
+      "mana-tonic": "+8 Focus",
+      "antitoxin-vial": "Poison counter prepared",
+      "guard-tonic": "Guard counter prepared",
+      "grounding-tonic": "Shock counter prepared",
+    };
+    setConsumableToast({
+      itemId,
+      title: ITEM_BY_ID[itemId]?.name ?? (result.ok ? "Item Used" : "Item Failed"),
+      detail: result.ok ? detailByItem[itemId] ?? "Effect applied" : result.reason ?? "Could not use item.",
+      tone: result.ok ? "ok" : "error",
+    });
+    if (result.ok) {
+      if (itemId === "healing-herb" || itemId === "health-potion") {
+        triggerPulse(healthPulse);
+      }
+      if (itemId === "focus-tonic" || itemId === "mana-tonic") {
+        triggerPulse(focusPulse);
+      }
+    }
   };
 
   const openItemInfo = (itemId: ItemId) => {
     const item = ITEM_BY_ID[itemId];
     if (!item) {
+      return;
+    }
+    const isAppraised = !item.requiresAppraisal || (character.appraisedItemIds ?? []).includes(itemId);
+    if (item.requiresAppraisal && !isAppraised) {
+      setItemInfoPanel({
+        itemId,
+        title: "Unknown Remnant",
+        rarity: item.rarity,
+        hideRarity: true,
+        lines: [
+          "A rare floor remnant wrapped in unstable afterglow.",
+          "Take it to Quartermaster Bran for appraisal before its true name and function can be recorded.",
+        ],
+      });
       return;
     }
     const lines: string[] = [];
@@ -205,7 +308,7 @@ export const InventoryScreen = ({
       }
     } else if (item.category === "buff") {
       lines.push(
-        `Buff: +${item.buffStats?.damageFlat ?? 0} ATK • +${item.buffStats?.critFlat ?? 0}% CRIT • +${item.buffStats?.speedFlat ?? 0} SPD`,
+        `Sigil: +${item.buffStats?.damageFlat ?? 0} ATK • +${item.buffStats?.critFlat ?? 0}% CRIT • +${item.buffStats?.speedFlat ?? 0} SPD`,
       );
       lines.push(
         `Bonuses: +${item.buffStats?.questSuccessFlat ?? 0}% Quest Success`,
@@ -246,6 +349,14 @@ export const InventoryScreen = ({
             <Text style={styles.noticeBannerText}>{notice}</Text>
           </View>
         ) : null}
+        {towerModeActive ? (
+          <View style={[styles.noticeBanner, styles.noticeBannerOk]}>
+            <MaterialCommunityIcons name="tower-fire" size={15} color="#93efb7" />
+            <Text style={styles.noticeBannerText}>
+              Tower Mode: only item use is available. Loadout changes are locked until you leave the tower.
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.vaultHeader}>
           <LinearGradient
@@ -269,6 +380,14 @@ export const InventoryScreen = ({
           </View>
 
           <View style={styles.stashRow}>
+            <Animated.View style={[styles.stashChip, styles.stashChipHp, healthPulseStyle]}>
+              <MaterialCommunityIcons name="heart-pulse" size={14} color="#97f1ab" />
+              <Text style={styles.stashValue}>{character.health}/{character.healthCap} HP</Text>
+            </Animated.View>
+            <Animated.View style={[styles.stashChip, styles.stashChipFocus, focusPulseStyle]}>
+              <MaterialCommunityIcons name="creation-outline" size={14} color="#9ed2ff" />
+              <Text style={styles.stashValue}>{character.focus}/{character.focusCap} Focus</Text>
+            </Animated.View>
             <View style={styles.stashChip}>
               <Image source={CURRENCY_SPRITES.gold} style={styles.stashIcon} resizeMode="contain" />
               <Text style={styles.stashValue}>{character.gold}</Text>
@@ -319,9 +438,9 @@ export const InventoryScreen = ({
             end={{ x: 1, y: 1 }}
             style={styles.cardGradient}
           />
-          <Text style={styles.sectionTitle}>Buff Loadout ({equippedBuffIds.length}/{buffSlotLimit})</Text>
+          <Text style={styles.sectionTitle}>Sigil Loadout ({equippedBuffIds.length}/{buffSlotLimit})</Text>
           {equippedBuffIds.length === 0 ? (
-            <Text style={styles.emptyText}>No buffs equipped.</Text>
+            <Text style={styles.emptyText}>No sigils equipped.</Text>
           ) : (
             equippedBuffIds.map((buffId) => {
               const buff = ITEM_BY_ID[buffId];
@@ -334,7 +453,7 @@ export const InventoryScreen = ({
                   <View style={styles.equippedMeta}>
                     <Text style={styles.equippedName}>{buff.name}</Text>
                     <Text style={styles.equippedSub}>
-                      {buff.rarity.toUpperCase()} BUFF •{" "}
+                      {buff.rarity.toUpperCase()} SIGIL •{" "}
                       {(() => {
                         const active = (character.activeBuffExpiresAtMs?.[buffId] ?? 0) > nowMs;
                         const remaining = getBuffRemainingSeconds(character, buffId, nowMs);
@@ -347,9 +466,13 @@ export const InventoryScreen = ({
                       })()}
                     </Text>
                   </View>
-                  <Pressable onPress={() => handleUnequipBuff(buffId)} style={styles.smallActionWrap}>
+                  <Pressable
+                    onPress={() => handleUnequipBuff(buffId)}
+                    style={[styles.smallActionWrap, towerModeActive ? styles.buttonDisabled : null]}
+                    disabled={towerModeActive}
+                  >
                     <View style={styles.smallActionButton}>
-                      <Text style={styles.smallActionText}>Unequip</Text>
+                      <Text style={styles.smallActionText}>{towerModeActive ? "Tower Locked" : "Unequip"}</Text>
                     </View>
                   </Pressable>
                 </View>
@@ -414,12 +537,14 @@ export const InventoryScreen = ({
                     </Text>
                   </View>
                   <Pressable
-                    disabled={!canEquip || isEquipped}
+                    disabled={towerModeActive || !canEquip || isEquipped}
                     onPress={() => handleEquip(itemId)}
-                    style={[styles.equipButtonWrap, (!canEquip || isEquipped) ? styles.buttonDisabled : null]}
+                    style={[styles.equipButtonWrap, (towerModeActive || !canEquip || isEquipped) ? styles.buttonDisabled : null]}
                   >
                     <View style={styles.equipButton}>
-                      <Text style={styles.equipText}>{isEquipped ? "Equipped" : canEquip ? "Equip" : "Locked"}</Text>
+                      <Text style={styles.equipText}>
+                        {isEquipped ? "Equipped" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
+                      </Text>
                     </View>
                   </Pressable>
                 </View>
@@ -436,9 +561,9 @@ export const InventoryScreen = ({
             end={{ x: 1, y: 1 }}
             style={styles.cardGradient}
           />
-          <Text style={styles.sectionTitle}>Buff Collection</Text>
+          <Text style={styles.sectionTitle}>Sigil Collection</Text>
           {buffEntries.length === 0 ? (
-            <Text style={styles.emptyText}>No buffs owned yet. Visit Guild Store.</Text>
+            <Text style={styles.emptyText}>No sigils owned yet. Visit Guild Store.</Text>
           ) : (
             buffEntries.map(({ item, itemId, amount }) => {
               if (!item) {
@@ -478,11 +603,11 @@ export const InventoryScreen = ({
                   </View>
                   <Pressable
                     onPress={() => (isEquipped ? handleUnequipBuff(itemId) : handleEquipBuff(itemId))}
-                    style={[styles.equipButtonWrap, (!canEquip && !isEquipped) ? styles.buttonDisabled : null]}
-                    disabled={!canEquip && !isEquipped}
+                    style={[styles.equipButtonWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
+                    disabled={towerModeActive || (!canEquip && !isEquipped)}
                   >
                     <View style={styles.equipButton}>
-                      <Text style={styles.equipText}>{isEquipped ? "Unequip" : "Equip"}</Text>
+                      <Text style={styles.equipText}>{towerModeActive ? "Tower Locked" : isEquipped ? "Unequip" : "Equip"}</Text>
                     </View>
                   </Pressable>
                 </View>
@@ -581,12 +706,12 @@ export const InventoryScreen = ({
                 </View>
                   <Pressable
                     onPress={() => (isEquipped ? handleUnequipTitle(title.id) : handleEquipTitle(title.id))}
-                    style={[styles.equipButtonWrap, (!canEquip && !isEquipped) ? styles.buttonDisabled : null]}
-                    disabled={!canEquip && !isEquipped}
+                    style={[styles.equipButtonWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
+                    disabled={towerModeActive || (!canEquip && !isEquipped)}
                   >
                     <View style={styles.equipButton}>
                       <Text style={styles.equipText}>
-                        {isEquipped ? "Unequip" : canEquip ? "Equip" : "Locked"}
+                        {isEquipped ? "Unequip" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
                       </Text>
                     </View>
                   </Pressable>
@@ -612,28 +737,41 @@ export const InventoryScreen = ({
                 const rarity = item?.rarity ?? "common";
                 const rarityTheme = rarityThemeMap[rarity];
                 const isLegendary = rarity === "legendary";
-                const isUsableConsumable = itemId === "focus-tonic" || itemId === "mana-tonic" || itemId === "health-potion";
+                const isAppraised = !item?.requiresAppraisal || (character.appraisedItemIds ?? []).includes(itemId);
+                const displayName = item?.requiresAppraisal && !isAppraised ? "Unknown Remnant" : item?.name ?? itemId;
+                const isUsableConsumable =
+                  itemId === "healing-herb" ||
+                  itemId === "focus-tonic" ||
+                  itemId === "mana-tonic" ||
+                  itemId === "health-potion" ||
+                  (towerModeActive &&
+                    (itemId === "antitoxin-vial" || itemId === "guard-tonic" || itemId === "grounding-tonic"));
                 return (
                   <Pressable
                     key={itemId}
                     style={[
                       styles.materialCard,
                       { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
+                      item?.requiresAppraisal && !isAppraised ? styles.appraisalGlow : null,
                       isLegendary ? styles.legendaryCardGlow : null,
                     ]}
                     onPress={() => openItemInfo(itemId)}
                   >
                     <View style={styles.materialHead}>
                       <GameItemIcon itemId={itemId} size={34} />
-                      <Text style={styles.materialName} numberOfLines={1}>{item?.name ?? itemId}</Text>
+                      <Text style={styles.materialName} numberOfLines={1}>{displayName}</Text>
                     </View>
                     <View style={styles.materialFoot}>
                       <Text style={styles.materialCount}>x{amount}</Text>
-                      <Text style={[styles.materialRarity, { color: rarityTheme.text }]}>{rarity.toUpperCase()}</Text>
+                      <Text style={[styles.materialRarity, { color: rarityTheme.text }]}>
+                        {item?.requiresAppraisal && !isAppraised ? "APPRAISE" : rarity.toUpperCase()}
+                      </Text>
                     </View>
                     {isUsableConsumable ? (
                       <Pressable style={styles.materialUseButton} onPress={() => handleUseConsumable(itemId as ItemId)}>
-                        <Text style={styles.materialUseText}>Use</Text>
+                        <Text style={styles.materialUseText}>
+                          {towerPreparedItemIds.includes(itemId as ItemId) ? "Prepared" : "Use"}
+                        </Text>
                       </Pressable>
                     ) : null}
                   </Pressable>
@@ -661,19 +799,21 @@ export const InventoryScreen = ({
                 </View>
                 <View style={styles.infoHeadText}>
                   <Text style={styles.infoTitle}>{itemInfoPanel.title}</Text>
-                  <View
-                    style={[
-                      styles.infoRarityPill,
-                      {
-                        borderColor: rarityThemeMap[itemInfoPanel.rarity].border,
-                        backgroundColor: rarityThemeMap[itemInfoPanel.rarity].bg,
-                      },
-                    ]}
-                  >
-                    <Text style={[styles.infoRarityText, { color: rarityThemeMap[itemInfoPanel.rarity].text }]}>
-                      {itemInfoPanel.rarity.toUpperCase()}
-                    </Text>
-                  </View>
+                  {!itemInfoPanel.hideRarity ? (
+                    <View
+                      style={[
+                        styles.infoRarityPill,
+                        {
+                          borderColor: rarityThemeMap[itemInfoPanel.rarity].border,
+                          backgroundColor: rarityThemeMap[itemInfoPanel.rarity].bg,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.infoRarityText, { color: rarityThemeMap[itemInfoPanel.rarity].text }]}>
+                        {itemInfoPanel.rarity.toUpperCase()}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
               <View style={styles.infoBody}>
@@ -691,6 +831,29 @@ export const InventoryScreen = ({
             </View>
           </View>
         </Modal>
+      ) : null}
+      {consumableToast ? (
+        <View style={styles.consumableToastWrap} pointerEvents="none">
+          <View
+            style={[
+              styles.consumableToastCard,
+              consumableToast.tone === "ok" ? styles.consumableToastCardOk : styles.consumableToastCardErr,
+            ]}
+          >
+            <View style={styles.consumableToastIconWrap}>
+              <GameItemIcon itemId={consumableToast.itemId} size={26} />
+            </View>
+            <View style={styles.consumableToastTextWrap}>
+              <Text style={styles.consumableToastTitle}>{consumableToast.title}</Text>
+              <Text style={styles.consumableToastDetail}>{consumableToast.detail}</Text>
+            </View>
+            <MaterialCommunityIcons
+              name={consumableToast.tone === "ok" ? "check-circle" : "alert-circle"}
+              size={18}
+              color={consumableToast.tone === "ok" ? "#9df1b8" : "#ffb4b4"}
+            />
+          </View>
+        </View>
       ) : null}
     </SafeAreaView>
   );
@@ -726,7 +889,7 @@ const styles = StyleSheet.create({
     width: 270,
     alignItems: "center",
     justifyContent: "center",
-    alignSelf: "flex-start",
+    alignSelf: "center",
     marginTop: -1,
     borderRadius: 12,
     borderWidth: 2,
@@ -742,6 +905,9 @@ const styles = StyleSheet.create({
     gap: 10,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   cardGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -804,6 +970,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
+  stashChipHp: {
+    borderColor: "#4ea56d",
+    backgroundColor: "rgba(20, 69, 36, 0.9)",
+  },
+  stashChipFocus: {
+    borderColor: "#578db2",
+    backgroundColor: "rgba(22, 48, 79, 0.9)",
+  },
   stashIcon: {
     width: 16,
     height: 16,
@@ -822,6 +996,9 @@ const styles = StyleSheet.create({
     gap: 8,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   sectionTitle: {
     color: colors.textPrimary,
@@ -891,6 +1068,13 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 0 },
     elevation: 8,
+  },
+  appraisalGlow: {
+    shadowColor: "#95a6ff",
+    shadowOpacity: 0.75,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
   },
   weaponIconWrap: {
     width: 56,
@@ -1086,6 +1270,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: 10,
     paddingVertical: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   noticeBannerOk: {
     borderColor: "#4e9a72",
@@ -1098,6 +1285,61 @@ const styles = StyleSheet.create({
   noticeBannerText: {
     flex: 1,
     color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  consumableToastWrap: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 18,
+    alignItems: "center",
+  },
+  consumableToastCard: {
+    minWidth: 240,
+    maxWidth: 340,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 9,
+  },
+  consumableToastCardOk: {
+    borderColor: "#5fc37c",
+    backgroundColor: "rgba(16, 54, 28, 0.96)",
+  },
+  consumableToastCardErr: {
+    borderColor: "#d16f6f",
+    backgroundColor: "rgba(72, 24, 26, 0.96)",
+  },
+  consumableToastIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#8f7243",
+    backgroundColor: "rgba(26, 20, 36, 0.96)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  consumableToastTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  consumableToastTitle: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  consumableToastDetail: {
+    color: colors.textSecondary,
     fontSize: 12,
     fontWeight: "700",
   },

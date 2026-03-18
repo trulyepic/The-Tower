@@ -47,6 +47,13 @@ export const GUILD_STORE_ITEMS: GuildStoreEntry[] = [
     sellText: "Protective charm for cursed or arcane zones.",
   },
   {
+    id: "store-thorn-salve",
+    itemId: "thorn-salve",
+    label: "Thorn Salve",
+    unitPrice: 20,
+    sellText: "Field salve for thorn lash, bleed, and snare-heavy floors.",
+  },
+  {
     id: "store-ore-iron",
     itemId: "ore-iron",
     label: "Iron Ore Crate",
@@ -177,8 +184,8 @@ export const GUILD_STORE_ITEMS: GuildStoreEntry[] = [
   {
     id: "store-buff-embershard",
     itemId: "buff-embershard-charm",
-    label: "Embershard Charm",
+    label: "Embershard Sigil",
     unitPrice: 40,
-    sellText: "Common buff: minor attack increase with slight quest edge.",
+    sellText: "Common sigil: minor attack increase with slight quest edge.",
   },
 ];

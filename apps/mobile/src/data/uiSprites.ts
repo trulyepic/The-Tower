@@ -94,5 +94,5 @@ export const QUEST_TYPE_SPRITE: Record<QuestDefinition["type"], ImageSourcePropT
 
 export const CURRENCY_SPRITES = {
   gold: s3AssetWithFallback("game/materials/utility/ingot-gold.png", require("../../assets/game/materials/utility/ingot-gold.png")),
-  stamina: s3AssetWithFallback("game/materials/utility/firewood.png", require("../../assets/game/materials/utility/firewood.png")),
+  stamina: s3AssetWithFallback("game/materials/utility/rod-iron.png", require("../../assets/game/materials/utility/rod-iron.png")),
 };
