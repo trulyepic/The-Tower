@@ -1,7 +1,9 @@
+import { ImageSourcePropType } from "react-native";
 import { BaseClassId } from "../types/game";
+import { s3AssetWithFallback } from "../lib/assetSource";
 
 export interface ClassArtwork {
-  image: number;
+  image: ImageSourcePropType;
   icon: "sword-cross" | "bow-arrow" | "auto-fix";
   top: string;
   bottom: string;
@@ -11,7 +13,7 @@ export interface ClassArtwork {
 
 export const CLASS_ARTWORK: Record<BaseClassId, ClassArtwork> = {
   warrior: {
-    image: require("../../assets/game/characters/class/warrior-portrait.png"),
+    image: s3AssetWithFallback("game/characters/class/warrior-portrait.png", require("../../assets/game/characters/class/warrior-portrait.png")),
     icon: "sword-cross",
     top: "#2a4d9e",
     bottom: "#7b2f34",
@@ -19,7 +21,7 @@ export const CLASS_ARTWORK: Record<BaseClassId, ClassArtwork> = {
     spark: "#ffd08a",
   },
   ranger: {
-    image: require("../../assets/game/characters/class/ranger-portrait.png"),
+    image: s3AssetWithFallback("game/characters/class/ranger-portrait.png", require("../../assets/game/characters/class/ranger-portrait.png")),
     icon: "bow-arrow",
     top: "#22507c",
     bottom: "#1a6b58",
@@ -27,7 +29,7 @@ export const CLASS_ARTWORK: Record<BaseClassId, ClassArtwork> = {
     spark: "#b4f9cf",
   },
   mage: {
-    image: require("../../assets/game/characters/class/mage-portrait.png"),
+    image: s3AssetWithFallback("game/characters/class/mage-portrait.png", require("../../assets/game/characters/class/mage-portrait.png")),
     icon: "auto-fix",
     top: "#3f4bb9",
     bottom: "#7a339e",

@@ -1,7 +1,8 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useState } from "react";
-import { Image, ImageBackground, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Image, ImageBackground, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
 import { StatGlyphBars } from "../components/StatGlyphBars";
 import { CLASS_VISUALS } from "../data/classVisuals";
@@ -53,7 +54,15 @@ export const ClassSelectionScreen = ({
             </View>
           </View>
           <ImageBackground source={HUD_ASSETS.badges.rank} style={styles.headerBadge} resizeMode="contain">
-            <MaterialCommunityIcons name="sword-cross" size={22} color={colors.gold} />
+            <Image
+              source={
+                selectedClass
+                  ? getAvatarSprite(avatarByClass[selectedClass], selectedClass)
+                  : getAvatarSprite(DEFAULT_AVATAR_BY_CLASS.warrior, "warrior")
+              }
+              style={styles.headerBadgePortrait}
+              resizeMode="cover"
+            />
           </ImageBackground>
         </View>
 
@@ -117,7 +126,7 @@ export const ClassSelectionScreen = ({
                     </View>
                   </ImageBackground>
                   <Text style={styles.classFantasy}>{classDef.fantasy}</Text>
-                  <StatGlyphBars stats={classStats} compact />
+                  <StatGlyphBars stats={classStats} classId={classDef.id} compact />
                 </Pressable>
 
                 {isSelected ? (
@@ -208,6 +217,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   kicker: {
     color: "#b8a17a",
@@ -254,6 +266,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingTop: 2,
   },
+  headerBadgePortrait: {
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(218, 181, 111, 0.8)",
+  },
   nameCard: {
     borderRadius: 16,
     borderWidth: 1,
@@ -263,6 +282,9 @@ const styles = StyleSheet.create({
     gap: 8,
     overflow: "hidden",
     position: "relative",
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   cardGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -295,6 +317,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     gap: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   sectionTitle: {
     color: colors.textPrimary,
@@ -324,6 +349,9 @@ const styles = StyleSheet.create({
   },
   classGrid: {
     gap: 10,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   classCard: {
     borderRadius: 16,
@@ -456,6 +484,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(48, 35, 21, 0.95)",
     paddingHorizontal: 12,
     paddingVertical: 7,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   selectionHintText: {
     color: colors.textSecondary,
@@ -483,8 +514,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   actionWrap: {
-    alignSelf: "stretch",
     width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
   },
   createButtonDisabled: {
     opacity: 0.45,

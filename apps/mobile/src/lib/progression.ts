@@ -53,3 +53,12 @@ export const applyProgressGain = (
   };
 };
 
+export const applyLevelLoss = (current: CharacterProgress, levelsLost = 1): CharacterProgress => {
+  const nextLevel = Math.max(1, current.level - Math.max(0, levelsLost));
+  return {
+    ...current,
+    level: nextLevel,
+    xpInLevel: 0,
+    xpToNextLevel: getXpToNextLevel(nextLevel),
+  };
+};

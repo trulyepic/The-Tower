@@ -4,30 +4,231 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
   {
     id: "tower-floor-1",
     floorNumber: 1,
-    title: "Gate Of Ash",
+    title: "Ashen Threshold (Beginnings)",
     minLevel: 1,
     staminaCost: 3,
-    baseSuccessChance: 88,
-    requiredItems: [{ itemId: "torch", needed: 1 }],
+    baseSuccessChance: 82,
+    recommendedItems: [
+      { itemId: "torch", needed: 2 },
+      { itemId: "rope", needed: 1 },
+      { itemId: "healing-herb", needed: 2 },
+      { itemId: "antitoxin-vial", needed: 1 },
+      { itemId: "guard-tonic", needed: 1 },
+      { itemId: "grounding-tonic", needed: 1 },
+      { itemId: "ward-charm", needed: 1 },
+    ],
     normalEnemies: ["Ash Rat", "Dust Crawler"],
     subBosses: ["Gate Sentinel"],
     mainBosses: ["Warden Of Sparks"],
+    enemyRoster: {
+      normal: [
+        {
+          id: "f1-ash-rat",
+          name: "Ash Rat",
+          role: "normal",
+          level: 2,
+          health: 38,
+          icon: "spider",
+          description: "Scavenger beast that swarms from the ash trenches.",
+          weaknessNotes: ["Torch pressure", "Antitoxin-prepared resistance"],
+          weaknessItemIds: ["torch", "antitoxin-vial"],
+          lore:
+            "Guild ledgers say the Ash Rats were once ordinary vermin that nested around the first gate. After years of breathing ember soot and feeding on failed climbers' refuse, they turned lean, feverish, and cruel. New adventurers learn quickly that the Tower's smallest mouths are often the first to taste blood.",
+          mechanics: [
+            "Poison Bite: applies poison drain each wave. Counter supply: Antitoxin Vial.",
+            "Pack Rush: swarm pressure lowers stability if your speed is low.",
+          ],
+        },
+        {
+          id: "f1-dust-crawler",
+          name: "Dust Crawler",
+          role: "normal",
+          level: 3,
+          health: 52,
+          icon: "spider",
+          description: "Carapaced crawler that burrows through ember grit.",
+          weaknessNotes: ["Torch exposure", "Guard impact control"],
+          weaknessItemIds: ["torch", "guard-tonic"],
+          lore:
+            "Dust Crawlers move beneath the ash like living splinters of the floor itself. Old porters claim they were born from the Tower's discarded shell and taught to strike the feet of anyone rash enough to run without a torch.",
+          mechanics: [
+            "Burrow Ambush: opening strike spikes damage. Counter supply: Torch.",
+          ],
+        },
+      ],
+      subBoss: [
+        {
+          id: "f1-gate-sentinel",
+          name: "Gate Sentinel",
+          role: "subBoss",
+          level: 5,
+          health: 120,
+          icon: "shield-sword-outline",
+          description: "Ancient armored guardian bound to the lower gate.",
+          weaknessNotes: ["Guard-breaking mixtures", "Lock bypass support"],
+          weaknessItemIds: ["guard-tonic", "lockpick"],
+          lore:
+            "The Gate Sentinel stands where the first vows of every climber are tested. Some guild masters teach that it is less a machine than a remnant oath given form, a ward left behind to judge whether a novice can force a path through fear.",
+          mechanics: [
+            "Fortress Bulwark: suppresses your damage phase. Counter supply: Lockpick.",
+            "Crushing Sweep: heavy control hit. Counter supply: Guard Tonic.",
+          ],
+        },
+      ],
+      boss: [
+        {
+          id: "f1-warden-of-sparks",
+          name: "Warden Of Sparks",
+          role: "boss",
+          level: 7,
+          health: 190,
+          icon: "lightning-bolt-circle",
+          description: "A volatile flame warden channeling unstable arc charges.",
+          weaknessNotes: ["Grounding mixtures", "Ward protection"],
+          weaknessItemIds: ["grounding-tonic", "ward-charm"],
+          lore:
+            "The Warden of Sparks is remembered in campfire rumor as the first true sign that the Tower is awake. It gathers ash, light, and static into a burning will, and many climbers believe its crackling halo marks the point where Floor 1 stops being a trial and becomes a sentence.",
+          mechanics: [
+            "Arc Overcharge: burst arcs can collapse your wave chance. Counter supply: Grounding Tonic.",
+            "Spark Field: continuous shock attrition between phases. Counter supply: Ward Charm.",
+          ],
+        },
+      ],
+    },
     reward: { xp: 45, gold: 24, masteryXp: 16 },
-    bonusItemRewards: [{ itemId: "ore-iron", amount: 2, chance: 0.6 }],
+    guaranteedItemRewards: [
+      { itemId: "remnant-ash-rat-fang", amount: 1 },
+      { itemId: "remnant-dust-crawler-shell", amount: 1 },
+      { itemId: "remnant-sentinel-shard", amount: 1 },
+      { itemId: "remnant-spark-core-fragment", amount: 1 },
+    ],
+    bonusItemRewards: [
+      { itemId: "remnant-ash-rat-hide", amount: 1, chance: 0.44 },
+      { itemId: "ore-iron", amount: 2, chance: 0.68 },
+      { itemId: "healing-herb", amount: 2, chance: 0.58 },
+      { itemId: "health-potion", amount: 1, chance: 0.32 },
+      { itemId: "rope", amount: 1, chance: 0.45 },
+      { itemId: "torch", amount: 1, chance: 0.4 },
+      { itemId: "antitoxin-vial", amount: 1, chance: 0.28 },
+      { itemId: "guard-tonic", amount: 1, chance: 0.22 },
+      { itemId: "weapon-warrior-training-blade", amount: 1, chance: 0.045 },
+      { itemId: "weapon-ranger-training-spear", amount: 1, chance: 0.045 },
+      { itemId: "weapon-mage-training-staff", amount: 1, chance: 0.045 },
+    ],
   },
   {
     id: "tower-floor-2",
     floorNumber: 2,
-    title: "Thorn Corridor",
-    minLevel: 2,
-    staminaCost: 3,
-    baseSuccessChance: 82,
-    requiredItems: [{ itemId: "healing-herb", needed: 2 }],
+    title: "Thorn Corridor (The First Snare)",
+    minLevel: 5,
+    requiredRank: "E",
+    staminaCost: 4,
+    baseSuccessChance: 74,
+    recommendedItems: [
+      { itemId: "healing-herb", needed: 3 },
+      { itemId: "rope", needed: 1 },
+      { itemId: "torch", needed: 1 },
+      { itemId: "thorn-salve", needed: 2 },
+      { itemId: "guard-tonic", needed: 1 },
+    ],
     normalEnemies: ["Thorn Viper", "Needle Imp"],
     subBosses: ["Briar Butcher"],
     mainBosses: ["Spine Matron"],
-    reward: { xp: 54, gold: 30, masteryXp: 20 },
-    bonusItemRewards: [{ itemId: "healing-herb", amount: 2, chance: 0.5 }],
+    enemyRoster: {
+      normal: [
+        {
+          id: "f2-thorn-viper",
+          name: "Thorn Viper",
+          role: "normal",
+          level: 6,
+          health: 62,
+          icon: "snake",
+          description: "Living corridor viper that lashes venom through barbed vine growth.",
+          weaknessNotes: ["Thorn salve prep", "Antitoxin support"],
+          weaknessItemIds: ["thorn-salve", "antitoxin-vial"],
+          lore:
+            "By the second floor, the Tower stops testing courage and starts testing restraint. Thorn Vipers are said to have grown from roots watered by old blood, their bodies weaving through the corridor walls as if the brambles themselves wished to hunt.",
+          mechanics: [
+            "Venom Thorn: layered thorn poison and bleed. Counter supply: Thorn Salve.",
+            "Coil Snare: binds movement and drags longer fights. Counter supply: Rope.",
+          ],
+        },
+        {
+          id: "f2-needle-imp",
+          name: "Needle Imp",
+          role: "normal",
+          level: 5,
+          health: 54,
+          icon: "emoticon-devil-outline",
+          description: "Shrieking corridor imp that harries climbers from thorn canopies.",
+          weaknessNotes: ["Torch tracking", "Speed-trimming sigils"],
+          weaknessItemIds: ["torch", "buff-gale-feather"],
+          lore:
+            "Needle Imps are not born so much as peeled from the bramble canopy. They chatter in half-heard voices and delight in driving climbers into wasteful panic, making the corridor feel narrower than it truly is.",
+          mechanics: [
+            "Needle Volley: repeated chip barrage that worsens attrition. Counter supply: Guard Tonic.",
+            "Flash Skitter: darts through bramble shade and punishes blind swings. Counter supply: Torch.",
+          ],
+        },
+      ],
+      subBoss: [
+        {
+          id: "f2-briar-butcher",
+          name: "Briar Butcher",
+          role: "subBoss",
+          level: 7,
+          health: 158,
+          icon: "hook",
+          description: "A thorn-grown executioner that treats every corridor turn as a kill lane.",
+          weaknessNotes: ["Guard tonic timing", "Thorn salve preparation"],
+          weaknessItemIds: ["guard-tonic", "thorn-salve"],
+          lore:
+            "The Briar Butcher is feared among low-rank survivors because it behaves like a jailer that remembers its trade. Hooks, roots, and dragged bodies all feature in the stories told by those who fled the corridor before it closed around them.",
+          mechanics: [
+            "Hook Rend: opens deep bleeding wounds. Counter supply: Thorn Salve.",
+            "Bramble Lariat: drags prey into hazard lanes. Counter supply: Rope.",
+          ],
+        },
+      ],
+      boss: [
+        {
+          id: "f2-spine-matron",
+          name: "Spine Matron",
+          role: "boss",
+          level: 9,
+          health: 236,
+          icon: "flower-pollen",
+          description: "The heart of the corridor, pulsing thorn life into every trapped lane around her.",
+          weaknessNotes: ["Ward layering", "Sustained thorn mitigation"],
+          weaknessItemIds: ["ward-charm", "thorn-salve"],
+          lore:
+            "Some archivists insist the Spine Matron was once a living altar, turned feral when the Tower's lower veins split open. Whether that tale is true or not, every vine on the floor seems to answer her breathing, and every wound she opens tries to bloom wider.",
+          mechanics: [
+            "Thorn Cage: binds the arena and turns every opening into bleed pressure. Counter supply: Thorn Salve.",
+            "Heartseed Pulse: corridor pain suppresses recovery and feeds the floor. Counter supply: Ward Charm.",
+          ],
+        },
+      ],
+    },
+    reward: { xp: 62, gold: 36, masteryXp: 23 },
+    guaranteedItemRewards: [
+      { itemId: "part-thorn-viper-fang", amount: 1 },
+      { itemId: "part-needle-imp-quill", amount: 1 },
+      { itemId: "part-butcher-hook", amount: 1 },
+      { itemId: "part-heartseed-core", amount: 1 },
+    ],
+    bonusItemRewards: [
+      { itemId: "briar-resin", amount: 2, chance: 0.62 },
+      { itemId: "thorn-salve", amount: 1, chance: 0.38 },
+      { itemId: "healing-herb", amount: 2, chance: 0.46 },
+      { itemId: "health-potion", amount: 1, chance: 0.24 },
+      { itemId: "guard-tonic", amount: 1, chance: 0.21 },
+      { itemId: "ward-charm", amount: 1, chance: 0.14 },
+      { itemId: "buff-embershard-charm", amount: 1, chance: 0.14 },
+      { itemId: "weapon-warrior-briarcleaver", amount: 1, chance: 0.03 },
+      { itemId: "weapon-ranger-thornline-spear", amount: 1, chance: 0.03 },
+      { itemId: "weapon-mage-rootglass-staff", amount: 1, chance: 0.03 },
+    ],
   },
   {
     id: "tower-floor-3",
@@ -36,7 +237,11 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 3,
     staminaCost: 4,
     baseSuccessChance: 75,
-    requiredItems: [{ itemId: "lockpick", needed: 1 }],
+    recommendedItems: [
+      { itemId: "lockpick", needed: 2 },
+      { itemId: "torch", needed: 1 },
+      { itemId: "healing-herb", needed: 2 },
+    ],
     normalEnemies: ["Clock Hound", "Brass Scout"],
     subBosses: ["Breaker Drone"],
     mainBosses: ["Cog Tyrant"],
@@ -50,12 +255,15 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 4,
     staminaCost: 4,
     baseSuccessChance: 69,
-    requiredItems: [{ itemId: "ward-charm", needed: 1 }],
+    recommendedItems: [{ itemId: "ward-charm", needed: 1 }],
     normalEnemies: ["Veil Shade", "Rune Bat"],
     subBosses: ["Hex Mirror"],
     mainBosses: ["The Pale Judge"],
     reward: { xp: 80, gold: 52, masteryXp: 30 },
-    bonusItemRewards: [{ itemId: "ward-charm", amount: 1, chance: 0.3 }],
+    bonusItemRewards: [
+      { itemId: "ward-charm", amount: 1, chance: 0.3 },
+      { itemId: "buff-gale-feather", amount: 1, chance: 0.1 },
+    ],
   },
   {
     id: "tower-floor-5",
@@ -64,7 +272,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 5,
     staminaCost: 5,
     baseSuccessChance: 63,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "torch", needed: 1 },
       { itemId: "ore-iron", needed: 2 },
     ],
@@ -81,7 +289,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 6,
     staminaCost: 5,
     baseSuccessChance: 56,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ingot-silver", needed: 1 },
       { itemId: "lockpick", needed: 1 },
     ],
@@ -98,7 +306,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 7,
     staminaCost: 6,
     baseSuccessChance: 49,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ward-charm", needed: 1 },
       { itemId: "ingot-steel", needed: 1 },
     ],
@@ -106,7 +314,10 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     subBosses: ["Thunder Warden"],
     mainBosses: ["Aerial Behemoth"],
     reward: { xp: 130, gold: 96, masteryXp: 52 },
-    bonusItemRewards: [{ itemId: "dust-nova", amount: 1, chance: 0.2 }],
+    bonusItemRewards: [
+      { itemId: "dust-nova", amount: 1, chance: 0.2 },
+      { itemId: "buff-arcane-sigil", amount: 1, chance: 0.06 },
+    ],
   },
   {
     id: "tower-floor-8",
@@ -115,7 +326,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 8,
     staminaCost: 6,
     baseSuccessChance: 43,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "dust-nova", needed: 1 },
       { itemId: "healing-herb", needed: 2 },
     ],
@@ -132,7 +343,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 9,
     staminaCost: 7,
     baseSuccessChance: 38,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ancient-core", needed: 1 },
       { itemId: "ward-charm", needed: 1 },
     ],
@@ -149,7 +360,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     minLevel: 10,
     staminaCost: 8,
     baseSuccessChance: 32,
-    requiredItems: [
+    recommendedItems: [
       { itemId: "ancient-core", needed: 1 },
       { itemId: "feather-special", needed: 1 },
       { itemId: "ingot-steel", needed: 1 },
@@ -158,6 +369,9 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
     subBosses: ["Twin Heralds"],
     mainBosses: ["The First Crown"],
     reward: { xp: 210, gold: 170, masteryXp: 90 },
-    bonusItemRewards: [{ itemId: "weapon-warrior-emberblade", amount: 1, chance: 0.05 }],
+    bonusItemRewards: [
+      { itemId: "weapon-warrior-emberblade", amount: 1, chance: 0.05 },
+      { itemId: "buff-royal-crest", amount: 1, chance: 0.025 },
+    ],
   },
 ];
