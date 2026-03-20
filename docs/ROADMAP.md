@@ -42,6 +42,10 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
   - Neutral start
   - Camp meter UI
   - Three-state fantasy framing (Abyssworn / Veilwalker / Aetherbound)
+- [x] Affinity choice-lock v1:
+  - [x] shared extreme-threshold rule
+  - [x] current narrative choices hidden when affinity forbids them
+  - [x] dev controls for good / neutral / evil testing
 - [x] Guild NPC Hall baseline:
   - Guild Master card
   - Receptionist card
@@ -53,6 +57,19 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
 ## Gameplay Systems
 
 - [x] Quest system v1 spec + baseline implementation (`docs/QUEST_SYSTEM_SPEC.md`)
+- [ ] Quest system rework spine (`docs/QUEST_SYSTEM_REWORK.md`)
+  - [ ] board structure cleanup
+  - [ ] shared quest state cleanup
+  - [ ] journal rewrite
+  - [ ] reusable time-sensitive quest runtime
+  - [ ] future Hunt / Wanted hooks
+- [ ] Quest battle rework (`docs/QUEST_BATTLE_REWORK.md`)
+  - [ ] keep `gather` quests on the light resolve model
+  - [ ] move combat `adventure` quests onto live turn-based combat
+  - [ ] move `dungeon` quests onto tighter multi-wave live combat
+  - [ ] move future `hunt` contracts onto named-target live combat
+  - [ ] move future `wanted` contracts onto named-target live combat
+- [x] Placeholder future combat contracts documented (`docs/QUEST_PLACEHOLDER_COMBAT_CONTRACTS.md`)
 - [x] Sigil system v1: equip/unequip, timed effects, tower activation flow, active indicators
 - [x] Sigil control v1.1: manual deactivate/resume with saved remaining timer, visible sigil effects in Camp/Combat/Tower
 - [ ] Seals system:
@@ -71,6 +88,8 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
   - [x] floor-by-floor remnant families
   - [ ] legendary weaponline ingredient support
 - [ ] Tower battle phase flow UI and logic (see tower phases doc)
+  - [x] Floor 1 live-response battle layer (`docs/LIVE_BATTLE_SYSTEM.md`)
+  - [ ] extend live-response combat to later floors
 - [ ] Guild floor-intel system through Floor 55
   - [x] store intel ledger baseline
   - [x] tower UI hide/reveal pass for weakness notes, optional drops, and support aids
@@ -82,6 +101,12 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
 - [ ] Advanced jobs unlock system by class
 - [ ] Class-specific passives affecting quests/tower outcomes
 - [ ] Affinity impact hooks for quests/NPC/tower decisions
+- [ ] Aldric staged implementation
+  - [x] branch persistence for refused / too late / saved
+  - [ ] stronger urgency presentation for the time-sensitive rescue
+  - [ ] first recurring dark-path breadcrumb after failure/refusal
+  - [ ] later sabotage phase implementation
+  - [ ] Floor 30 confrontation implementation
 - [ ] Higher Being favor/wrath system:
   - [ ] per-being favor and wrath tracks
   - [ ] seed first 3 beings (Seraphel, Vael-Tor, Nyxara)
@@ -108,6 +133,11 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
   - [ ] relationship + Apostolic Veil standing progression
   - [ ] sanctuary / archive / sanction runtime hooks
   - [ ] quest chains for chapel records, sealed folios, and inquisitorial purge
+- [ ] Biblical great-figure track
+  - [ ] mythic redesign pass for selected biblical individuals
+  - [ ] naming pass using fantasy-rooted variants
+  - [ ] define floor-band entry rules so they do not appear too early
+  - [ ] tie each figure to either a higher being, archive route, faction axis, or ending pressure path
 - [ ] Lyra Ashstep branch implementation:
   - [x] restricted to conditional in-tower trigger, not pre-entry encounter
   - [x] relationship state + repeat-contact tracking
@@ -192,9 +222,22 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
 - [ ] Seasonal tower events
 - [ ] Co-op or async companion systems
 
+## Questline Documentation
+
+- [x] Create questline tracker for recurring NPC arcs
+- [x] Create dedicated Aldric questline doc
+- [x] Create dedicated Tamsin questline doc
+- [ ] Create dedicated Lyra questline doc
+- [ ] Keep every new NPC questline documented as soon as it begins
+
 ## Current Sequential Focus
 
 - `Floor 2: Thorn Corridor` is the active next chapter.
 - Runtime and docs now treat it as the first true `E-rank` tower floor.
 - Detailed reference:
   - [FLOOR_2_THORN_CORRIDOR.md](/Users/kin/web-rpg/docs/FLOOR_2_THORN_CORRIDOR.md)
+
+- Quest Journal now structured for Main Quest, Side Quest, Hunt, and Wanted tracking.
+- TODO:
+  - add first real Hunt quest structure after the current Tamsin / side-quest work is settled
+  - add first real Wanted system structure after Hunt is properly defined

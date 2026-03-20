@@ -14,7 +14,7 @@ export const ITEMS: ItemDefinition[] = [
   {
     id: "torch",
     name: "Torch",
-    description: "Supply tool. Improves visibility and counters ambush/burrow-style mechanics.",
+    description: "Supply tool. Improves visibility and can be timed during live battle to expose ambush/burrow-style mechanics.",
     icon: "torch",
     rarity: "common",
     category: "material",
@@ -40,7 +40,7 @@ export const ITEMS: ItemDefinition[] = [
   {
     id: "ward-charm",
     name: "Ward Charm",
-    description: "Protection supply. Mitigates arcane, shock, and curse-style threats.",
+    description: "Protection supply. Mitigates arcane, shock, and curse-style threats, especially when timed during live battle.",
     icon: "shield-star-outline",
     rarity: "rare",
     category: "material",
@@ -149,7 +149,7 @@ export const ITEMS: ItemDefinition[] = [
   {
     id: "antitoxin-vial",
     name: "Antitoxin Vial",
-    description: "Counter supply. Negates poison-heavy enemy effects.",
+    description: "Counter supply. Negates poison-heavy enemy effects and can be timed during live battle against bite and venom telegraphs.",
     icon: "flask-empty-remove-outline",
     rarity: "common",
     category: "material",
@@ -161,7 +161,7 @@ export const ITEMS: ItemDefinition[] = [
   {
     id: "guard-tonic",
     name: "Guard Tonic",
-    description: "Counter supply. Reduces damage from heavy control/sweep mechanics.",
+    description: "Counter supply. Reduces damage from heavy control/sweep mechanics and rewards good timing during live battle.",
     icon: "shield-plus-outline",
     rarity: "common",
     category: "material",
@@ -169,7 +169,7 @@ export const ITEMS: ItemDefinition[] = [
   {
     id: "grounding-tonic",
     name: "Grounding Tonic",
-    description: "Counter supply. Dampens overcharge and lightning-based mechanics.",
+    description: "Counter supply. Dampens overcharge and lightning-based mechanics, especially during live-response boss phases.",
     icon: "lightning-bolt-outline",
     rarity: "rare",
     category: "material",
@@ -439,6 +439,22 @@ export const ITEMS: ItemDefinition[] = [
       speed: 12,
     },
     image: s3AssetWithFallback("game/weapons/class/mage-astralspire.png", require("../../assets/game/weapons/class/mage-astralspire.png")),
+  },
+  {
+    id: "weapon-hidden-steward-edict",
+    name: "Edictblade of the Hidden Steward",
+    description: "Legendary dev sword said to answer the hand of an unseen Tower steward. Massive attack, overwhelming crit, and impossible tempo for rapid content testing.",
+    lore: "Quartermaster rumor says this blade does not belong to any ordinary climber. It appears when one of the Tower's hidden stewards walks the guild in a lesser name, looking over trials from beneath the notice of kings and factions. The sword bears no maker's crest, only an authority that feels older than the guild itself.",
+    icon: "sword-cross",
+    rarity: "legendary",
+    category: "weapon",
+    requiredLevel: 99,
+    weaponStats: {
+      attack: 999,
+      crit: 99,
+      speed: 60,
+    },
+    image: s3AssetWithFallback("game/weapons/dev/admin-sword.png", require("../../assets/game/weapons/dev/admin-sword.png")),
   },
   {
     id: "buff-embershard-charm",

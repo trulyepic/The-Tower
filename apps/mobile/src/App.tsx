@@ -1,6 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -18,7 +18,6 @@ import { getAssetBaseUrl } from "./lib/assetSource";
 
 export default function App() {
   const game = useGameState();
-  const markMainQuestViewed = game.markMainQuestViewed;
   const [activeTab, setActiveTab] = useState<AppTabId>("home");
   const [showTempCreation, setShowTempCreation] = useState(false);
   const [showDevMenu, setShowDevMenu] = useState(false);
@@ -41,12 +40,6 @@ export default function App() {
       setActiveTab("quests");
     }
   }, [towerModeActive, activeTab]);
-
-  useEffect(() => {
-    if (activeTab === "story") {
-      markMainQuestViewed();
-    }
-  }, [activeTab, markMainQuestViewed]);
 
   useEffect(() => {
     if (!game.isHydrated) {
@@ -124,6 +117,8 @@ export default function App() {
             npcUnreadCount={game.storyState.rescueNpcUnreadCount}
             onNpcTabOpened={game.markNpcTabOpened}
             onRespondRescueNpcRequest={game.respondRescueNpcRequest}
+            onRespondThornRunnerIntroduction={game.respondThornRunnerIntroduction}
+            onAcknowledgeThornRunnerFollowup={game.acknowledgeThornRunnerFollowup}
             climberLeaderboard={game.climberLeaderboard}
             activeFloorEncounter={game.activeFloorEncounter}
             onRespondFloorEncounter={game.respondFloorEncounter}
@@ -139,7 +134,15 @@ export default function App() {
           pointerEvents={activeTab === "story" ? "auto" : "none"}
         >
           {game.mainQuestTracker ? (
-            <MainQuestScreen tracker={game.mainQuestTracker} storyState={game.storyState} />
+            <MainQuestScreen
+              tracker={game.mainQuestTracker}
+              storyState={game.storyState}
+              character={game.character}
+              quests={game.quests}
+              activeQuest={game.activeQuest}
+              unreadCount={game.storyState.mainQuestUnreadCount}
+              onAcknowledgeUpdates={game.markMainQuestViewed}
+            />
           ) : null}
         </View>
         <View
@@ -168,6 +171,8 @@ export default function App() {
             character={game.character}
             classes={game.classes}
             onChooseWarriorPath={game.chooseWarriorPath}
+            onSetActiveClassSkill={game.setActiveClassSkill}
+            onTogglePassiveAbility={game.togglePassiveAbility}
           />
         </View>
       </>
@@ -193,119 +198,6 @@ export default function App() {
             <Pressable onPress={() => setShowDevMenu((current) => !current)} style={styles.devMenuToggle}>
               <Text style={styles.devMenuToggleText}>TEMP: Dev Menu</Text>
             </Pressable>
-            {showDevMenu ? (
-              <View style={styles.devMenuPanel}>
-                <View style={styles.devMenuSection}>
-                  <Text style={styles.devMenuSectionLabel}>Story</Text>
-                  <Pressable
-                    onPress={() => {
-                      game.devTriggerLyraQuest();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonTeal]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Trigger Lyra</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.devTriggerAldricQuest();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonTeal]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Trigger Aldric</Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.devMenuSection}>
-                  <Text style={styles.devMenuSectionLabel}>Tower</Text>
-                  <Pressable
-                    onPress={() => {
-                      game.devIncreaseLevel();
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonGold]}
-                  >
-                    <Text style={styles.devMenuButtonText}>+1 Level</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.devAdvanceTowerFloor();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonPurple]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Tower +1</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.resetTowerProgress();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonCyan]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Reset Tower</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.devResetAppraisals();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonPurple]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Reset Appraisals</Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.devMenuSection}>
-                  <Text style={styles.devMenuSectionLabel}>Recovery / Reset</Text>
-                  <Pressable
-                    onPress={() => {
-                      game.devRestoreAdventurer();
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonGreen]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Restore All</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.devFractureAdventurer();
-                      setActiveTab("quests");
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonOrange]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Fracture State</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      setShowTempCreation(true);
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonBlue]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Character Creation</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      game.resetGame();
-                      setActiveTab("home");
-                      setShowTempCreation(false);
-                      setShowDevMenu(false);
-                    }}
-                    style={[styles.devMenuButton, styles.devMenuButtonRed]}
-                  >
-                    <Text style={styles.devMenuButtonText}>Reset Save</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ) : null}
           </View>
           <View style={styles.content}>{renderTabContent()}</View>
           <AppTabs
@@ -338,6 +230,239 @@ export default function App() {
           />
         </View>
       )}
+      {showDevMenu ? (
+        <Modal transparent animationType="fade" visible onRequestClose={() => setShowDevMenu(false)}>
+          <View style={styles.devMenuOverlay}>
+            <Pressable style={styles.devMenuBackdrop} onPress={() => setShowDevMenu(false)} />
+            <View style={styles.devMenuModalWrap} pointerEvents="box-none">
+              <View style={styles.devMenuPanel}>
+                <View style={styles.devMenuHeader}>
+                  <Text style={styles.devMenuHeaderTitle}>TEMP: Dev Menu</Text>
+                  <Pressable onPress={() => setShowDevMenu(false)} style={styles.devMenuCloseButton}>
+                    <MaterialCommunityIcons name="close" size={16} color="#f9e6b7" />
+                  </Pressable>
+                </View>
+                <ScrollView
+                  style={styles.devMenuScroll}
+                  contentContainerStyle={styles.devMenuPanelContent}
+                  showsVerticalScrollIndicator
+                  nestedScrollEnabled
+                >
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Story</Text>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerLyraQuest();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonTeal]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Trigger Lyra</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerAldricQuest();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonTeal]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Trigger Aldric</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerTamsinQuest();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonTeal]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Trigger Tamsin</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetAldricOutcome("saved");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGreen]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Aldric Saved</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetAldricOutcome("too_late");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonOrange]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Aldric Too Late</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetAffinity(100);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGreen]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Affinity Good</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetAffinity(0);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonBlue]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Affinity Neutral</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetAffinity(-100);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonRed]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Affinity Evil</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Tower</Text>
+                    <Pressable
+                      onPress={() => {
+                        game.devIncreaseLevel();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGold]}
+                    >
+                      <Text style={styles.devMenuButtonText}>+1 Level</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devAdvanceTowerFloor();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Tower +1</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.resetTowerProgress();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonCyan]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Reset Tower</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devResetAppraisals();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Reset Appraisals</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Recovery / Reset</Text>
+                    <Pressable
+                      onPress={() => {
+                        game.devRestoreAdventurer();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGreen]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Restore All</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devFractureAdventurer();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonOrange]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Fracture State</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setShowTempCreation(true);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonBlue]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Character Creation</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.resetGame();
+                        setActiveTab("home");
+                        setShowTempCreation(false);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonRed]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Reset Save</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Warrior Combat</Text>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetupWarriorBattlePreset("shared");
+                        setActiveTab("class");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonBlue]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Warrior Shared Test</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetupWarriorBattlePreset("knight");
+                        setActiveTab("class");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGreen]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Warrior Knight Test</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devSetupWarriorBattlePreset("berserker");
+                        setActiveTab("class");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonRed]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Warrior Berserker Test</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Quest Board Preview</Text>
+                    <Pressable
+                      onPress={() => {
+                        game.devPreviewQuestBoardContracts();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Preview High-Level Contracts</Text>
+                    </Pressable>
+                  </View>
+                </ScrollView>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       {showOpeningIntro && !game.character && !showTempCreation ? (
         <Modal transparent animationType="fade" visible onRequestClose={() => setShowOpeningIntro(false)}>
           <View style={styles.levelOverlay}>
@@ -672,14 +797,70 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.3,
   },
+  devMenuOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 120,
+  },
+  devMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(6, 8, 16, 0.42)",
+  },
+  devMenuModalWrap: {
+    flex: 1,
+    alignItems: "flex-end",
+    paddingTop: 52,
+    paddingRight: 12,
+    paddingBottom: 92,
+  },
   devMenuPanel: {
-    width: 164,
+    width: 188,
+    maxHeight: "100%",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#8c6c3f",
     backgroundColor: "rgba(23, 19, 35, 0.96)",
+    overflow: "hidden",
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  devMenuHeader: {
+    minHeight: 36,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(140, 108, 63, 0.72)",
+    paddingLeft: 10,
+    paddingRight: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "rgba(49, 31, 14, 0.96)",
+  },
+  devMenuHeaderTitle: {
+    color: "#ffeaaf",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  devMenuCloseButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255, 210, 122, 0.48)",
+    backgroundColor: "rgba(91, 56, 16, 0.92)",
+  },
+  devMenuScroll: {
+    maxHeight: 420,
+  },
+  devMenuPanelContent: {
     padding: 8,
     gap: 7,
+    paddingBottom: 12,
   },
   devMenuSection: {
     gap: 5,

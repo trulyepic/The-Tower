@@ -353,22 +353,28 @@ Use this as implementation pacing guidance. Each row represents one 5-floor bloc
 9. Floors 41-45: crown ascent, irreversible route commitments.
 10. Floors 46-50: final judgment chain and one of 3 endings.
 
+## Questline Canon Index
+
+- [NPC_QUESTLINE_TRACKER.md](/Users/kin/web-rpg/docs/NPC_QUESTLINE_TRACKER.md)
+- [ALDRIC_VALE_QUESTLINE.md](/Users/kin/web-rpg/docs/ALDRIC_VALE_QUESTLINE.md)
+- [TAMSIN_VALE_QUESTLINE.md](/Users/kin/web-rpg/docs/TAMSIN_VALE_QUESTLINE.md)
+
+Use these dedicated questline docs as the canon source for recurring NPC side-story arcs.
+
 ## Core NPC Story Threads
 
 ### Aldric Vale (priority existing thread)
 
-- Role: early ally, emotionally grounded questline.
+- Dedicated questline doc:
+  - [ALDRIC_VALE_QUESTLINE.md](/Users/kin/web-rpg/docs/ALDRIC_VALE_QUESTLINE.md)
+- Role: early emotionally grounded questline with long-range consequence weight.
 - Trigger: early NPC rescue chain already started in-game.
-- Floor 10 critical mechanic:
-  - Aldric ally skill: `Oathguard Intercession`
-  - Effect: negates ~90% of one near-lethal main-boss strike on Floor 10.
-  - If Aldric is unavailable, player can still survive using an ultra-rare substitute item.
-
-Implementation notes:
-
-- This is a major "ally value" tutorial for the full story.
-- Make the intervention readable in battle log and post-fight summary.
-- If consumed/triggered, show exactly what damage was prevented.
+- Current canon status:
+  - refusal -> hostile dark-path sabotage route
+  - accepted but expired -> tragic mixed route with occasional help
+  - saved daughter -> loyal follower route
+- Floor 30 is the major Aldric confrontation point for the hostile route.
+- Aldric's final outcome is affinity-sensitive and affects the ending.
 
 ## First Three Named NPC Adventurers (Canon Set A)
 
@@ -428,6 +434,103 @@ Players meet them organically in guild/tower encounters and choices around them 
 - Story function:
   - primary doorway into Ashen faction arc,
   - influences Nyxara favor/wrath swings.
+
+## Future Biblical Great Figures (Planned Canon Track)
+
+These are not ordinary NPCs and should not be introduced too early.
+They are meant to carry the same sense of weight, renown, danger, and legend that major biblical figures do, while being redesigned to fit the Tower's world and tone.
+
+Design rule:
+- use recognizable biblical roots without lifting names directly
+- preserve grandeur, mythic consequence, and moral pressure
+- make them feel like figures whose choices shaped ages, not side-quest vendors
+
+### Naming direction
+
+Use fantasy-tilted plays on biblical names, for example:
+- `Mosachar` from Moses
+- `Eliyan Voss` from Elijah
+- `Davrael` from David
+- `Solom Veyr` from Solomon
+- `Mikhaelor` from Michael
+- `Raphiel Vane` from Raphael
+
+### Intended story role
+
+These figures should enter as:
+- ancient sealed names in records,
+- hidden lineage anchors,
+- higher being champions,
+- church archives subjects,
+- or endgame-level historical presences whose influence still shapes factions and floor doctrine.
+
+### Implementation rule
+
+Do not place them into early playable floors casually.
+They should arrive only when one of these is true:
+- the main story has entered a mythic or judgment phase,
+- the Apostolic Veil archive route is active,
+- a Higher Being covenant path is mature enough to support them,
+- or the player is deep enough in the climb that legendary-scale names feel earned.
+
+### Planned future set
+
+1. `Mosachar, Bearer Of The Split Path`
+- inspiration:
+  - Moses
+- role:
+  - lawgiver, path-opener, impossible passage figure
+- likely usage:
+  - sealed route lore, tower passage miracle, covenant trial
+
+2. `Eliyan Voss, Flamebound Witness`
+- inspiration:
+  - Elijah
+- role:
+  - prophetic challenger, storm/fire witness, anti-idolatry pressure
+- likely usage:
+  - Higher Being conflict, Tower judgment scenes, apostate faction confrontations
+
+3. `Davrael, The Crown Before The Throne`
+- inspiration:
+  - David
+- role:
+  - king-maker, warrior-poet, flawed chosen ruler
+- likely usage:
+  - rulership, faction legitimacy, dominion-ending route pressure
+
+4. `Solom Veyr, The Sealed Judge`
+- inspiration:
+  - Solomon
+- role:
+  - wisdom, judgment, hidden seals, impossible bargains
+- likely usage:
+  - Tower seals, apostolic archives, ending-condition trial choices
+
+5. `Mikhaelor, Spear Of The Upper Gate`
+- inspiration:
+  - Michael
+- role:
+  - heavenly war captain, dragon-breaker, final judgment blade
+- likely usage:
+  - endgame confrontation, Seraphel-linked war route, anti-corruption judgment scenes
+
+### TODO rule
+
+When we are ready to build these figures, each one should get:
+- a lore profile
+- a story-entry condition
+- a faction or higher-being tie
+- a moral pressure axis
+- an implementation floor band
+
+## Fun Dev Canon Note
+
+For internal/dev flavor only, the guild sometimes carries an impossible testing weapon in its hidden inventory:
+
+- `Edictblade of the Hidden Steward`
+  - tied to the rumor that one of the Tower's unseen stewards occasionally walks the lower guild under a false name
+  - treated as meta-canon/dev gear for testing, not as a normal progression reward
 
 ### Set A Interference Rule
 

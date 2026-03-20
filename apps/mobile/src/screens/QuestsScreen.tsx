@@ -22,12 +22,24 @@ import { TITLE_ICON_ART } from "../data/titleVisuals";
 import { CURRENCY_SPRITES, QUEST_TYPE_SPRITE, getAvatarSprite } from "../data/uiSprites";
 import { ABILITY_BY_ID } from "../data/abilities";
 import { FLOOR_ENTRY_LORE } from "../data/floorStory";
-import { getPendingAbilityBonuses, getPendingAbilityComboSummary } from "../lib/abilities";
+import {
+  getEquippedPassiveBattleBonuses,
+  getLiveBattleSkillProfile,
+  getPendingAbilityBonuses,
+  getPendingAbilityComboSummary,
+  getPassiveBattleProfile,
+  getUnlockedActiveSkills,
+} from "../lib/abilities";
+import type { LiveBattleSkillProfile } from "../lib/abilities";
 import { isBuffActive } from "../lib/buffs";
+import { isChoiceAllowedByAffinity } from "../lib/affinity";
 import { s3AssetWithFallback } from "../lib/assetSource";
+import { getAbilityAccent, getAbilityArtSource, getAbilityKindAccent } from "../lib/abilityVisuals";
+import { getCharacterCombatStats } from "../lib/combat";
 import { calculateTowerMechanicPressure } from "../services/gameService";
 import {
   ActiveQuestState,
+  AbilityId,
   AdventurerRank,
   BaseClassId,
   CharacterState,
@@ -43,8 +55,10 @@ import {
   RescueNpcStatus,
   StoryState,
   StoryNpcProfile,
+  TowerBattlePosition,
   TowerFloorDefinition,
   TowerEnemyUnit,
+  TowerLiveBattleDirective,
   TowerOutcome,
   TowerWaveOutcome,
 } from "../types/game";
@@ -80,12 +94,13 @@ interface QuestsScreenProps {
   onActivateBuff: (itemId: string) => { ok: boolean; reason?: string };
   onDeactivateBuff: (itemId: string) => { ok: boolean; reason?: string };
   onStartQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
-  onClaimQuest: () => { ok: boolean; reason?: string };
+  onClaimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
   onResolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
   onResolveTowerWave: (
     floorNumber: number,
     wave: TowerWaveKey,
     committedItems?: Record<ItemId, number>,
+    liveBattle?: TowerLiveBattleDirective,
   ) => { ok: boolean; reason?: string; outcome?: TowerWaveOutcome };
   onFinalizeTowerFloor: (floorNumber: number) => { ok: boolean; reason?: string };
   onAttemptRankUp: (committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
@@ -95,6 +110,10 @@ interface QuestsScreenProps {
   npcUnreadCount: number;
   onNpcTabOpened: () => void;
   onRespondRescueNpcRequest: (accept: boolean) => { ok: boolean; reason?: string; status?: RescueNpcStatus };
+  onRespondThornRunnerIntroduction: (
+    choice: "steady" | "mercenary",
+  ) => { ok: boolean; reason?: string; choice?: "steady" | "mercenary" };
+  onAcknowledgeThornRunnerFollowup: () => { ok: boolean; reason?: string };
   climberLeaderboard: Array<ClimberEntry & { isPlayer?: boolean; rank: number }>;
   activeFloorEncounter:
     | { encounter: FloorEncounterEventDefinition; attemptNumber: number; decision?: "accepted" | "declined" }
@@ -118,6 +137,63 @@ type BoardRankFilter = "all" | AdventurerRank;
 type BoardTypeFilter = "all" | QuestDefinition["type"];
 type TowerRunStage = "entrance" | "briefing" | "waves";
 type TowerWaveKey = "normal" | "subBoss" | "boss";
+type LiveBattleTelegraph = {
+  id: string;
+  enemyId: string;
+  enemyName: string;
+  mechanic: string;
+  recommendedItemId?: ItemId | null;
+  suggestedPosition?: TowerBattlePosition;
+  suggestedSkillClass?: BaseClassId | null;
+  suggestedBrace?: boolean;
+};
+type LiveBattleStatusFx = {
+  id: string;
+  label: string;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  tone: "good" | "bad" | "neutral";
+  detail?: string;
+  expiresAtMs?: number;
+  stacks?: number;
+};
+type LiveTowerBattleSession = {
+  source: "tower" | "quest";
+  floorNumber: number;
+  wave: TowerWaveKey;
+  questId?: string;
+  encounterTitle?: string;
+  encounterSummary?: string;
+  enemies: TowerEnemyUnit[];
+  committedItems: Record<ItemId, number>;
+  telegraphs: LiveBattleTelegraph[];
+  activeIndex: number;
+  position: TowerBattlePosition;
+  braceUsed: boolean;
+  skillUsed: boolean;
+  responses: TowerLiveBattleDirective["responses"];
+  turnOwner: "player" | "enemy";
+  playerTurnsRemaining: number;
+  enemyTurnsRemaining: number;
+  playerStats: {
+    damage: number;
+    critChance: number;
+    speed: number;
+  };
+  enemyStatsById: Record<string, { damage: number; critChance: number; speed: number; role: TowerEnemyUnit["role"] }>;
+  playerHp: number;
+  enemyHpById: Record<string, number>;
+  playerStatusFx: LiveBattleStatusFx[];
+  enemyStatusFxById: Record<string, LiveBattleStatusFx[]>;
+  effectClockElapsedMs: number;
+  effectClockStartedAtMs: number | null;
+  initiativeHistory: Array<"player" | "enemy">;
+  turnLog: string[];
+  skillCooldownEndsAtMsById: Partial<Record<AbilityId, number>>;
+  queuedEnemyIndex?: number | null;
+  lastPlayerDamage?: number;
+  lastEnemyDamage?: number;
+  lastCrit?: boolean;
+};
 type TowerWaveReport = {
   wave: TowerWaveKey;
   title: string;
@@ -128,6 +204,7 @@ type TowerWaveReport = {
 };
 
 const RANK_ORDER: AdventurerRank[] = ["F", "E", "D", "C", "B", "A", "S", "SS"];
+const USE_SHARED_TOWER_WAVE_LAYOUT: boolean = true;
 const hasReachedRank = (current: AdventurerRank, required?: AdventurerRank) =>
   !required || RANK_ORDER.indexOf(current) >= RANK_ORDER.indexOf(required);
 
@@ -147,6 +224,16 @@ const formatRemaining = (msRemaining: number): string => {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+};
+
+const formatRemainingDetailed = (msRemaining: number): string => {
+  const totalSeconds = Math.max(0, Math.ceil(msRemaining / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}`;
 };
 
 const questTypeLabel: Record<QuestDefinition["type"], string> = {
@@ -287,6 +374,216 @@ const WARRIOR_PATH_GUIDE_NPC_PROFILE: GuildNpcProfile = {
   avatarOverride: s3AssetWithFallback("game/characters/source/epicfantasy/pack-1-150/Tex_EFHaV1_00031.png", require("../../assets/game/characters/source/epicfantasy/pack-1-150/Tex_EFHaV1_00031.png")),
 };
 const SPECIAL_RESCUE_QUEST_ID = "quest-aldric-child-rescue";
+const SPECIAL_NPC_QUEST_IDS = new Set([
+  "quest-aldric-child-rescue",
+  "quest-lyra-ember-maps",
+  "quest-tamsin-snagline-recovery",
+]);
+const QUEST_BOARD_PREVIEW_IDS = new Set([
+  "quest-cinder-vulture-cull",
+  "quest-lamp-reliquary-descent",
+  "hunt-leviathor-coiling-deep",
+]);
+const getLiveBattleSuggestion = (mechanic: string): Omit<LiveBattleTelegraph, "id" | "enemyId" | "enemyName" | "mechanic"> => {
+  const keyword = mechanic.toLowerCase();
+  if (keyword.includes("poison bite")) {
+    return { recommendedItemId: "antitoxin-vial", suggestedPosition: "rear", suggestedSkillClass: "ranger" };
+  }
+  if (keyword.includes("pack rush")) {
+    return { suggestedBrace: true, suggestedPosition: "front", suggestedSkillClass: "warrior" };
+  }
+  if (keyword.includes("burrow")) {
+    return { recommendedItemId: "torch", suggestedPosition: "rear", suggestedSkillClass: "ranger" };
+  }
+  if (keyword.includes("bulwark")) {
+    return { recommendedItemId: "lockpick", suggestedSkillClass: "mage", suggestedPosition: "front" };
+  }
+  if (keyword.includes("crushing sweep")) {
+    return { recommendedItemId: "guard-tonic", suggestedBrace: true, suggestedSkillClass: "warrior" };
+  }
+  if (keyword.includes("overcharge")) {
+    return { recommendedItemId: "grounding-tonic", suggestedPosition: "mid", suggestedSkillClass: "mage" };
+  }
+  if (keyword.includes("spark field")) {
+    return { recommendedItemId: "ward-charm", suggestedPosition: "mid", suggestedSkillClass: "mage" };
+  }
+  return { suggestedPosition: "mid" };
+};
+
+const buildLiveBattleTelegraphs = (enemies: TowerEnemyUnit[], estimatedTurnDamage: number): LiveBattleTelegraph[] =>
+  enemies.flatMap((enemy) => {
+    const mechanics = enemy.mechanics?.length ? enemy.mechanics : ["Direct Clash: standard enemy pressure."];
+    const turnsNeeded = Math.max(1, Math.ceil((enemy.health ?? 1) / Math.max(1, estimatedTurnDamage)));
+    return Array.from({ length: turnsNeeded }, (_, index) => {
+      const mechanic = mechanics[index % mechanics.length];
+      return {
+        id: `${enemy.id}-${index}-${mechanic.replace(/\s+/g, "-").toLowerCase()}`,
+        enemyId: enemy.id,
+        enemyName: enemy.name,
+        mechanic,
+        ...getLiveBattleSuggestion(mechanic),
+      };
+    });
+  });
+const ALDRIC_SPECIAL_BATTLES = [
+  {
+    waveLabel: "Wave 1",
+    enemyId: "bandit-cutthroat",
+    enemyName: "Bandit Cutthroat",
+    enemyRole: "normal",
+    enemyLevel: 3,
+    enemyHealth: 34,
+    turnsToDefeat: 2,
+    playerDamagePerTurn: 18,
+    damageTaken: 6,
+    avatarId: "ranger-4" as const,
+    classId: "ranger" as const,
+    events: [
+      {
+        mechanic: "Fast Entry",
+        positive: true,
+        icon: "sprint",
+        resultText: "You break through the trail edge before the cutthroat can lock the lane down.",
+      },
+      {
+        mechanic: "Knife Rush",
+        positive: false,
+        icon: "knife-military",
+        resultText: "A quick slash lands as the bandit tries to stall the rescue push.",
+      },
+      {
+        mechanic: "Counter Drop",
+        positive: true,
+        icon: "sword-cross",
+        resultText: "The cutthroat folds under pressure and the first gap opens toward the camp.",
+      },
+    ],
+  },
+  {
+    waveLabel: "Wave 1",
+    enemyId: "bandit-bruiser",
+    enemyName: "Bandit Bruiser",
+    enemyRole: "normal",
+    enemyLevel: 4,
+    enemyHealth: 42,
+    turnsToDefeat: 3,
+    playerDamagePerTurn: 16,
+    damageTaken: 8,
+    avatarId: "warrior-4" as const,
+    classId: "warrior" as const,
+    events: [
+      {
+        mechanic: "Heavy Block",
+        positive: false,
+        icon: "shield-alert-outline",
+        resultText: "The bruiser plants himself in the lane and forces the rescue to slow down.",
+      },
+      {
+        mechanic: "Pressure Shift",
+        positive: true,
+        icon: "swap-horizontal-bold",
+        resultText: "You turn his guard aside and keep the route from closing completely.",
+      },
+      {
+        mechanic: "Line Broken",
+        positive: true,
+        icon: "hammer-break",
+        resultText: "The bruiser goes down and the outer camp line finally breaks.",
+      },
+    ],
+  },
+  {
+    waveLabel: "Wave 2",
+    enemyId: "watchtrail-butcher",
+    enemyName: "Watchtrail Butcher",
+    enemyRole: "boss",
+    enemyLevel: 5,
+    enemyHealth: 78,
+    turnsToDefeat: 4,
+    playerDamagePerTurn: 20,
+    damageTaken: 12,
+    avatarId: "warrior-3" as const,
+    classId: "warrior" as const,
+    events: [
+      {
+        mechanic: "Hostage Delay",
+        positive: false,
+        icon: "timer-sand",
+        resultText: "The Butcher drags the rescue window out and tries to force you into a bad trade.",
+      },
+      {
+        mechanic: "Drive Through",
+        positive: true,
+        icon: "run-fast",
+        resultText: "You force the fight inward before the camp can fully reset around him.",
+      },
+      {
+        mechanic: "Butcher's Stand",
+        positive: false,
+        icon: "skull-scan-outline",
+        resultText: "He bleeds time with brutal swings and keeps the rescue on the edge of collapse.",
+      },
+      {
+        mechanic: "Final Break",
+        positive: true,
+        icon: "star-four-points-circle-outline",
+        resultText: "The leader finally breaks under sustained pressure and the lane opens at the last moment.",
+      },
+    ],
+  },
+] as const;
+const LIVE_QUEST_ENCOUNTERS: Record<
+  string,
+  {
+    title: string;
+    summary: string;
+    enemies: TowerEnemyUnit[];
+    successSummary: string;
+    failureSummary: string;
+  }
+> = {
+  "quest-cinder-vulture-cull": {
+    title: "Live Contract: Cull the Cinder Vulture Brood",
+    summary: "Ash-caked carrion birds are swarming the ridge. Break the brood line before they can pin the trail in burning feathers.",
+    enemies: [
+      {
+        id: "quest-cinder-vulture-scout",
+        name: "Cinder Vulture Scout",
+        role: "normal",
+        level: 16,
+        health: 88,
+        icon: "bird",
+        description: "A fast ash-feeding predator that dives low to blind and bleed climbers on open stone.",
+        lore: "Scouts wheel ahead of the flock and slash vision away with ember-dust before the heavier birds descend.",
+        weaknessNotes: ["They fold faster under steady grounded pressure than burst swings."],
+        mechanics: [
+          "Ash Wing Buffet: cinder grit reduces your attack rhythm if you let it land.",
+          "Hooked Dive: a tearing pass that punishes weak footing.",
+        ],
+      },
+      {
+        id: "quest-cinder-vulture-brood-matron",
+        name: "Cinder Vulture Matron",
+        role: "subBoss",
+        level: 18,
+        health: 128,
+        icon: "bird",
+        description: "The brood matron circles above the ridge and drops in only when the lesser birds have opened flesh.",
+        lore: "Old guild notes say the matrons learned to nest around ember vents and now treat climbing parties like intruders in a sacred feeding ground.",
+        weaknessNotes: ["Break her momentum before she can reset into another pass."],
+        mechanics: [
+          "Ember Dive: a burning plunge that punishes anyone who stays exposed.",
+          "Shriek of the Brood: pressure howl that throws off follow-up strikes.",
+          "Scorch Talons: heavy rake that can snowball if you surrender tempo.",
+        ],
+      },
+    ],
+    successSummary:
+      "You cut the brood out of Ashwind Ridge and the guild marks the route passable again. The carcasses leave enough remnant feather and ashbone to prove the kill.",
+    failureSummary:
+      "The ridge turns against you under circling wings and ember grit. The brood holds the air lane, forcing the guild to post the contract again.",
+  },
+};
 const GUILD_MAGE_NPC_ID = "npc-mage-seraphine";
 const QUARTERMASTER_BRAN_NPC_ID = "npc-quartermaster-bran";
 
@@ -334,6 +631,8 @@ export const QuestsScreen = ({
   npcUnreadCount,
   onNpcTabOpened,
   onRespondRescueNpcRequest,
+  onRespondThornRunnerIntroduction,
+  onAcknowledgeThornRunnerFollowup,
   climberLeaderboard,
   activeFloorEncounter,
   onRespondFloorEncounter,
@@ -344,9 +643,42 @@ export const QuestsScreen = ({
   onTowerModeChange,
 }: QuestsScreenProps) => {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [questClockMs, setQuestClockMs] = useState(() => Date.now());
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"ok" | "error">("ok");
   const [isBuying, setIsBuying] = useState(false);
+  const affinityScore = character.affinity ?? 0;
+  const aldricChoices = [
+    { accept: false, label: "Refuse", alignment: "evil" as const },
+    { accept: true, label: "Accept Request", alignment: "good" as const },
+  ].filter((entry) => isChoiceAllowedByAffinity(affinityScore, entry.alignment));
+  const tamsinChoices = [
+    { id: "steady" as const, label: "I'll bring it back clean.", alignment: "good" as const },
+    { id: "mercenary" as const, label: "Just mark the pay.", alignment: "evil" as const },
+  ].filter((entry) => isChoiceAllowedByAffinity(affinityScore, entry.alignment));
+  const lyraChoices = [
+    {
+      id: "returned" as const,
+      title: "Return It Unopened",
+      text: "Give Lyra the satchel intact and let restraint speak for you.",
+      colors: ["rgba(82, 125, 94, 0.95)", "rgba(41, 73, 50, 0.95)"] as const,
+      alignment: "good" as const,
+    },
+    {
+      id: "kept" as const,
+      title: "Study It In Secret",
+      text: "Learn from the ember routes first, then decide what to reveal.",
+      colors: ["rgba(68, 74, 120, 0.95)", "rgba(39, 44, 82, 0.95)"] as const,
+      alignment: "neutral" as const,
+    },
+    {
+      id: "reported" as const,
+      title: "Report It To Guild Command",
+      text: "Put the satchel in official hands and accept what that will mean.",
+      colors: ["rgba(129, 63, 63, 0.95)", "rgba(87, 36, 36, 0.95)"] as const,
+      alignment: "evil" as const,
+    },
+  ].filter((entry) => isChoiceAllowedByAffinity(affinityScore, entry.alignment));
   const [lastPurchasedItemId, setLastPurchasedItemId] = useState<string | null>(null);
   const [lastPurchaseText, setLastPurchaseText] = useState("");
   const [lastCraftedItemId, setLastCraftedItemId] = useState<ItemId | null>(null);
@@ -373,18 +705,30 @@ export const QuestsScreen = ({
     Record<number, Partial<Record<TowerWaveKey, TowerWaveReport>>>
   >({});
   const [waveResolveModal, setWaveResolveModal] = useState<TowerWaveOutcome | null>(null);
-  const [waveResolveRevealStepCount, setWaveResolveRevealStepCount] = useState(0);
+  const [liveTowerBattle, setLiveTowerBattle] = useState<LiveTowerBattleSession | null>(null);
+  const [enemyTurnMeter, setEnemyTurnMeter] = useState(0);
+  const [enemyTurnAnimating, setEnemyTurnAnimating] = useState(false);
+  const [battleEffectHint, setBattleEffectHint] = useState<string | null>(null);
+  const [battleStatusHint, setBattleStatusHint] = useState<string | null>(null);
+  const [towerCollapseAftermath, setTowerCollapseAftermath] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const [effectHint, setEffectHint] = useState<{ title: string; detail?: string } | null>(null);
   const { width: viewportWidth } = useWindowDimensions();
   const useWideTowerScout = Platform.OS === "web" && viewportWidth >= 1080;
   const [floorLoreOpenFor, setFloorLoreOpenFor] = useState<number | null>(null);
   const [rescueDialogOpen, setRescueDialogOpen] = useState(false);
-  const [guildDialog, setGuildDialog] = useState<"bran-store" | "examiner-rank" | null>(null);
+  const [aldricBattleOpen, setAldricBattleOpen] = useState(false);
+  const [aldricBattleRevealCount, setAldricBattleRevealCount] = useState(0);
+  const [aldricBattleAutoResolving, setAldricBattleAutoResolving] = useState(false);
+  const [guildDialog, setGuildDialog] = useState<"bran-store" | "examiner-rank" | "tamsin-floor2" | "tamsin-followup" | null>(null);
   const [branSpeakCount, setBranSpeakCount] = useState(0);
   const [examinerSpeakCount, setExaminerSpeakCount] = useState(0);
   const [branDialogLine, setBranDialogLine] = useState(BRAN_STORE_DIALOG_LINES[0]);
   const [examinerDialogLine, setExaminerDialogLine] = useState(EXAMINER_NOT_READY_DIALOG_LINES[0]);
   const [infoPanel, setInfoPanel] = useState<{ title: string; body: string; rarity?: ItemRarity; itemId?: ItemId } | null>(null);
+  const [infoArtExpanded, setInfoArtExpanded] = useState(false);
   const [boardRankFilter, setBoardRankFilter] = useState<BoardRankFilter>("all");
   const [boardTypeFilter, setBoardTypeFilter] = useState<BoardTypeFilter>("all");
   const lyraChoicePending =
@@ -394,8 +738,13 @@ export const QuestsScreen = ({
   const lyraDecisionOutstanding = storyState.lyraQuestResolution === "unresolved";
 
   const getTowerEnemyArt = (enemy: TowerEnemyUnit): ImageSourcePropType | undefined =>
-    TOWER_ENEMY_ART[enemy.id] ?? TOWER_ENEMY_ART_BY_NAME[enemy.name.trim().toLowerCase()];
-  const rescueNpcVisible = rescueNpcStatus === "available" || rescueNpcStatus === "refused_once" || rescueNpcStatus === "accepted";
+    TOWER_ENEMY_ART[enemy.id] ?? TOWER_ENEMY_ART_BY_NAME[enemy.name.trim().toLowerCase()] ?? TOWER_ENEMY_ROLE_ART[enemy.role];
+  const rescueNpcVisible =
+    rescueNpcStatus === "available" ||
+    rescueNpcStatus === "refused_once" ||
+    rescueNpcStatus === "accepted" ||
+    storyState.aldricQuestPath === "saved" ||
+    storyState.aldricQuestPath === "too_late";
   const warriorPathGuideVisible =
     character.classId === "warrior" &&
     character.progression.level >= 15 &&
@@ -411,6 +760,9 @@ export const QuestsScreen = ({
         profiles.push(RESCUE_REQUEST_NPC_PROFILE);
       }
       for (const encountered of encounteredNpcProfiles) {
+        if (encountered.id === RESCUE_REQUEST_NPC_PROFILE.id && storyState.aldricQuestPath === "refused") {
+          continue;
+        }
         if (profiles.some((profile) => profile.id === encountered.id)) {
           continue;
         }
@@ -432,12 +784,718 @@ export const QuestsScreen = ({
       }
       return profiles.sort((a, b) => a.sequenceId - b.sequenceId);
     },
-    [rankExaminerProfile, rescueNpcVisible, warriorPathGuideVisible, encounteredNpcProfiles],
+    [rankExaminerProfile, rescueNpcVisible, warriorPathGuideVisible, encounteredNpcProfiles, storyState.aldricQuestPath],
   );
+
+const getLiveEnemyCombatStats = (enemy: TowerEnemyUnit) => ({
+  damage: Math.max(6, Math.round(enemy.level * 2 + (enemy.role === "boss" ? 10 : enemy.role === "subBoss" ? 6 : 2))),
+  critChance: enemy.role === "boss" ? 20 : enemy.role === "subBoss" ? 14 : 8,
+  speed: Math.max(5, Math.round(enemy.level * 1.9 + (enemy.role === "boss" ? 6 : enemy.role === "subBoss" ? 3 : 0))),
+  role: enemy.role,
+});
+
+const getTurnBurst = (actorSpeed: number, opposingSpeed: number): number => {
+  const speedGap = actorSpeed - opposingSpeed;
+  if (actorSpeed >= opposingSpeed * 2.4 && speedGap >= 14) {
+    return 3;
+  }
+  if (actorSpeed >= opposingSpeed * 1.7 && speedGap >= 8) {
+    return 2;
+  }
+  return 1;
+};
+const buildInitiativePreview = (
+  current: LiveTowerBattleSession,
+  currentEnemyId: string | undefined,
+  effectivePlayerSpeed?: number,
+): Array<{ actor: "player" | "enemy"; key: string }> => {
+  if (!currentEnemyId) {
+    return [];
+  }
+  const enemyStats = current.enemyStatsById[currentEnemyId];
+  if (!enemyStats) {
+    return [];
+  }
+  const preview: Array<{ actor: "player" | "enemy"; key: string }> = [];
+  let actor: "player" | "enemy" = current.turnOwner;
+  const playerSpeed = effectivePlayerSpeed ?? current.playerStats.speed;
+  let playerBurstRemaining =
+    current.turnOwner === "player"
+      ? Math.max(1, current.playerTurnsRemaining)
+      : Math.max(1, getTurnBurst(playerSpeed, enemyStats.speed));
+  let enemyBurstRemaining =
+    current.turnOwner === "enemy"
+      ? Math.max(1, current.enemyTurnsRemaining)
+      : Math.max(1, getTurnBurst(enemyStats.speed, playerSpeed));
+  for (let index = 0; index < 8; index += 1) {
+    preview.push({ actor, key: `${actor}-${index}` });
+    if (actor === "player") {
+      playerBurstRemaining -= 1;
+      if (playerBurstRemaining <= 0) {
+        actor = "enemy";
+        enemyBurstRemaining = Math.max(1, getTurnBurst(enemyStats.speed, playerSpeed));
+        playerBurstRemaining = Math.max(1, getTurnBurst(playerSpeed, enemyStats.speed));
+      }
+    } else {
+      enemyBurstRemaining -= 1;
+      if (enemyBurstRemaining <= 0) {
+        actor = "player";
+        playerBurstRemaining = Math.max(1, getTurnBurst(playerSpeed, enemyStats.speed));
+        enemyBurstRemaining = Math.max(1, getTurnBurst(enemyStats.speed, playerSpeed));
+      } else {
+        actor = "enemy";
+      }
+    }
+  }
+  return preview;
+};
+const getNextLiveTelegraphIndex = (session: LiveTowerBattleSession, startIndex: number): number => {
+  if (session.telegraphs.length <= 0) {
+    return 0;
+  }
+  for (let offset = 0; offset < session.telegraphs.length; offset += 1) {
+    const candidate = (startIndex + offset) % session.telegraphs.length;
+    const telegraph = session.telegraphs[candidate];
+    if ((session.enemyHpById[telegraph.enemyId] ?? 0) > 0) {
+      return candidate;
+    }
+  }
+  return 0;
+};
+const getNextTelegraphIndexForEnemy = (session: LiveTowerBattleSession, enemyId: string, currentIndex: number): number => {
+  if (session.telegraphs.length <= 0) {
+    return 0;
+  }
+  for (let offset = 1; offset <= session.telegraphs.length; offset += 1) {
+    const candidate = (currentIndex + offset) % session.telegraphs.length;
+    if (session.telegraphs[candidate].enemyId === enemyId) {
+      return candidate;
+    }
+  }
+  return currentIndex;
+};
+const getMechanicStatusFx = (mechanic: string): LiveBattleStatusFx | null => {
+  const keyword = mechanic.toLowerCase();
+  if (keyword.includes("poison")) {
+    return { id: "poisoned", label: "Poisoned", icon: "biohazard", tone: "bad", detail: "Poison pressure is eating away at you.", stacks: 1 };
+  }
+  if (keyword.includes("spark") || keyword.includes("overcharge")) {
+    return { id: "shocked", label: "Shocked", icon: "lightning-bolt", tone: "bad", detail: "Shock pressure is disrupting your next exchanges.", stacks: 1 };
+  }
+  if (keyword.includes("bulwark") || keyword.includes("block")) {
+    return { id: "fortified", label: "Fortified", icon: "shield-lock-outline", tone: "neutral", detail: "This target is braced behind heavy protection." };
+  }
+  if (keyword.includes("rush") || keyword.includes("drive")) {
+    return { id: "rushed", label: "Pressured", icon: "run-fast", tone: "bad", detail: "The enemy has you on the back foot.", stacks: 1 };
+  }
+  return null;
+};
+const getPlayerResponseStatusFx = (
+  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass",
+  success: boolean,
+  critTriggered: boolean,
+  skillId?: AbilityId | null,
+): LiveBattleStatusFx[] => {
+  const statuses: LiveBattleStatusFx[] = [];
+  if (critTriggered) {
+    statuses.push({ id: "staggered", label: "Staggered", icon: "flash-outline", tone: "bad", detail: "A heavy blow left this target reeling." });
+  }
+  return statuses;
+};
+const getStatusToneBadgeStyle = (tone: LiveBattleStatusFx["tone"]) =>
+  tone === "good" ? styles.towerStatusIconBadgeGood : tone === "bad" ? styles.towerStatusIconBadgeBad : styles.towerStatusIconBadgeNeutral;
+const addOrReplaceStatusFx = (list: LiveBattleStatusFx[], nextFx: LiveBattleStatusFx): LiveBattleStatusFx[] => {
+  const filtered = list.filter((entry) => entry.id !== nextFx.id);
+  return [...filtered, nextFx];
+};
+const addOrStackStatusFx = (list: LiveBattleStatusFx[], nextFx: LiveBattleStatusFx, maxStacks = 3): LiveBattleStatusFx[] => {
+  const existing = list.find((entry) => entry.id === nextFx.id);
+  if (!existing) {
+    return [...list, { ...nextFx, stacks: nextFx.stacks ?? 1 }];
+  }
+  const nextStacks = Math.min(maxStacks, (existing.stacks ?? 1) + (nextFx.stacks ?? 1));
+  return list.map((entry) =>
+    entry.id === nextFx.id
+      ? {
+          ...entry,
+          ...nextFx,
+          stacks: nextStacks,
+          expiresAtMs: nextFx.expiresAtMs ?? entry.expiresAtMs,
+        }
+      : entry,
+  );
+};
+const pruneExpiredStatusFx = (list: LiveBattleStatusFx[], nowMs: number): LiveBattleStatusFx[] =>
+  list.filter((entry) => !entry.expiresAtMs || entry.expiresAtMs > nowMs);
+const getLiveBattleEffectClockMs = (session: LiveTowerBattleSession, wallNowMs: number): number =>
+  session.effectClockElapsedMs +
+  (session.turnOwner === "player" && session.effectClockStartedAtMs ? Math.max(0, wallNowMs - session.effectClockStartedAtMs) : 0);
+const getNextBattleEffectClockState = (
+  session: LiveTowerBattleSession,
+  nextTurnOwner: "player" | "enemy",
+  wallNowMs: number,
+): Pick<LiveTowerBattleSession, "effectClockElapsedMs" | "effectClockStartedAtMs"> => {
+  if (session.turnOwner === "player" && nextTurnOwner !== "player") {
+    return {
+      effectClockElapsedMs: getLiveBattleEffectClockMs(session, wallNowMs),
+      effectClockStartedAtMs: null,
+    };
+  }
+  if (session.turnOwner !== "player" && nextTurnOwner === "player") {
+    return {
+      effectClockElapsedMs: session.effectClockElapsedMs,
+      effectClockStartedAtMs: wallNowMs,
+    };
+  }
+  if (nextTurnOwner === "player" && session.effectClockStartedAtMs == null) {
+    return {
+      effectClockElapsedMs: session.effectClockElapsedMs,
+      effectClockStartedAtMs: wallNowMs,
+    };
+  }
+  return {
+    effectClockElapsedMs: session.effectClockElapsedMs,
+    effectClockStartedAtMs: session.effectClockStartedAtMs,
+  };
+};
+const getStatusStacks = (list: LiveBattleStatusFx[], id: string): number => list.find((entry) => entry.id === id)?.stacks ?? 0;
+const hasStatusFx = (list: LiveBattleStatusFx[], id: string): boolean => list.some((entry) => entry.id === id);
+type BattleStatusChangeSet = {
+  clearIds?: string[];
+  replace?: LiveBattleStatusFx[];
+  stack?: LiveBattleStatusFx[];
+  nowMs?: number;
+};
+const applyBattleStatusChanges = (list: LiveBattleStatusFx[], changes: BattleStatusChangeSet): LiveBattleStatusFx[] => {
+  let nextList = changes.nowMs ? pruneExpiredStatusFx(list, changes.nowMs) : [...list];
+  if (changes.clearIds?.length) {
+    nextList = nextList.filter((entry) => !changes.clearIds?.includes(entry.id));
+  }
+  for (const effect of changes.replace ?? []) {
+    nextList = addOrReplaceStatusFx(nextList, effect);
+  }
+  for (const effect of changes.stack ?? []) {
+    nextList = addOrStackStatusFx(nextList, effect);
+  }
+  return nextList;
+};
+const getPlayerBattleItemEffect = (
+  itemId: ItemId,
+): { heal?: number; addStatus?: LiveBattleStatusFx; clearStatusIds?: string[] } => {
+  if (itemId === "healing-herb") {
+    return { heal: 10 };
+  }
+  if (itemId === "health-potion") {
+    return { heal: 35 };
+  }
+  if (itemId === "antitoxin-vial") {
+    return { heal: 4, clearStatusIds: ["poisoned"] };
+  }
+  if (itemId === "guard-tonic") {
+    return {
+      addStatus: {
+        id: "guarded",
+        label: "Guarded",
+        icon: "shield-check-outline",
+        tone: "good",
+        detail: "Guard Tonic hardens your guard for the next exchanges.",
+        stacks: 1,
+      },
+    };
+  }
+  if (itemId === "grounding-tonic") {
+    return {
+      addStatus: {
+        id: "grounded",
+        label: "Grounded",
+        icon: "lightning-bolt-circle",
+        tone: "good",
+        detail: "Grounding current steadies you against shock.",
+        stacks: 1,
+      },
+    };
+  }
+  if (itemId === "ward-charm") {
+    return {
+      addStatus: {
+        id: "warded",
+        label: "Warded",
+        icon: "shield-sun-outline",
+        tone: "good",
+        detail: "A ward veil dulls incoming arc pressure.",
+        stacks: 1,
+      },
+    };
+  }
+  return {};
+};
+const formatStatusDetail = (effect: LiveBattleStatusFx, nowMs: number): string => {
+  const stacks = effect.stacks ?? 1;
+  const timerSuffix =
+    effect.expiresAtMs && effect.expiresAtMs > nowMs ? ` ${formatRemainingDetailed(effect.expiresAtMs - nowMs)} remaining.` : "";
+  switch (effect.id) {
+    case "poisoned":
+      return `Lose ${3 * stacks} HP at the start of your turns.${timerSuffix}`;
+    case "shocked":
+      return `Attack damage is reduced by ${2 * stacks}.${timerSuffix}`;
+    case "rushed":
+      return `Pressure lowers your attack damage by ${3 * stacks}.${timerSuffix}`;
+    case "guarded":
+      return `Incoming damage is reduced by ${4 * stacks} on enemy turns.${timerSuffix}`;
+    case "iron-will":
+      return `Iron Will is active. Incoming damage is reduced by 6 and turn control is steadier.${timerSuffix}`;
+    case "steel-rhythm":
+      return `Steel Rhythm is active. Speed is boosted by 3, follow-up strikes gain +3 damage, and counter windows hit harder.${timerSuffix}`;
+    case "bulwark-oath":
+      return `Bulwark Oath is active. Incoming damage is reduced by 10, heavy mechanics lose severity, and guarded answers can set up a counter.${timerSuffix}`;
+    case "bloodrush":
+      return `Bloodrush is active. Attack +10, crit +8%, and speed +3, but you take 3 more damage when the enemy punishes you.${timerSuffix}`;
+    case "counter-ready":
+      return `Your next attack gains +8 damage and a stronger follow-up window.${timerSuffix}`;
+    case "frenzied":
+      return `You took damage and fed the frenzy. Attack +4 and crit +3% while it lasts.${timerSuffix}`;
+    case "scout-path":
+      return `Scout Path is active. Speed is boosted by 4 and evasive mitigation improves.${timerSuffix}`;
+    case "arcane-surge":
+      return `Arcane Surge is active. Your attacks gain +9 damage and +6% crit.${timerSuffix}`;
+    case "grounded":
+      return `Shock pressure is reduced by 4 while Grounded holds.${timerSuffix}`;
+    case "warded":
+      return `Arc and field pressure are softened while the ward holds.${timerSuffix}`;
+    case "fortified":
+      return `This target is braced behind protection and harder to break cleanly.${timerSuffix}`;
+    case "staggered":
+      return `This target is reeling from a heavy hit.${timerSuffix}`;
+    default:
+      return effect.detail ?? effect.label;
+  }
+};
+const PERSISTENT_WAVE_STATUS_IDS = new Set([
+  "poisoned",
+  "shocked",
+  "rushed",
+  "grounded",
+  "warded",
+  "iron-will",
+  "steel-rhythm",
+  "bulwark-oath",
+  "bloodrush",
+  "counter-ready",
+  "frenzied",
+  "scout-path",
+  "arcane-surge",
+]);
+type BattleStatusSnapshot = ReturnType<typeof getBattleStatusSnapshot>;
+const mapTowerStatusToLiveFx = (
+  status: NonNullable<TowerWaveOutcome["statusEffects"]>[number],
+): LiveBattleStatusFx => ({
+  id: status.id,
+  label: status.name,
+  icon: status.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+  tone: status.tone,
+  detail: status.detail,
+  stacks: status.stacks,
+  expiresAtMs: status.expiresAtMs,
+});
+const mapLiveFxToTowerStatus = (
+  effect: LiveBattleStatusFx,
+): NonNullable<TowerWaveOutcome["statusEffects"]>[number] => ({
+  id: effect.id,
+  name: effect.label,
+  icon: effect.icon,
+  tone: effect.tone,
+  detail: effect.detail ?? effect.label,
+  stacks: effect.stacks,
+  expiresAtMs: effect.expiresAtMs,
+});
+const getPersistentWaveStatusFx = (
+  list: LiveBattleStatusFx[],
+  effectNowMs: number,
+  wallNowMs: number,
+): NonNullable<TowerWaveOutcome["statusEffects"]> =>
+  pruneExpiredStatusFx(list, effectNowMs)
+    .filter((effect) => PERSISTENT_WAVE_STATUS_IDS.has(effect.id))
+    .map((effect) => ({
+      ...mapLiveFxToTowerStatus(effect),
+      expiresAtMs:
+        effect.expiresAtMs && effect.expiresAtMs > effectNowMs
+          ? wallNowMs + (effect.expiresAtMs - effectNowMs)
+          : effect.expiresAtMs,
+    }));
+const getBattleStatusSnapshot = (list: LiveBattleStatusFx[]) => ({
+  poisonStacks: getStatusStacks(list, "poisoned"),
+  shockStacks: getStatusStacks(list, "shocked"),
+  pressureStacks: getStatusStacks(list, "rushed"),
+  guardedStacks: getStatusStacks(list, "guarded"),
+  groundedStacks: getStatusStacks(list, "grounded"),
+  wardedStacks: getStatusStacks(list, "warded"),
+  counterReadyStacks: getStatusStacks(list, "counter-ready"),
+  hasIronWill: list.some((entry) => entry.id === "iron-will"),
+  hasSteelRhythm: list.some((entry) => entry.id === "steel-rhythm"),
+  hasBulwarkOath: list.some((entry) => entry.id === "bulwark-oath"),
+  hasBloodrush: list.some((entry) => entry.id === "bloodrush"),
+  hasFrenzied: list.some((entry) => entry.id === "frenzied"),
+  hasScoutPath: list.some((entry) => entry.id === "scout-path"),
+  hasArcaneSurge: list.some((entry) => entry.id === "arcane-surge"),
+});
+const getLiveBattleSkillEffectProfile = (
+  activeSkillEffectId: AbilityId | null,
+  skillEffectEndsAtMs: number | null,
+  skillId: AbilityId | null,
+  nowMs: number,
+) => {
+  if (!activeSkillEffectId || !skillEffectEndsAtMs || skillEffectEndsAtMs <= nowMs || !skillId) {
+    return null;
+  }
+  const skillProfile = getLiveBattleSkillProfile(skillId);
+  return skillProfile?.effectId === activeSkillEffectId ? skillProfile : null;
+};
+const getActiveSkillProfilesFromStatuses = (
+  playerStatusFx: LiveBattleStatusFx[],
+  unlockedSkillIds: AbilityId[],
+  nowMs: number,
+): LiveBattleSkillProfile[] => {
+  const activeStatusIds = new Set(
+    pruneExpiredStatusFx(playerStatusFx, nowMs)
+      .filter((effect) => !effect.expiresAtMs || effect.expiresAtMs > nowMs)
+      .map((effect) => effect.id),
+  );
+  return unlockedSkillIds
+    .map((skillId) => getLiveBattleSkillProfile(skillId))
+    .filter((profile): profile is LiveBattleSkillProfile => Boolean(profile && activeStatusIds.has(profile.effectId)));
+};
+const getCombinedLiveSkillBonuses = (
+  playerStatusFx: LiveBattleStatusFx[],
+  unlockedSkillIds: AbilityId[],
+  nowMs: number,
+) =>
+  getActiveSkillProfilesFromStatuses(playerStatusFx, unlockedSkillIds, nowMs).reduce(
+    (sum, profile) => ({
+      attackBonus: sum.attackBonus + profile.attackBonus,
+      critBonus: sum.critBonus + profile.critBonus,
+      speedBonus: sum.speedBonus + profile.speedBonus,
+      mitigationFlat: sum.mitigationFlat + profile.mitigationFlat,
+      initiativeBonus: sum.initiativeBonus + profile.initiativeBonus,
+      guardBonusFlat: sum.guardBonusFlat + profile.guardBonusFlat,
+      statusSeverityReductionFlat: sum.statusSeverityReductionFlat + profile.statusSeverityReductionFlat,
+      counterBonusDamageFlat: sum.counterBonusDamageFlat + profile.counterBonusDamageFlat,
+      woundedTargetDamageFlat: sum.woundedTargetDamageFlat + profile.woundedTargetDamageFlat,
+      defensePenaltyFlat: sum.defensePenaltyFlat + profile.defensePenaltyFlat,
+      activeLabels: [...sum.activeLabels, profile.effectLabel],
+    }),
+    {
+      attackBonus: 0,
+      critBonus: 0,
+      speedBonus: 0,
+      mitigationFlat: 0,
+      initiativeBonus: 0,
+      guardBonusFlat: 0,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+      activeLabels: [] as string[],
+    },
+  );
+type CombinedLiveSkillBonuses = ReturnType<typeof getCombinedLiveSkillBonuses>;
+const getCombatAbilityEffectSummary = (abilityId: AbilityId): string => {
+  const ability = ABILITY_BY_ID[abilityId];
+  if (!ability) {
+    return "";
+  }
+  if ((ability.kind ?? "skill") === "passive") {
+    const passiveCategory =
+      ability.pathGroup === "knight"
+        ? "Knight Passive"
+        : ability.pathGroup === "berserker"
+          ? "Berserker Passive"
+          : "Shared Passive";
+    const profile = getPassiveBattleProfile(abilityId);
+    if (profile) {
+      const effects: string[] = [];
+      if (profile.guardBonusFlat > 0) {
+        effects.push(`Guard +${profile.guardBonusFlat}`);
+      }
+      if (profile.attackConsistencyFlat > 0) {
+        effects.push(`Steady +${profile.attackConsistencyFlat}`);
+      }
+      if (profile.statusSeverityReductionFlat > 0) {
+        effects.push(`Severity -${profile.statusSeverityReductionFlat}`);
+      }
+      if (profile.counterBonusDamageFlat > 0) {
+        effects.push(`Counter +${profile.counterBonusDamageFlat}`);
+      }
+      if (profile.woundedTargetDamageFlat > 0) {
+        effects.push(`Vs Wounded +${profile.woundedTargetDamageFlat}`);
+      }
+      if (profile.postCritTempoFlat > 0 || profile.postKillTempoFlat > 0) {
+        effects.push(`Tempo Feed`);
+      }
+      return `${passiveCategory} • ${effects.join(" • ") || "Combat support."}`;
+    }
+    return `${passiveCategory} • Combat support.`;
+  }
+  const liveProfile = getLiveBattleSkillProfile(abilityId);
+  if (!liveProfile) {
+    return `${ability.cooldownSeconds}s CD`;
+  }
+  const effects: string[] = [];
+  if (liveProfile.mitigationFlat > 0) {
+    effects.push(`Guard +${liveProfile.mitigationFlat}`);
+  }
+  if (liveProfile.attackBonus > 0) {
+    effects.push(`ATK +${liveProfile.attackBonus}`);
+  }
+  if (liveProfile.critBonus > 0) {
+    effects.push(`CRIT +${liveProfile.critBonus}%`);
+  }
+  if (liveProfile.speedBonus > 0) {
+    effects.push(`SPD +${liveProfile.speedBonus}`);
+  }
+  if (liveProfile.initiativeBonus > 0) {
+    effects.push(`Tempo +${liveProfile.initiativeBonus}`);
+  }
+  if (liveProfile.counterBonusDamageFlat > 0) {
+    effects.push(`Counter +${liveProfile.counterBonusDamageFlat}`);
+  }
+  if (liveProfile.woundedTargetDamageFlat > 0) {
+    effects.push(`Vs Wounded +${liveProfile.woundedTargetDamageFlat}`);
+  }
+  return `${ability.cooldownSeconds}s CD${effects.length ? ` • ${effects.join(" • ")}` : ""}`;
+};
+const getSkillCardMeta = (profile: LiveBattleSkillProfile | null): string => {
+  if (!profile) {
+    return "Combat skill";
+  }
+  if (profile.mitigationFlat > 0 && profile.attackBonus <= 0 && profile.critBonus <= 0) {
+    return "Guard buff";
+  }
+  if (profile.speedBonus > 0 && profile.attackBonus <= 2 && profile.critBonus <= 2) {
+    return "Tempo buff";
+  }
+  if (profile.attackBonus > 0 || profile.critBonus > 0) {
+    return "Offense buff";
+  }
+  return "Self buff";
+};
+const getBasicSkillHint = (abilityId: AbilityId): string => {
+  switch (abilityId) {
+    case "ability-warrior-iron-will":
+      return "Toughens you up for a short time and helps you hold the line.";
+    case "ability-warrior-steel-rhythm":
+      return "Locks your timing in so guarded turns flow into better follow-up pressure.";
+    case "ability-warrior-bulwark-oath":
+      return "Anchors you against heavy mechanics and sets up a safer counter window.";
+    case "ability-warrior-bloodrush":
+      return "Drives your offense faster and harder, but leaves you easier to punish.";
+    case "ability-ranger-scout-path":
+      return "Improves your movement and helps you stay ahead of enemy pressure.";
+    case "ability-mage-arcane-surge":
+      return "Empowers your next attacks so they hit harder.";
+    default:
+      return "A combat skill that buffs you for the next exchanges.";
+  }
+};
+const getBattleSkillButtonTone = (abilityId: AbilityId): "defense" | "tempo" | "offense" | "arcane" => {
+  switch (abilityId) {
+    case "ability-warrior-iron-will":
+    case "ability-warrior-bulwark-oath":
+      return "defense";
+    case "ability-ranger-scout-path":
+    case "ability-warrior-steel-rhythm":
+      return "tempo";
+    case "ability-mage-arcane-surge":
+      return "arcane";
+    case "ability-warrior-bloodrush":
+    default:
+      return "offense";
+  }
+};
+const getAbilityIdForBattleStatus = (statusId: string): AbilityId | null => {
+  switch (statusId) {
+    case "iron-will":
+      return "ability-warrior-iron-will";
+    case "steel-rhythm":
+      return "ability-warrior-steel-rhythm";
+    case "bulwark-oath":
+      return "ability-warrior-bulwark-oath";
+    case "bloodrush":
+      return "ability-warrior-bloodrush";
+    case "scout-path":
+      return "ability-ranger-scout-path";
+    case "arcane-surge":
+      return "ability-mage-arcane-surge";
+    default:
+      return null;
+  }
+};
+const describeBattleStatusChange = (effect: LiveBattleStatusFx, action: "gained" | "cleared"): string => {
+  const label = effect.label || effect.id;
+  if (action === "cleared") {
+    return `${label} fades.`;
+  }
+  const stacks = effect.stacks ?? 1;
+  return stacks > 1 ? `${label} intensifies to ${stacks} stacks.` : `${label} takes hold.`;
+};
+const applyStartOfTurnStatusEffects = (
+  list: LiveBattleStatusFx[],
+  nowMs: number,
+): { nextStatusFx: LiveBattleStatusFx[]; hpLoss: number; logLines: string[]; snapshot: BattleStatusSnapshot } => {
+  const nextStatusFx = applyBattleStatusChanges(list, { nowMs });
+  const snapshot = getBattleStatusSnapshot(nextStatusFx);
+  const hpLoss = snapshot.poisonStacks > 0 ? 3 * snapshot.poisonStacks : 0;
+  const logLines = hpLoss > 0 ? [`Poison bites for ${hpLoss} damage before you act.`] : [];
+  return { nextStatusFx, hpLoss, logLines, snapshot };
+};
+const applySelfTargetBattleItem = (
+  itemId: ItemId,
+  list: LiveBattleStatusFx[],
+  currentHp: number,
+  maxHp: number,
+): { nextStatusFx: LiveBattleStatusFx[]; nextHp: number; logLine: string } => {
+  const itemEffect = getPlayerBattleItemEffect(itemId);
+  let nextStatusFx = [...list];
+  let nextHp = currentHp;
+  const clearedStatusLabels = (itemEffect.clearStatusIds ?? [])
+    .filter((statusId) => hasStatusFx(nextStatusFx, statusId))
+    .map((statusId) => nextStatusFx.find((entry) => entry.id === statusId)?.label ?? statusId);
+  nextStatusFx = applyBattleStatusChanges(nextStatusFx, {
+    clearIds: itemEffect.clearStatusIds,
+    stack: itemEffect.addStatus ? [itemEffect.addStatus] : undefined,
+  });
+  if (itemEffect.heal) {
+    nextHp = Math.min(maxHp, nextHp + itemEffect.heal);
+  }
+  if (itemId === "healing-herb") {
+    return { nextStatusFx, nextHp, logLine: `You used Healing Herb on yourself and recovered ${Math.max(0, nextHp - currentHp)} HP.` };
+  }
+  if (itemId === "health-potion") {
+    return { nextStatusFx, nextHp, logLine: `You used Health Potion on yourself and recovered ${Math.max(0, nextHp - currentHp)} HP.` };
+  }
+  if (itemId === "antitoxin-vial") {
+    return {
+      nextStatusFx,
+      nextHp,
+      logLine:
+        clearedStatusLabels.length > 0
+          ? `You used Antitoxin Vial on yourself and cleared ${clearedStatusLabels.join(", ")}.`
+          : "You used Antitoxin Vial on yourself. No venom took hold.",
+    };
+  }
+  if (itemId === "focus-tonic" || itemId === "mana-tonic") {
+    return {
+      nextStatusFx,
+      nextHp,
+      logLine: `You used ${ITEM_BY_ID[itemId]?.name ?? "the tonic"} on yourself, but it has no direct effect in tower battle.`,
+    };
+  }
+  return { nextStatusFx, nextHp, logLine: `You used ${ITEM_BY_ID[itemId]?.name ?? "the item"} on yourself.` };
+};
+const calculatePlayerAttackAdjustment = (
+  baseDamage: number,
+  snapshot: BattleStatusSnapshot,
+  passiveBonuses: ReturnType<typeof getEquippedPassiveBattleBonuses>,
+): number => {
+  let nextDamage = baseDamage;
+  if (snapshot.pressureStacks > 0) {
+    nextDamage = Math.max(0, nextDamage - Math.max(0, 3 * snapshot.pressureStacks - passiveBonuses.pressureResistFlat));
+  }
+  if (snapshot.shockStacks > 0) {
+    nextDamage = Math.max(0, nextDamage - 2 * snapshot.shockStacks);
+  }
+  if (snapshot.hasFrenzied) {
+    nextDamage += passiveBonuses.frenzyAttackBonusFlat;
+  }
+  nextDamage = Math.max(nextDamage, passiveBonuses.attackConsistencyFlat);
+  return nextDamage;
+};
+const calculateIncomingEnemyDamage = ({
+  baseDamage,
+  severity,
+  enemyCrit,
+  responseSucceeded,
+  speedMitigation,
+  snapshot,
+  activeSkillProfile,
+  passiveBonuses,
+}: {
+  baseDamage: number;
+  severity: number;
+  enemyCrit: boolean;
+  responseSucceeded: boolean;
+  speedMitigation: number;
+  snapshot: BattleStatusSnapshot;
+  activeSkillProfile: CombinedLiveSkillBonuses;
+  passiveBonuses: ReturnType<typeof getEquippedPassiveBattleBonuses>;
+}): number => {
+  const guarded = snapshot.guardedStacks > 0 || snapshot.hasIronWill;
+  const evasive = snapshot.hasScoutPath;
+  let incomingDamage = baseDamage;
+  if (responseSucceeded) {
+    incomingDamage = Math.max(
+      0,
+      incomingDamage -
+        3 -
+        speedMitigation -
+        (guarded ? 4 + passiveBonuses.guardBonusFlat + activeSkillProfile.guardBonusFlat : 0) -
+        (evasive ? 1 : 0) -
+        (activeSkillProfile?.mitigationFlat ?? 0),
+    );
+  } else {
+    incomingDamage = Math.max(
+      1,
+      incomingDamage +
+        severity -
+        speedMitigation -
+        (guarded ? 2 + passiveBonuses.guardBonusFlat + activeSkillProfile.guardBonusFlat : 0) -
+        (activeSkillProfile?.mitigationFlat ?? 0) +
+        (activeSkillProfile?.defensePenaltyFlat ?? 0),
+    );
+  }
+  if (enemyCrit) {
+    incomingDamage = Math.round(incomingDamage * 1.45);
+  }
+  return incomingDamage;
+};
+const getMechanicSeverity = (mechanic: string): number => {
+  const keyword = mechanic.toLowerCase();
+  if (keyword.includes("overcharge") || keyword.includes("spark")) {
+    return 4;
+  }
+  if (keyword.includes("sweep") || keyword.includes("bulwark")) {
+    return 3;
+  }
+  return 2;
+};
   const branProfile = GUILD_CORE_NPCS.find((npc) => npc.id === QUARTERMASTER_BRAN_NPC_ID) ?? null;
+  const npcAttentionTargets = useMemo(() => {
+    const targets: string[] = [];
+    if (rescueNpcStatus === "available" || rescueNpcStatus === "refused_once") {
+      targets.push(RESCUE_REQUEST_NPC_PROFILE.id);
+    }
+    if (storyState.thornRunnerQuestStatus === "available" && !storyState.thornRunnerIntroductionChoice) {
+      targets.push("npc-tamsin-vale");
+    }
+    if (storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed) {
+      targets.push("npc-tamsin-vale");
+    }
+    return targets;
+  }, [rescueNpcStatus, storyState.thornRunnerFollowupReviewed, storyState.thornRunnerIntroductionChoice, storyState.thornRunnerQuestStatus]);
+  const npcAttentionCount = npcAttentionTargets.length;
+  const showAldricWantedPlaceholder =
+    storyState.aldricQuestPath === "refused" || storyState.aldricQuestPath === "too_late";
+  const aldricRescueRemainingMs =
+    storyState.rescueNpcStatus === "accepted" && storyState.aldricRescueDeadlineAtMs
+      ? Math.max(0, storyState.aldricRescueDeadlineAtMs - questClockMs)
+      : null;
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setQuestClockMs(Date.now()), 250);
     return () => clearInterval(timer);
   }, []);
 
@@ -457,6 +1515,39 @@ export const QuestsScreen = ({
     setPendingQuestResultOpen(false);
   }, [lastQuestOutcome, pendingQuestResultOpen]);
   useEffect(() => {
+    const isAldricBattle = activeQuest?.questId === SPECIAL_RESCUE_QUEST_ID;
+    if (!isAldricBattle) {
+      setAldricBattleOpen(false);
+      setAldricBattleRevealCount(0);
+      setAldricBattleAutoResolving(false);
+      return;
+    }
+    setAldricBattleOpen(true);
+  }, [activeQuest?.questId]);
+  useEffect(() => {
+    if (!aldricBattleOpen || activeQuest?.questId !== SPECIAL_RESCUE_QUEST_ID || !activeQuest) {
+      return;
+    }
+    const elapsedMs = Math.max(0, questClockMs - activeQuest.startedAtMs);
+    const nextRevealCount = elapsedMs >= 5200 ? 2 : elapsedMs >= 1800 ? 1 : 0;
+    if (nextRevealCount !== aldricBattleRevealCount) {
+      setAldricBattleRevealCount(nextRevealCount);
+    }
+  }, [aldricBattleOpen, activeQuest, aldricBattleRevealCount, questClockMs]);
+  useEffect(() => {
+    if (
+      !aldricBattleOpen ||
+      !activeQuest ||
+      activeQuest.questId !== SPECIAL_RESCUE_QUEST_ID ||
+      questClockMs < activeQuest.endsAtMs ||
+      aldricBattleAutoResolving
+    ) {
+      return;
+    }
+    setAldricBattleAutoResolving(true);
+    handleClaimQuest();
+  }, [aldricBattleOpen, activeQuest, questClockMs, aldricBattleAutoResolving]);
+  useEffect(() => {
     if (!lastTowerOutcome || !pendingTowerEncounterOpen) {
       return;
     }
@@ -466,27 +1557,6 @@ export const QuestsScreen = ({
     setConditionalEncounterResolved(false);
     setPendingTowerEncounterOpen(false);
   }, [lastTowerOutcome, pendingTowerEncounterOpen]);
-  useEffect(() => {
-    if (!waveResolveModal) {
-      setWaveResolveRevealStepCount(0);
-      return;
-    }
-    const totalSteps = (waveResolveModal.enemyBattles ?? []).reduce((sum, battle) => sum + 1 + battle.events.length, 0);
-    setWaveResolveRevealStepCount(Math.min(1, totalSteps));
-    if (totalSteps <= 1) {
-      return;
-    }
-    const timer = setInterval(() => {
-      setWaveResolveRevealStepCount((current) => {
-        if (current >= totalSteps) {
-          clearInterval(timer);
-          return current;
-        }
-        return current + 1;
-      });
-    }, 340);
-    return () => clearInterval(timer);
-  }, [waveResolveModal]);
   const conditionalEncounterPhaseIndex = useMemo(() => {
     const triggerPhase = lastTowerOutcome?.conditionalEncounter?.triggerPhase;
     if (!triggerPhase) {
@@ -544,7 +1614,12 @@ export const QuestsScreen = ({
   const boardVisibleQuests = useMemo(
     () =>
       quests
-        .filter((quest) => visibleRanks.includes(quest.rank))
+        .filter(
+          (quest) =>
+            quest.boardCategory === "hunt" ||
+            visibleRanks.includes(quest.rank) ||
+            (storyState.questBoardPreviewEnabled && QUEST_BOARD_PREVIEW_IDS.has(quest.id)),
+        )
         .filter((quest) => (boardRankFilter === "all" ? true : quest.rank === boardRankFilter))
         .filter((quest) => (boardTypeFilter === "all" ? true : quest.type === boardTypeFilter))
         .sort((a, b) => {
@@ -554,32 +1629,126 @@ export const QuestsScreen = ({
           }
           return a.minLevel - b.minLevel;
         }),
-    [quests, visibleRanks, boardRankFilter, boardTypeFilter],
+    [quests, visibleRanks, boardRankFilter, boardTypeFilter, storyState.questBoardPreviewEnabled],
   );
+  const boardQuestSections = useMemo(() => {
+    const urgent = boardVisibleQuests.filter((quest) => quest.id === SPECIAL_RESCUE_QUEST_ID);
+    const storyContracts = boardVisibleQuests.filter(
+      (quest) => SPECIAL_NPC_QUEST_IDS.has(quest.id) && quest.id !== SPECIAL_RESCUE_QUEST_ID,
+    );
+    const hunt = boardVisibleQuests.filter((quest) => quest.boardCategory === "hunt");
+    const special = boardVisibleQuests.filter(
+      (quest) =>
+        !SPECIAL_NPC_QUEST_IDS.has(quest.id) &&
+        quest.id !== SPECIAL_RESCUE_QUEST_ID &&
+        quest.type === "dungeon" &&
+        quest.boardCategory !== "hunt",
+    );
+    const jobs = boardVisibleQuests.filter(
+      (quest) => !urgent.includes(quest) && !storyContracts.includes(quest) && !hunt.includes(quest) && !special.includes(quest),
+    );
+    return [
+      {
+        key: "urgent",
+        title: "Urgent",
+        subtitle: "Time-sensitive contracts with permanent consequences.",
+        icon: "timer-alert-outline" as const,
+        tone: "urgent" as const,
+        quests: urgent,
+      },
+      {
+        key: "story",
+        title: "Story Contracts",
+        subtitle: "Named requests tied to NPC threads and recurring consequences.",
+        icon: "account-voice" as const,
+        tone: "story" as const,
+        quests: storyContracts,
+      },
+      {
+        key: "jobs",
+        title: "Jobs",
+        subtitle: "Standard guild work for farming supplies, gold, and steady progress.",
+        icon: "briefcase-outline" as const,
+        tone: "jobs" as const,
+        quests: jobs,
+      },
+      {
+        key: "hunt",
+        title: "Hunt",
+        subtitle: "Named monster contracts and field pursuit kills.",
+        icon: "paw-outline" as const,
+        tone: "hunt" as const,
+        quests: hunt,
+      },
+      {
+        key: "special",
+        title: "Special",
+        subtitle: "Non-standard contracts and structured encounters.",
+        icon: "star-four-points-circle-outline" as const,
+        tone: "special" as const,
+        quests: special,
+      },
+    ].filter((section) => section.quests.length > 0);
+  }, [boardVisibleQuests]);
   useEffect(() => {
     if (boardRankFilter !== "all" && !visibleRanks.includes(boardRankFilter)) {
       setBoardRankFilter("all");
     }
   }, [boardRankFilter, visibleRanks]);
 
-  const isQuestReadyToClaim = Boolean(activeQuest && nowMs >= activeQuest.endsAtMs);
-  const remainingMs = activeQuest ? Math.max(0, activeQuest.endsAtMs - nowMs) : 0;
+  const isQuestReadyToClaim = Boolean(activeQuest && questClockMs >= activeQuest.endsAtMs);
+  const remainingMs = activeQuest ? Math.max(0, activeQuest.endsAtMs - questClockMs) : 0;
   const activeDurationMs = activeQuest ? activeQuest.endsAtMs - activeQuest.startedAtMs : 0;
   const elapsedRatio = activeQuest
     ? Math.max(0, Math.min(1, (activeDurationMs - remainingMs) / Math.max(1, activeDurationMs)))
     : 0;
+  const aldricBattleElapsedMs =
+    activeQuest?.questId === SPECIAL_RESCUE_QUEST_ID ? Math.max(0, questClockMs - activeQuest.startedAtMs) : 0;
+  const aldricBattleFlowRatio =
+    activeQuest?.questId === SPECIAL_RESCUE_QUEST_ID
+      ? Math.max(0, Math.min(1, aldricBattleElapsedMs / Math.max(1, activeDurationMs)))
+      : 0;
+  const aldricBattleStatusText =
+    activeQuest?.questId !== SPECIAL_RESCUE_QUEST_ID
+      ? ""
+      : aldricBattleFlowRatio < 0.2
+        ? "The rescue push breaks into the Watchtrail camp. Steel comes out before anyone can shout."
+        : aldricBattleFlowRatio < 0.45
+          ? "Aldric's rescue path hits the outer lackeys first. The lane is still open if you keep pressure on them."
+          : aldricBattleFlowRatio < 0.75
+            ? "The first wave buckles. The bandit leader is forcing the fight inward and trying to buy time."
+            : aldricBattleFlowRatio < 1
+            ? "The leader is under direct pressure. Every lost second still matters to the rescue."
+            : "The encounter is settling into its final report.";
+  const aldricBattleTotalSteps = ALDRIC_SPECIAL_BATTLES.reduce((sum, battle) => sum + 1 + battle.events.length, 0);
+  const aldricBattleRevealStepCount = Math.min(
+    aldricBattleTotalSteps,
+    Math.max(0, Math.ceil(aldricBattleFlowRatio * aldricBattleTotalSteps)),
+  );
 
   const handleStartQuest = (questId: string) => {
     const selectedItems = selectedItemsByQuest[questId] ?? {};
+    const questDef = quests.find((quest) => quest.id === questId) ?? null;
     const result = onStartQuest(questId, selectedItems);
     setNoticeTone(result.ok ? "ok" : "error");
-    setNotice(result.ok ? (result.reason?.trim() || "Quest accepted.") : result.reason ?? "Could not start quest.");
+    setNotice(
+      result.ok
+        ? questId === SPECIAL_RESCUE_QUEST_ID
+          ? "Watchtrail rescue launched. Hold through the bandit waves."
+          : questDef?.combatModel === "live"
+            ? `${questDef.title} is now running in live combat mode.`
+          : result.reason?.trim() || "Quest accepted."
+        : result.reason ?? "Could not start quest.",
+    );
     if (result.ok) {
       setSelectedItemsByQuest((current) => {
         const next = { ...current };
         delete next[questId];
         return next;
       });
+      if (questDef?.combatModel === "live") {
+        startLiveQuestBattle(questDef, selectedItems);
+      }
     }
   };
 
@@ -607,6 +1776,380 @@ export const QuestsScreen = ({
         [questId]: questSelection,
       };
     });
+  };
+
+  const renderQuestBoardCard = (quest: QuestDefinition) => {
+    const selectedItems = selectedItemsByQuest[quest.id] ?? {};
+    const successChance = getQuestSuccessChance(quest.id, selectedItems);
+    const access = getQuestAccess(quest.id);
+    const blocked = !access.allowed;
+    const isAcceptedAldricWindow = quest.id === SPECIAL_RESCUE_QUEST_ID && aldricRescueRemainingMs !== null;
+    const questArt = QUEST_BACKGROUND_ART[quest.id];
+    const isNpcQuest = SPECIAL_NPC_QUEST_IDS.has(quest.id);
+    const isSpecialQuest = quest.id === SPECIAL_RESCUE_QUEST_ID;
+    const isUrgentQuest = quest.id === SPECIAL_RESCUE_QUEST_ID;
+    const isHuntQuest = quest.boardCategory === "hunt";
+    const isRaidQuest = quest.combatModel === "raid";
+    const titleTrails = TITLES.filter(
+      (title) => title.unlockRequirement?.type === "quest_starts" && title.unlockRequirement.questId === quest.id,
+    );
+    return (
+      <View
+        key={quest.id}
+        style={[
+          styles.questCard,
+          isNpcQuest ? styles.npcQuestCard : null,
+          isSpecialQuest ? styles.specialQuestCard : null,
+        ]}
+      >
+        {questArt ? (
+          <ImageBackground source={questArt.backdrop} style={styles.questCardBackdropFull} resizeMode="cover">
+            <LinearGradient
+              pointerEvents="none"
+              colors={questArt.overlay}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.questSceneOverlay}
+            />
+          </ImageBackground>
+        ) : null}
+        <LinearGradient
+          pointerEvents="none"
+          colors={
+            isSpecialQuest
+              ? ["rgba(234, 92, 96, 0.2)", "rgba(168, 80, 210, 0.12)", "rgba(29, 18, 44, 0.04)"]
+              : isNpcQuest
+                ? ["rgba(91, 162, 213, 0.18)", "rgba(136, 94, 188, 0.1)", "rgba(24, 17, 39, 0.02)"]
+                : ["rgba(204, 149, 73, 0.09)", "rgba(93, 60, 147, 0.06)", "rgba(24, 17, 39, 0.02)"]
+          }
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.cardGradient}
+        />
+        <View style={styles.questHeader}>
+          <Image source={QUEST_TYPE_SPRITE[quest.type]} style={styles.questTypeSprite} resizeMode="contain" />
+          <IconTooltip text={`${questTypeLabel[quest.type]} quest type.`} />
+          <Text style={styles.questTitle}>{quest.title}</Text>
+          {isSpecialQuest ? (
+            <View style={styles.specialQuestBadge}>
+              <Text style={styles.specialQuestBadgeText}>SPECIAL</Text>
+            </View>
+          ) : isRaidQuest ? (
+            <View style={styles.specialQuestBadge}>
+              <Text style={styles.specialQuestBadgeText}>{quest.raidLabel ?? "RAID"}</Text>
+            </View>
+          ) : isNpcQuest ? (
+            <View style={styles.npcQuestBadge}>
+              <MaterialCommunityIcons name="account-voice" size={12} color="#def3ff" />
+              <Text style={styles.npcQuestBadgeText}>NPC REQUEST</Text>
+            </View>
+          ) : null}
+          {isHuntQuest ? (
+            <View style={styles.huntQuestBadge}>
+              <MaterialCommunityIcons name="paw-outline" size={12} color="#d4f2ff" />
+              <Text style={styles.huntQuestBadgeText}>HUNT</Text>
+            </View>
+          ) : null}
+          <View style={styles.typePill}>
+            <Text style={styles.typePillText}>{questTypeLabel[quest.type]}</Text>
+          </View>
+        </View>
+        {quest.loreSummary ? <Text style={styles.questMeta}>{quest.loreSummary}</Text> : null}
+        {quest.encounterStages?.length || quest.signatureMechanics?.length ? (
+          <View style={styles.chipsRow}>
+            {quest.encounterStages?.slice(0, 3).map((stage) => (
+              <View key={`${quest.id}-stage-${stage}`} style={styles.rewardChip}>
+                <MaterialCommunityIcons name="stairs" size={13} color="#ffd487" />
+                <Text style={styles.rewardChipText}>{stage}</Text>
+              </View>
+            ))}
+            {quest.signatureMechanics?.slice(0, 2).map((mechanic) => (
+              <View key={`${quest.id}-mechanic-${mechanic}`} style={styles.rewardChip}>
+                <MaterialCommunityIcons name="star-four-points-circle-outline" size={13} color="#9fe3ff" />
+                <Text style={styles.rewardChipText}>{mechanic}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        <View style={styles.chipsRow}>
+          <View style={styles.rewardChip}>
+            <MaterialCommunityIcons name="clock-outline" size={14} color={colors.warning} />
+            <Text style={styles.rewardChipText}>
+              {quest.id === SPECIAL_RESCUE_QUEST_ID
+                ? isAcceptedAldricWindow
+                  ? formatRemainingDetailed(aldricRescueRemainingMs ?? 0)
+                  : formatRemainingDetailed(quest.durationSeconds * 1000)
+                : `${quest.durationSeconds}s`}
+            </Text>
+            <IconTooltip text="Quest timer duration." />
+          </View>
+          <View style={styles.rewardChip}>
+            <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
+            <Text style={styles.rewardChipText}>{quest.staminaCost}</Text>
+            <IconTooltip text="Stamina cost to start this quest." />
+          </View>
+          <View style={styles.rewardChip}>
+            <MaterialCommunityIcons name="signal" size={14} color={difficultyColor(quest.difficulty)} />
+            <Text style={styles.rewardChipText}>D{quest.difficulty}</Text>
+            <IconTooltip text="Difficulty tier. Higher tiers need better item readiness." />
+          </View>
+          <View style={styles.rewardChip}>
+            <MaterialCommunityIcons name="badge-account-outline" size={14} color="#8ac3ff" />
+            <Text style={styles.rewardChipText}>{quest.rank}</Text>
+            <IconTooltip text="Minimum Adventurer Rank to access this quest." />
+          </View>
+          <View style={styles.rewardChip}>
+            <MaterialCommunityIcons name="account-arrow-up-outline" size={14} color="#b5dc8b" />
+            <Text style={styles.rewardChipText}>Lv {quest.minLevel}</Text>
+            <IconTooltip text="Minimum player level to unlock this quest." />
+          </View>
+        </View>
+        {isUrgentQuest ? (
+          <>
+            <View style={styles.questCriticalTimerMini}>
+              <Text style={styles.questCriticalTimerMiniLabel}>{isAcceptedAldricWindow ? "Time Remaining" : "Time Limit"}</Text>
+              <Text style={styles.questCriticalTimerMiniValue}>
+                {isAcceptedAldricWindow
+                  ? formatRemainingDetailed(aldricRescueRemainingMs ?? 0)
+                  : formatRemainingDetailed(quest.durationSeconds * 1000)}
+              </Text>
+            </View>
+            <View style={styles.questUrgencyBanner}>
+              <MaterialCommunityIcons name="timer-alert-outline" size={16} color="#ffd6a2" />
+              <Text style={styles.questUrgencyText}>
+                Accepting this rescue starts a real timer. Being too late will permanently change Aldric's path.
+              </Text>
+            </View>
+          </>
+        ) : null}
+
+        <View style={styles.questMeterBlock}>
+          <View style={styles.meterLabelRow}>
+            <Text style={styles.meterLabel}>Success Chance</Text>
+            <Text style={styles.meterLabel}>{successChance}%</Text>
+          </View>
+          <ProgressBar value={successChance} max={100} variant="chance" />
+        </View>
+
+        <View style={styles.requirementsBlock}>
+          <Text style={styles.reqTitle}>Guaranteed Rewards</Text>
+          <View style={styles.chipsRow}>
+            <View style={styles.rewardChip}>
+              <MaterialCommunityIcons name="cash-multiple" size={14} color={colors.gold} />
+              <Text style={styles.rewardChipText}>+{quest.reward.gold}g</Text>
+            </View>
+            <View style={styles.rewardChip}>
+              <MaterialCommunityIcons name="star-circle-outline" size={14} color="#8ac3ff" />
+              <Text style={styles.rewardChipText}>+{quest.reward.xp} XP</Text>
+            </View>
+            <View style={styles.rewardChip}>
+              <MaterialCommunityIcons name="school-outline" size={14} color="#ffcf7a" />
+              <Text style={styles.rewardChipText}>+{quest.reward.masteryXp} Mastery</Text>
+            </View>
+          </View>
+          {titleTrails.map((title) => {
+            const required = title.unlockRequirement?.requiredCount ?? 1;
+            const progress = Math.min(required, character.titleProgressById?.[title.id] ?? 0);
+            const progressPercent = Math.round((progress / Math.max(1, required)) * 100);
+            const rarityColor = rarityColorMap[title.rarity];
+            const isLegendary = title.rarity === "legendary";
+            const isEarned = (character.ownedTitleIds ?? []).includes(title.id);
+            return (
+              <View
+                key={`${quest.id}-title-${title.id}`}
+                style={[
+                  styles.titleRewardCard,
+                  { borderColor: rarityColor },
+                  isLegendary ? styles.titleRewardLegendary : null,
+                ]}
+              >
+                <View style={[styles.titleRewardIconWrap, { borderColor: rarityColor }]}>
+                  <Image source={TITLE_ICON_ART[title.id]} style={styles.titleRewardIcon} resizeMode="contain" />
+                </View>
+                <View style={styles.titleRewardTextWrap}>
+                  <View style={styles.titleRewardTopRow}>
+                    <Text style={styles.titleRewardLabel}>TITLE TRAIL</Text>
+                    <View style={[styles.titleRewardGradePill, { borderColor: rarityColor }]}>
+                      <Text style={[styles.titleRewardGradeText, { color: rarityColor }]}>
+                        {title.rarity.toUpperCase()}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.titleRewardName}>{title.name}</Text>
+                  <View style={styles.titleRewardStatusRow}>
+                    <Text style={styles.titleRewardMeta}>Progress {progress}/{required}</Text>
+                    {isEarned ? (
+                      <View style={styles.titleEarnedPill}>
+                        <MaterialCommunityIcons name="check-decagram" size={11} color="#9af3bf" />
+                        <Text style={styles.titleEarnedText}>EARNED</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <View style={styles.titleRewardProgressTrack}>
+                    <View
+                      style={[
+                        styles.titleRewardProgressFill,
+                        { width: `${progressPercent}%`, backgroundColor: rarityColor },
+                      ]}
+                    />
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {quest.requiredItems.length > 0 ? (
+          <View style={styles.requirementsBlock}>
+            <Text style={styles.reqTitle}>Key Items</Text>
+            <View style={styles.requirementsRow}>
+              {quest.requiredItems.map((requirement) => {
+                const item = ITEM_BY_ID[requirement.itemId];
+                const owned = character.inventory[requirement.itemId] ?? 0;
+                const committed = getCommittedCount(quest.id, requirement.itemId);
+                const satisfied = committed >= requirement.needed;
+                return (
+                  <View key={`${quest.id}-${requirement.itemId}`} style={styles.reqItem}>
+                    <GameItemIcon itemId={requirement.itemId} size={14} />
+                    <IconTooltip
+                      text={`${item?.name ?? requirement.itemId}: commit items with +/-. Committed items are consumed when quest starts. Key items heavily influence success.`}
+                    />
+                    <Pressable
+                      onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
+                      style={styles.stepperButton}
+                    >
+                      <Text style={styles.stepperButtonText}>-</Text>
+                    </Pressable>
+                    <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
+                      {committed}/{requirement.needed}
+                    </Text>
+                    <Pressable
+                      onPress={() => adjustCommittedItem(quest.id, requirement.itemId, 1, requirement.needed, owned)}
+                      style={styles.stepperButton}
+                    >
+                      <Text style={styles.stepperButtonText}>+</Text>
+                    </Pressable>
+                    <Text style={styles.reqOwnedText}>Owned {owned}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.gatherHint}>No key items required. Great for steady farming.</Text>
+        )}
+
+        {quest.recommendedItems && quest.recommendedItems.length > 0 ? (
+          <View style={styles.requirementsBlock}>
+            <Text style={styles.reqTitle}>Optional Supplies</Text>
+            <View style={styles.requirementsRow}>
+              {quest.recommendedItems.map((requirement) => {
+                const item = ITEM_BY_ID[requirement.itemId];
+                const owned = character.inventory[requirement.itemId] ?? 0;
+                const committed = getCommittedCount(quest.id, requirement.itemId);
+                const satisfied = committed >= requirement.needed;
+                return (
+                  <View key={`${quest.id}-optional-${requirement.itemId}`} style={styles.reqItem}>
+                    <GameItemIcon itemId={requirement.itemId} size={14} />
+                    <IconTooltip
+                      text={`${item?.name ?? requirement.itemId}: commit optional supplies with +/-. Committed amount is consumed on quest start and provides bonus success chance.`}
+                    />
+                    <Pressable
+                      onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
+                      style={styles.stepperButton}
+                    >
+                      <Text style={styles.stepperButtonText}>-</Text>
+                    </Pressable>
+                    <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
+                      {committed}/{requirement.needed}
+                    </Text>
+                    <Pressable
+                      onPress={() => adjustCommittedItem(quest.id, requirement.itemId, 1, requirement.needed, owned)}
+                      style={styles.stepperButton}
+                    >
+                      <Text style={styles.stepperButtonText}>+</Text>
+                    </Pressable>
+                    <Text style={styles.reqOwnedText}>Owned {owned}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ) : null}
+
+        {quest.itemRewards.length > 0 ? (
+          <View style={styles.requirementsBlock}>
+            <Text style={styles.reqTitle}>Possible Reward Drops</Text>
+            <View style={styles.requirementsRow}>
+              {quest.itemRewards.map((reward) => {
+                const rewardItem = ITEM_BY_ID[reward.itemId];
+                const rewardRarity = rewardItem?.rarity ?? "common";
+                return (
+                  <Pressable
+                    key={`${quest.id}-reward-${reward.itemId}`}
+                    style={[
+                      styles.rewardItem,
+                      { borderColor: rarityColorMap[rewardRarity] },
+                    ]}
+                    onPress={() =>
+                      showQuickInfo(
+                        rewardItem?.name ?? reward.itemId,
+                        `Grade: ${rewardRarity.toUpperCase()}\nDrop Chance: ${Math.round(reward.chance * 100)}%\nAmount: x${reward.amount}`,
+                        rewardRarity,
+                        reward.itemId,
+                      )
+                    }
+                  >
+                    <GameItemIcon itemId={reward.itemId} size={14} />
+                    <Text style={styles.rewardItemName} numberOfLines={1}>
+                      {rewardItem?.name ?? reward.itemId}
+                    </Text>
+                    <View style={[styles.rewardGradePill, { borderColor: rarityColorMap[rewardRarity] }]}>
+                      <Text style={[styles.rewardGradeText, { color: rarityColorMap[rewardRarity] }]}>
+                        {rewardRarity.toUpperCase()}
+                      </Text>
+                    </View>
+                    <Text style={styles.rewardChanceText}>
+                      {Math.round(reward.chance * 100)}%
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ) : null}
+
+        {blocked ? (
+          <View style={styles.lockRow}>
+            <MaterialCommunityIcons name="lock-outline" size={14} color="#ff9b92" />
+            <Text style={styles.lockText}>{access.reason}</Text>
+          </View>
+        ) : null}
+
+        <Pressable
+          disabled={Boolean(activeQuest) || blocked || questHealthLocked || isDead}
+          onPress={() => handleStartQuest(quest.id)}
+          style={styles.actionWrap}
+        >
+          <View style={[styles.startButton, activeQuest || blocked || questHealthLocked || isDead ? styles.actionDisabled : null]}>
+            <Text style={styles.startText}>
+              {isDead
+                ? "Being Fractured"
+                : questHealthLocked
+                  ? "Need 50% HP"
+                  : blocked
+                    ? "Locked"
+                    : activeQuest
+                      ? "On a Quest"
+                      : quest.combatModel === "live"
+                        ? "Launch Live Contract"
+                        : "Take This Quest"}
+            </Text>
+          </View>
+        </Pressable>
+      </View>
+    );
   };
 
   const getTowerCommittedCount = (floorId: string, itemId: ItemId): number =>
@@ -688,7 +2231,7 @@ export const QuestsScreen = ({
     const result = onRespondRescueNpcRequest(accept);
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(result.reason ?? (result.ok ? "Response recorded." : "Could not respond."));
-    if (result.status === "accepted" || result.status === "gone") {
+    if (result.ok) {
       setRescueDialogOpen(false);
     }
   };
@@ -736,6 +2279,737 @@ export const QuestsScreen = ({
     setFloorLoreOpenFor(null);
     setTowerRunStageByFloor((current) => ({ ...current, [floorNumber]: "waves" }));
   };
+  const startLiveTowerBattle = (
+    floorNumber: number,
+    wave: TowerWaveKey,
+    committedItems: Record<ItemId, number>,
+    enemies: TowerEnemyUnit[],
+  ) => {
+    const pendingBonuses = getPendingAbilityBonuses(character);
+    const combatStats = getCharacterCombatStats(character);
+    const estimatedTurnDamage = Math.max(8, Math.round((combatStats.damage + pendingBonuses.damageFlat) * 0.28));
+    const telegraphs = buildLiveBattleTelegraphs(enemies, estimatedTurnDamage);
+    const enemyStatsById = Object.fromEntries(enemies.map((enemy) => [enemy.id, getLiveEnemyCombatStats(enemy)]));
+    const firstEnemy = telegraphs[0] ? enemies.find((enemy) => enemy.id === telegraphs[0].enemyId) ?? enemies[0] : enemies[0];
+    const firstEnemyStats = firstEnemy ? getLiveEnemyCombatStats(firstEnemy) : { damage: 6, critChance: 8, speed: 5, role: "normal" as const };
+    const playerTurnFirst = combatStats.speed >= firstEnemyStats.speed;
+    setLiveTowerBattle({
+      source: "tower",
+      floorNumber,
+      wave,
+      enemies,
+      encounterTitle: `Live Clash: ${getWaveTitle(wave)}`,
+      committedItems,
+      telegraphs,
+      activeIndex: 0,
+      position: "mid",
+      braceUsed: false,
+      skillUsed: false,
+      responses: [],
+      turnOwner: playerTurnFirst ? "player" : "enemy",
+      playerTurnsRemaining: playerTurnFirst ? getTurnBurst(combatStats.speed, firstEnemyStats.speed) : 0,
+      enemyTurnsRemaining: playerTurnFirst ? 0 : getTurnBurst(firstEnemyStats.speed, combatStats.speed),
+      playerStats: {
+        damage: combatStats.damage + pendingBonuses.damageFlat,
+        critChance: combatStats.critChance,
+        speed: combatStats.speed,
+      },
+      enemyStatsById,
+      playerHp: character.health,
+      enemyHpById: Object.fromEntries(enemies.map((enemy) => [enemy.id, enemy.health ?? 1])),
+      playerStatusFx: towerStatusEffects.map(mapTowerStatusToLiveFx),
+      enemyStatusFxById: Object.fromEntries(enemies.map((enemy) => [enemy.id, []])),
+      effectClockElapsedMs: 0,
+      effectClockStartedAtMs: playerTurnFirst ? Date.now() : null,
+      initiativeHistory: [],
+      skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
+      queuedEnemyIndex: null,
+      turnLog: [playerTurnFirst ? "The lane tightens. Your turn." : "The enemy seizes the first move."],
+    });
+    setBattleEffectHint(null);
+    setBattleStatusHint(null);
+  };
+  const startLiveQuestBattle = (quest: QuestDefinition, committedItems: Record<ItemId, number>) => {
+    const encounter = LIVE_QUEST_ENCOUNTERS[quest.id];
+    if (!encounter) {
+      return false;
+    }
+    const pendingBonuses = getPendingAbilityBonuses(character);
+    const combatStats = getCharacterCombatStats(character);
+    const estimatedTurnDamage = Math.max(8, Math.round((combatStats.damage + pendingBonuses.damageFlat) * 0.28));
+    const telegraphs = buildLiveBattleTelegraphs(encounter.enemies, estimatedTurnDamage);
+    const enemyStatsById = Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, getLiveEnemyCombatStats(enemy)]));
+    const firstEnemy =
+      telegraphs[0] ? encounter.enemies.find((enemy) => enemy.id === telegraphs[0].enemyId) ?? encounter.enemies[0] : encounter.enemies[0];
+    const firstEnemyStats = firstEnemy ? getLiveEnemyCombatStats(firstEnemy) : { damage: 6, critChance: 8, speed: 5, role: "normal" as const };
+    const playerTurnFirst = combatStats.speed >= firstEnemyStats.speed;
+    setLiveTowerBattle({
+      source: "quest",
+      floorNumber: 0,
+      wave: "normal",
+      questId: quest.id,
+      encounterTitle: encounter.title,
+      encounterSummary: encounter.summary,
+      enemies: encounter.enemies,
+      committedItems,
+      telegraphs,
+      activeIndex: 0,
+      position: "mid",
+      braceUsed: false,
+      skillUsed: false,
+      responses: [],
+      turnOwner: playerTurnFirst ? "player" : "enemy",
+      playerTurnsRemaining: playerTurnFirst ? getTurnBurst(combatStats.speed, firstEnemyStats.speed) : 0,
+      enemyTurnsRemaining: playerTurnFirst ? 0 : getTurnBurst(firstEnemyStats.speed, combatStats.speed),
+      playerStats: {
+        damage: combatStats.damage + pendingBonuses.damageFlat,
+        critChance: combatStats.critChance,
+        speed: combatStats.speed,
+      },
+      enemyStatsById,
+      playerHp: character.health,
+      enemyHpById: Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, enemy.health ?? 1])),
+      playerStatusFx: [],
+      enemyStatusFxById: Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, []])),
+      effectClockElapsedMs: 0,
+      effectClockStartedAtMs: playerTurnFirst ? Date.now() : null,
+      initiativeHistory: [],
+      skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
+      queuedEnemyIndex: null,
+      turnLog: [playerTurnFirst ? "The contract turns hot. Your turn." : "The flock drops first and steals the initiative."],
+    });
+    setBattleEffectHint(null);
+    setBattleStatusHint(null);
+    return true;
+  };
+  const recordLiveBattleResponse = (
+    responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass",
+    responseId?: ItemId | string | TowerBattlePosition,
+  ) => {
+    setLiveTowerBattle((current) => {
+      if (!current) {
+        return current;
+      }
+      if (current.turnOwner !== "player" || current.queuedEnemyIndex != null) {
+        return current;
+      }
+      const activeTelegraph = current.telegraphs[current.activeIndex];
+      if (!activeTelegraph) {
+        return current;
+      }
+      const currentEnemy = current.enemies.find((enemy) => enemy.id === activeTelegraph.enemyId);
+      if (!currentEnemy) {
+        return current;
+      }
+      const wallNowMs = Date.now();
+      const effectNowMs = getLiveBattleEffectClockMs(current, wallNowMs);
+      const turnStatus = applyStartOfTurnStatusEffects(current.playerStatusFx, effectNowMs);
+      let nextPlayerStatusFx = turnStatus.nextStatusFx;
+      const passiveBattleBonuses = getEquippedPassiveBattleBonuses(character);
+      const skillId = responseType === "skill" ? ((responseId as AbilityId | undefined) ?? null) : null;
+      const currentSkillProfile = getLiveBattleSkillProfile(skillId);
+      const activeSkillBonuses = getCombinedLiveSkillBonuses(nextPlayerStatusFx, unlockedBattleSkills.map((skill) => skill.id), effectNowMs);
+      const skillIsCoolingDown =
+        responseType === "skill" &&
+        skillId != null &&
+        (current.skillCooldownEndsAtMsById?.[skillId] ?? 0) > wallNowMs;
+      if (responseType === "skill" && (!currentSkillProfile || skillIsCoolingDown)) {
+        return current;
+      }
+      const success =
+        (responseType === "item" && responseId === activeTelegraph.recommendedItemId) ||
+        (responseType === "move" && responseId === activeTelegraph.suggestedPosition) ||
+        (responseType === "skill" && activeTelegraph.suggestedSkillClass === character.classId) ||
+        (responseType === "brace" && activeTelegraph.suggestedBrace === true);
+      const critCycle = current.playerStats.critChance >= 45 ? 2 : current.playerStats.critChance >= 30 ? 3 : current.playerStats.critChance >= 15 ? 4 : 999;
+      const nextTurnNumber = (current.responses?.length ?? 0) + 1;
+      const skillAttackBonus = activeSkillBonuses.attackBonus;
+      const skillCritBonus = activeSkillBonuses.critBonus;
+      const effectiveCritChance = current.playerStats.critChance + skillCritBonus;
+      const effectiveSpeed = current.playerStats.speed + activeSkillBonuses.speedBonus;
+      const effectiveCritCycle = effectiveCritChance >= 45 ? 2 : effectiveCritChance >= 30 ? 3 : effectiveCritChance >= 15 ? 4 : 999;
+      const critTriggered =
+        responseType !== "brace" && responseType !== "skill" && responseType !== "pass" && effectiveCritCycle !== 999 && nextTurnNumber % effectiveCritCycle === 0;
+      const speedDamageBonus = effectiveSpeed >= 18 ? 3 : effectiveSpeed >= 12 ? 1 : 0;
+      const nextPlayerHp = Math.max(0, current.playerHp - turnStatus.hpLoss);
+      let playerDamage = Math.max(0, Math.round(current.playerStats.damage * 0.24) + speedDamageBonus);
+      playerDamage = calculatePlayerAttackAdjustment(playerDamage, turnStatus.snapshot, passiveBattleBonuses);
+      const currentEnemyHp = current.enemyHpById[activeTelegraph.enemyId] ?? (currentEnemy.health ?? 1);
+      const woundedTarget = currentEnemy.health > 0 && currentEnemyHp <= Math.ceil((currentEnemy.health ?? 1) * 0.5);
+      if (responseType === "attack") {
+        playerDamage += skillAttackBonus;
+      } else if (responseType === "skill") {
+        playerDamage = 0;
+      } else if (responseType === "item") {
+        playerDamage = 0;
+      } else if (responseType === "brace") {
+        playerDamage = 0;
+      } else if (responseType === "move") {
+        playerDamage = 0;
+      } else if (responseType === "pass") {
+        playerDamage = 0;
+      }
+      if (!success && (responseType === "item" || responseType === "move")) {
+        playerDamage = 0;
+      }
+      if (turnStatus.snapshot.counterReadyStacks > 0 && responseType === "attack") {
+        playerDamage += passiveBattleBonuses.counterBonusDamageFlat + activeSkillBonuses.counterBonusDamageFlat + 4;
+      }
+      if (woundedTarget) {
+        playerDamage += passiveBattleBonuses.woundedTargetDamageFlat + activeSkillBonuses.woundedTargetDamageFlat;
+      }
+      if (turnStatus.snapshot.hasFrenzied) {
+        playerDamage += passiveBattleBonuses.frenzyAttackBonusFlat;
+      }
+      playerDamage = Math.max(0, playerDamage);
+      if (critTriggered) {
+        playerDamage = Math.round(playerDamage * 1.5);
+      }
+      const nextEnemyHp = Math.max(0, currentEnemyHp - playerDamage);
+      const actionLabel =
+        responseType === "attack"
+          ? "Attack"
+          : responseType === "skill"
+            ? ABILITY_BY_ID[String(responseId ?? character.activeClassSkillId)]?.name ?? "Skill"
+            : responseType === "item"
+              ? ITEM_BY_ID[String(responseId)]?.name ?? "Item"
+              : responseType === "move"
+                ? `Shift ${String(responseId ?? current.position)}`
+                : responseType === "brace"
+                  ? "Guard"
+                  : responseType === "pass"
+                    ? "Pass"
+                  : "Action";
+      let resultLine = "";
+      const nextEnemyHpById = {
+        ...current.enemyHpById,
+        [activeTelegraph.enemyId]: nextEnemyHp,
+      };
+      let nextEnemyStatusFxById = current.enemyStatusFxById;
+      nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, {
+        clearIds: ["guarded", ...(responseType === "attack" ? ["counter-ready"] : [])],
+      });
+      const nextSkillCooldownEndsAtMsById = { ...(current.skillCooldownEndsAtMsById ?? {}) };
+      const statusLogLines: string[] = [];
+      if (responseType === "skill" && currentSkillProfile) {
+        const nextEffectEndsAtMs = effectNowMs + currentSkillProfile.durationSeconds * 1000;
+        if (skillId) {
+          nextSkillCooldownEndsAtMsById[skillId] = wallNowMs + currentSkillProfile.cooldownSeconds * 1000;
+        }
+        const skillFx: LiveBattleStatusFx = {
+          id: currentSkillProfile.effectId,
+          label: currentSkillProfile.effectLabel,
+          detail: currentSkillProfile.effectDetail,
+          icon: currentSkillProfile.effectIcon as keyof typeof MaterialCommunityIcons.glyphMap,
+          tone: currentSkillProfile.effectTone,
+          expiresAtMs: nextEffectEndsAtMs,
+        };
+        nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, { replace: [skillFx] });
+        resultLine = `You activated ${actionLabel} on yourself. ${currentSkillProfile.effectLabel} is now active.`;
+        statusLogLines.push(describeBattleStatusChange(skillFx, "gained"));
+      } else if (responseType === "brace") {
+        const guardFx: LiveBattleStatusFx = {
+          id: "guarded",
+          label: "Guarded",
+          icon: "shield-check-outline",
+          tone: "good",
+          detail: "Guard is up. Incoming damage is reduced on enemy turns.",
+          stacks: 1,
+        };
+        nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, { stack: [guardFx] });
+        resultLine = "You raise your guard and brace for the next hit.";
+        statusLogLines.push(describeBattleStatusChange(guardFx, "gained"));
+      } else if (responseType === "move") {
+        resultLine = `You shift ${String(responseId ?? current.position)} and reset your footing.`;
+      } else if (responseType === "pass") {
+        resultLine = `You yield the moment and let ${activeTelegraph.enemyName} commit first.`;
+      } else if (responseType === "item" && responseId) {
+        const itemId = responseId as ItemId;
+        const itemOutcome = applySelfTargetBattleItem(itemId, nextPlayerStatusFx, nextPlayerHp, character.healthCap);
+        nextPlayerStatusFx = itemOutcome.nextStatusFx;
+        const updatedPlayerHp = itemOutcome.nextHp;
+        resultLine = itemOutcome.logLine;
+        const nextEnemyTurnsBase = current.enemyStatsById[activeTelegraph.enemyId];
+        return (() => {
+          const nextIndexLocal = getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
+          const nextTurnLog = [...current.turnLog, ...turnStatus.logLines];
+          nextTurnLog.push(resultLine);
+          const addedStatuses = itemOutcome.nextStatusFx.filter(
+            (effect) => !nextPlayerStatusFx.some((entry) => entry.id === effect.id),
+          );
+          for (const effect of addedStatuses) {
+            nextTurnLog.push(describeBattleStatusChange(effect, "gained"));
+          }
+          const nextPlayerTurnsRemainingLocal = Math.max(0, current.playerTurnsRemaining - 1);
+          const nextTurnOwnerLocal = nextPlayerTurnsRemainingLocal > 0 ? "player" : "enemy";
+          const nextEffectClockState = getNextBattleEffectClockState(current, nextTurnOwnerLocal, wallNowMs);
+          return {
+            ...current,
+            responses: [
+              ...(current.responses ?? []),
+              {
+                telegraphId: activeTelegraph.id,
+                enemyId: activeTelegraph.enemyId,
+                mechanic: activeTelegraph.mechanic,
+                responseType,
+                responseId: itemId,
+                success,
+              },
+            ],
+            playerHp: updatedPlayerHp,
+            playerStatusFx: nextPlayerStatusFx,
+            enemyStatusFxById: nextEnemyStatusFxById,
+            effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
+            effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
+            initiativeHistory: [...current.initiativeHistory, "player" as const].slice(-4),
+            turnLog: nextTurnLog,
+            skillCooldownEndsAtMsById: nextSkillCooldownEndsAtMsById,
+            lastPlayerDamage: 0,
+            lastEnemyDamage: 0,
+            lastCrit: false,
+            activeIndex: nextIndexLocal,
+            turnOwner: nextTurnOwnerLocal,
+            playerTurnsRemaining: nextPlayerTurnsRemainingLocal,
+            enemyTurnsRemaining: nextPlayerTurnsRemainingLocal > 0 ? 0 : Math.max(1, getTurnBurst(nextEnemyTurnsBase.speed, effectiveSpeed + 3)),
+          };
+        })();
+      } else {
+        resultLine = `You used ${actionLabel} on ${activeTelegraph.enemyName} and dealt ${playerDamage} damage${critTriggered ? " (CRIT)" : ""}.`;
+        if (turnStatus.snapshot.counterReadyStacks > 0 && responseType === "attack") {
+          resultLine += " Counter window spent cleanly.";
+        } else if (woundedTarget && playerDamage > 0) {
+          resultLine += " The wounded target gives way faster under the pressure.";
+        }
+      }
+      for (const status of getPlayerResponseStatusFx(responseType, success, critTriggered, character.activeClassSkillId)) {
+        if (status.tone === "good") {
+          nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, { stack: [status] });
+          statusLogLines.push(describeBattleStatusChange(status, "gained"));
+        } else {
+          nextEnemyStatusFxById = {
+            ...nextEnemyStatusFxById,
+            [activeTelegraph.enemyId]: applyBattleStatusChanges(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], { stack: [status] }),
+          };
+          statusLogLines.push(`${activeTelegraph.enemyName}: ${describeBattleStatusChange(status, "gained")}`);
+        }
+      }
+      const enemyStats = current.enemyStatsById[activeTelegraph.enemyId];
+      let nextIndex = current.activeIndex;
+      let nextTurnOwner: "player" | "enemy" = "enemy";
+      let nextPlayerTurnsRemaining = Math.max(0, current.playerTurnsRemaining - 1);
+      const initiativeBonus =
+        responseType === "skill" && currentSkillProfile
+          ? currentSkillProfile.initiativeBonus
+          : responseType === "item"
+            ? 3
+            : responseType === "move"
+              ? 1
+              : 0;
+      let nextEnemyTurnsRemaining = Math.max(1, getTurnBurst(enemyStats.speed, effectiveSpeed + initiativeBonus));
+      const nextTurnLog = [...current.turnLog, ...turnStatus.logLines];
+      nextTurnLog.push(resultLine);
+      nextTurnLog.push(...statusLogLines);
+      let bonusPlayerTurns = 0;
+      if (critTriggered) {
+        bonusPlayerTurns += passiveBattleBonuses.postCritTempoFlat;
+      }
+      let queuedEnemyIndex: number | null = null;
+      if (nextEnemyHp <= 0) {
+        const calculatedNextIndex = getNextLiveTelegraphIndex(
+          {
+            ...current,
+            enemyHpById: nextEnemyHpById,
+          },
+          current.activeIndex + 1,
+        );
+        const allEnemiesDown = Object.values(nextEnemyHpById).every((hp) => hp <= 0);
+        if (allEnemiesDown) {
+          nextTurnOwner = "player";
+          nextPlayerTurnsRemaining = 0;
+          nextEnemyTurnsRemaining = 0;
+          nextTurnLog.push(`${activeTelegraph.enemyName} falls. The lane opens further.`);
+        } else {
+          const nextEnemyId = current.telegraphs[calculatedNextIndex]?.enemyId ?? activeTelegraph.enemyId;
+          const nextEnemyStats = current.enemyStatsById[nextEnemyId] ?? enemyStats;
+          const playerFirst = effectiveSpeed >= nextEnemyStats.speed;
+          queuedEnemyIndex = calculatedNextIndex;
+          nextTurnOwner = "player";
+          nextPlayerTurnsRemaining = playerFirst ? getTurnBurst(effectiveSpeed, nextEnemyStats.speed) + passiveBattleBonuses.postKillTempoFlat : 0;
+          nextEnemyTurnsRemaining = 0;
+          nextTurnLog.push(`${activeTelegraph.enemyName} is down. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next threat"} waits ahead.`);
+        }
+      } else {
+        nextIndex = getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
+        nextPlayerTurnsRemaining += bonusPlayerTurns;
+        if (nextPlayerTurnsRemaining > 0) {
+          nextTurnOwner = "player";
+          nextEnemyTurnsRemaining = 0;
+          nextTurnLog.push(bonusPlayerTurns > 0 ? "Your momentum keeps the initiative." : "Your speed keeps the initiative.");
+        }
+      }
+      const nextEffectClockState = getNextBattleEffectClockState(current, nextTurnOwner, wallNowMs);
+      return {
+        ...current,
+        responses: [
+          ...(current.responses ?? []),
+          {
+            telegraphId: activeTelegraph.id,
+            enemyId: activeTelegraph.enemyId,
+            mechanic: activeTelegraph.mechanic,
+            responseType,
+            responseId: responseId as ItemId | string | TowerBattlePosition | undefined,
+            success,
+          },
+        ],
+        playerHp: nextPlayerHp,
+        enemyHpById: nextEnemyHpById,
+        playerStatusFx: nextPlayerStatusFx,
+        enemyStatusFxById: nextEnemyStatusFxById,
+        effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
+        effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
+        initiativeHistory: [...current.initiativeHistory, "player" as const].slice(-4),
+        turnLog: nextTurnLog,
+        skillCooldownEndsAtMsById: nextSkillCooldownEndsAtMsById,
+        queuedEnemyIndex,
+        lastPlayerDamage: playerDamage,
+        lastEnemyDamage: 0,
+        lastCrit: critTriggered,
+        activeIndex: nextIndex,
+        turnOwner: nextTurnOwner,
+        playerTurnsRemaining:
+          nextEnemyHp <= 0 || nextPlayerHp <= 0 || queuedEnemyIndex !== null
+            ? nextPlayerTurnsRemaining
+            : nextTurnOwner === "player"
+              ? nextPlayerTurnsRemaining
+              : Math.max(1, getTurnBurst(effectiveSpeed, enemyStats.speed)),
+        enemyTurnsRemaining: nextEnemyTurnsRemaining,
+      };
+    });
+  };
+  const resolveEnemyTurn = () => {
+    setLiveTowerBattle((current) => {
+      if (!current || current.turnOwner !== "enemy") {
+        return current;
+      }
+      const activeTelegraph = current.telegraphs[current.activeIndex];
+      if (!activeTelegraph) {
+        return current;
+      }
+      const currentEnemy = current.enemies.find((enemy) => enemy.id === activeTelegraph.enemyId);
+      if (!currentEnemy) {
+        return current;
+      }
+      const wallNowMs = Date.now();
+      const effectNowMs = getLiveBattleEffectClockMs(current, wallNowMs);
+      const nextPlayerStatusBase = applyBattleStatusChanges(current.playerStatusFx, { nowMs: effectNowMs });
+      const activeSkillBonuses = getCombinedLiveSkillBonuses(
+        nextPlayerStatusBase,
+        unlockedBattleSkills.map((skill) => skill.id),
+        effectNowMs,
+      );
+      const passiveBattleBonuses = getEquippedPassiveBattleBonuses(character);
+      const playerStatusSnapshot = getBattleStatusSnapshot(nextPlayerStatusBase);
+      const response = (current.responses ?? []).find((entry) => entry.telegraphId === activeTelegraph.id);
+      const enemyStats = current.enemyStatsById[activeTelegraph.enemyId];
+      const severity = Math.max(
+        1,
+        getMechanicSeverity(activeTelegraph.mechanic) -
+          passiveBattleBonuses.statusSeverityReductionFlat -
+          activeSkillBonuses.statusSeverityReductionFlat,
+      );
+      const enemyCritCycle = enemyStats.critChance >= 18 ? 3 : enemyStats.critChance >= 10 ? 4 : 999;
+      const enemyTurnOrdinal = Math.max(1, getTurnBurst(enemyStats.speed, current.playerStats.speed) - current.enemyTurnsRemaining + 1);
+      const enemyCrit = enemyCritCycle !== 999 && enemyTurnOrdinal % enemyCritCycle === 0;
+      const effectivePlayerSpeed = current.playerStats.speed + activeSkillBonuses.speedBonus;
+      const speedMitigation = effectivePlayerSpeed >= 18 ? 2 : effectivePlayerSpeed >= 12 ? 1 : 0;
+      let incomingDamage = calculateIncomingEnemyDamage({
+        baseDamage: Math.max(1, Math.round(enemyStats.damage * 0.72)),
+        severity,
+        enemyCrit,
+        responseSucceeded: Boolean(response?.success),
+        speedMitigation,
+        snapshot: playerStatusSnapshot,
+        activeSkillProfile: activeSkillBonuses,
+        passiveBonuses: passiveBattleBonuses,
+      });
+      if ((activeTelegraph.mechanic.toLowerCase().includes("spark") || activeTelegraph.mechanic.toLowerCase().includes("overcharge")) && playerStatusSnapshot.groundedStacks > 0) {
+        incomingDamage = Math.max(0, incomingDamage - 4 * playerStatusSnapshot.groundedStacks);
+      }
+      if ((activeTelegraph.mechanic.toLowerCase().includes("spark") || activeTelegraph.mechanic.toLowerCase().includes("field")) && playerStatusSnapshot.wardedStacks > 0) {
+        incomingDamage = Math.max(0, incomingDamage - 3 * playerStatusSnapshot.wardedStacks);
+      }
+      const nextPlayerHp = Math.max(0, current.playerHp - incomingDamage);
+      const appliedFx = !response?.success ? getMechanicStatusFx(activeTelegraph.mechanic) : null;
+      let nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusBase, {
+        clearIds: ["guarded"],
+        stack: appliedFx ? [appliedFx] : undefined,
+      });
+      if (
+        response?.responseType === "brace" &&
+        response.success &&
+        (playerStatusSnapshot.hasBulwarkOath || playerStatusSnapshot.hasSteelRhythm || passiveBattleBonuses.counterBonusDamageFlat > 0)
+      ) {
+        nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, {
+          replace: [
+            {
+              id: "counter-ready",
+              label: "Counter Ready",
+              icon: "sword-cross",
+              tone: "good",
+              detail: "The enemy overcommitted. Your next attack will strike harder.",
+              expiresAtMs: effectNowMs + 18000,
+            },
+          ],
+        });
+      }
+      if (nextPlayerHp < current.playerHp && passiveBattleBonuses.frenzyDurationSeconds > 0) {
+        nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, {
+          replace: [
+            {
+              id: "frenzied",
+              label: "Frenzied",
+              icon: "axe-battle",
+              tone: "good",
+              detail: "Pain sharpens the follow-up. Your attacks and crit pressure are temporarily higher.",
+              expiresAtMs: effectNowMs + passiveBattleBonuses.frenzyDurationSeconds * 1000,
+            },
+          ],
+        });
+      }
+      let nextEnemyTurnsRemaining = Math.max(0, current.enemyTurnsRemaining - 1);
+      let nextTurnOwner: "player" | "enemy" = nextEnemyTurnsRemaining > 0 ? "enemy" : "player";
+      const allEnemiesDown = Object.values(current.enemyHpById).every((hp) => hp <= 0);
+      const allBattleLost = nextPlayerHp <= 0;
+      let nextIndex =
+        allEnemiesDown || allBattleLost
+          ? current.activeIndex
+          : getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
+      const nextPlayerTurnsRemaining =
+        allEnemiesDown || allBattleLost || nextTurnOwner !== "player" ? 0 : Math.max(1, getTurnBurst(effectivePlayerSpeed, enemyStats.speed));
+      const enemyTurnLog = [
+        `${currentEnemy.name} acts with ${activeTelegraph.mechanic.split(":")[0]} and deals ${incomingDamage} damage${enemyCrit ? " (CRIT)" : ""}.`,
+      ];
+      if (appliedFx) {
+        enemyTurnLog.push(describeBattleStatusChange(appliedFx, "gained"));
+      }
+      if (
+        response?.responseType === "brace" &&
+        response.success &&
+        (playerStatusSnapshot.hasBulwarkOath || playerStatusSnapshot.hasSteelRhythm || passiveBattleBonuses.counterBonusDamageFlat > 0)
+      ) {
+        enemyTurnLog.push("The enemy crashes into your guard and leaves a counter window open.");
+      }
+      if (nextPlayerHp < current.playerHp && passiveBattleBonuses.frenzyDurationSeconds > 0) {
+        enemyTurnLog.push("The hit only whips you deeper into a frenzy.");
+      }
+      const finalTurnOwner = allEnemiesDown || allBattleLost ? "player" : nextTurnOwner;
+      const nextEffectClockState = getNextBattleEffectClockState(current, finalTurnOwner, wallNowMs);
+      return {
+        ...current,
+        playerHp: nextPlayerHp,
+        playerStatusFx: nextPlayerStatusFx,
+        turnLog: [...current.turnLog, ...enemyTurnLog],
+        effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
+        effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
+        initiativeHistory: [...current.initiativeHistory, "enemy" as const].slice(-4),
+        lastEnemyDamage: incomingDamage,
+        lastPlayerDamage: 0,
+        lastCrit: enemyCrit,
+        turnOwner: finalTurnOwner,
+        playerTurnsRemaining: nextPlayerTurnsRemaining,
+        enemyTurnsRemaining: allEnemiesDown || allBattleLost ? 0 : nextTurnOwner === "enemy" ? nextEnemyTurnsRemaining : 0,
+        activeIndex: nextIndex,
+      };
+    });
+  };
+  const advanceLiveBattleEnemy = () => {
+    setLiveTowerBattle((current) => {
+      if (!current || current.queuedEnemyIndex == null) {
+        return current;
+      }
+      const nextEnemyId = current.telegraphs[current.queuedEnemyIndex]?.enemyId;
+      const nextEnemyStats = nextEnemyId ? current.enemyStatsById[nextEnemyId] : null;
+      const playerTurnFirst = nextEnemyStats ? current.playerStats.speed >= nextEnemyStats.speed : true;
+      const nextTurnOwner: "player" | "enemy" = playerTurnFirst ? "player" : "enemy";
+      const nextEffectClockState = getNextBattleEffectClockState(current, nextTurnOwner, Date.now());
+      return {
+        ...current,
+        activeIndex: current.queuedEnemyIndex,
+        queuedEnemyIndex: null,
+        turnOwner: nextTurnOwner,
+        effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
+        effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
+        playerTurnsRemaining: playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(current.playerStats.speed, nextEnemyStats.speed)) : 0,
+        enemyTurnsRemaining: !playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(nextEnemyStats.speed, current.playerStats.speed)) : 0,
+        turnLog: [...current.turnLog, playerTurnFirst ? "You step into the next target's lane first." : "The next enemy surges in before you can settle."],
+      };
+    });
+  };
+  const resolveLiveTowerBattle = () => {
+    if (!liveTowerBattle) {
+      return;
+    }
+    if (liveTowerBattle.source === "quest") {
+      const questEncounter = liveTowerBattle.questId ? LIVE_QUEST_ENCOUNTERS[liveTowerBattle.questId] : undefined;
+      const battleWon = Object.values(liveTowerBattle.enemyHpById).every((hp) => hp <= 0);
+      const result = onClaimQuest(
+        battleWon,
+        battleWon ? questEncounter?.successSummary : questEncounter?.failureSummary,
+      );
+      setNoticeTone(result.ok ? "ok" : "error");
+      setNotice(result.reason ?? (result.ok ? "Quest combat resolved." : "Quest combat could not be resolved."));
+      if (result.ok) {
+        setPendingQuestResultOpen(true);
+      }
+      setLiveTowerBattle(null);
+      return;
+    }
+    const result = onResolveTowerWave(
+      liveTowerBattle.floorNumber,
+      liveTowerBattle.wave,
+      liveTowerBattle.committedItems,
+      {
+        position: liveTowerBattle.position,
+        braceUsed: liveTowerBattle.braceUsed,
+        skillId: liveTowerBattle.skillUsed ? character.activeClassSkillId : null,
+        itemIdsUsed: Object.values(liveTowerBattle.committedItems).some((amount) => amount > 0)
+          ? Object.keys(liveTowerBattle.committedItems) as ItemId[]
+          : [],
+        responses: liveTowerBattle.responses,
+        abilityCooldownsUntilMs: liveTowerBattle.skillCooldownEndsAtMsById,
+        persistentStatusEffects: getPersistentWaveStatusFx(
+          liveTowerBattle.playerStatusFx,
+          getLiveBattleEffectClockMs(liveTowerBattle, Date.now()),
+          Date.now(),
+        ),
+      },
+    );
+    if (!result.ok || !result.outcome) {
+      setNoticeTone("error");
+      setNotice(result.reason ?? "Wave resolution failed.");
+      setLiveTowerBattle(null);
+      return;
+    }
+    const outcome = result.outcome;
+    const { countered, triggered, lines, success } = outcome;
+    setWaveResolveModal(outcome);
+    if (outcome.conditionalEncounter) {
+      setActiveConditionalEncounter(outcome.conditionalEncounter);
+      setConditionalEncounterResolved(false);
+      setConditionalEncounterOpen(true);
+    }
+    setTowerWaveReportsByFloor((current) => ({
+      ...current,
+      [liveTowerBattle.floorNumber]: {
+        ...(current[liveTowerBattle.floorNumber] ?? {}),
+        [liveTowerBattle.wave]: {
+          wave: liveTowerBattle.wave,
+          title: getWaveTitle(liveTowerBattle.wave),
+          countered,
+          triggered,
+          lines,
+          statusEffects: outcome.statusEffects,
+        },
+      },
+    }));
+    setNoticeTone(success ? "ok" : "error");
+    setNotice(result.reason ?? `${getWaveTitle(liveTowerBattle.wave)} resolved.`);
+    if (success) {
+      setTowerWaveProgressByFloor((current) => {
+        const currentWaveState = current[liveTowerBattle.floorNumber] ?? {
+          normal: "available",
+          subBoss: "locked",
+          boss: "locked",
+        };
+        if (currentWaveState[liveTowerBattle.wave] !== "available") {
+          return current;
+        }
+        const nextWaveState = { ...currentWaveState, [liveTowerBattle.wave]: "cleared" as const };
+        if (liveTowerBattle.wave === "normal") {
+          nextWaveState.subBoss = "available";
+        } else if (liveTowerBattle.wave === "subBoss") {
+          nextWaveState.boss = "available";
+        }
+        return {
+          ...current,
+          [liveTowerBattle.floorNumber]: nextWaveState,
+        };
+      });
+      const floorSelectionKey = `floor-${liveTowerBattle.floorNumber}`;
+      const usedItemIds = new Set(Object.keys(liveTowerBattle.committedItems));
+      if (usedItemIds.size > 0) {
+        setSelectedItemsForTower((current) => {
+          const floorItems = { ...(current[floorSelectionKey] ?? {}) };
+          for (const itemId of usedItemIds) {
+            delete floorItems[itemId as ItemId];
+          }
+          return {
+            ...current,
+            [floorSelectionKey]: floorItems,
+          };
+        });
+      }
+    }
+    setLiveTowerBattle(null);
+  };
+  const letMechanicThrough = () => {
+    if (!liveTowerBattle) {
+      return;
+    }
+    const activeTelegraph = liveTowerBattle.telegraphs[liveTowerBattle.activeIndex];
+    if (!activeTelegraph) {
+      return;
+    }
+    setLiveTowerBattle((current) =>
+      current
+        ? (() => {
+            const enemyStats = current.enemyStatsById[activeTelegraph.enemyId];
+            return {
+              ...current,
+              responses: [
+                ...(current.responses ?? []),
+                {
+                  telegraphId: activeTelegraph.id,
+                  enemyId: activeTelegraph.enemyId,
+                  mechanic: activeTelegraph.mechanic,
+                  responseType: "brace",
+                  responseId: "none",
+                  success: false,
+                },
+              ],
+              turnLog: [
+                ...current.turnLog,
+                `You give up the initiative. ${activeTelegraph.enemyName} is about to act.`,
+              ],
+              lastPlayerDamage: 0,
+              lastEnemyDamage: 0,
+              lastCrit: false,
+              turnOwner: "enemy",
+              playerTurnsRemaining: 0,
+              enemyTurnsRemaining: getTurnBurst(enemyStats.speed, current.playerStats.speed),
+            };
+          })()
+        : current,
+    );
+  };
+  const playEnemyTurn = () => {
+    if (!liveTowerBattle || liveTowerBattle.turnOwner !== "enemy" || enemyTurnAnimating) {
+      return;
+    }
+    setEnemyTurnAnimating(true);
+    setEnemyTurnMeter(0);
+    let progress = 0;
+    const interval = setInterval(() => {
+      progress += 20;
+      setEnemyTurnMeter(Math.min(100, progress));
+      if (progress >= 100) {
+        clearInterval(interval);
+        resolveEnemyTurn();
+        setEnemyTurnMeter(0);
+        setEnemyTurnAnimating(false);
+      }
+    }, 70);
+  };
   const handleConquerTowerWaveSection = (floorNumber: number, wave: TowerWaveKey) => {
     const floor = towerFloors.find((entry) => entry.floorNumber === floorNumber);
     if (!floor) {
@@ -749,6 +3023,11 @@ export const QuestsScreen = ({
     const waveCommittedItems = Object.fromEntries(
       Object.entries(selectedItems).filter(([itemId, amount]) => allowedForWave.has(itemId) && amount > 0),
     ) as Record<ItemId, number>;
+    if (floor.floorNumber === 1) {
+      const waveEnemies = wave === "normal" ? enemies.normal : wave === "subBoss" ? enemies.subBoss : enemies.boss;
+      startLiveTowerBattle(floorNumber, wave, waveCommittedItems, waveEnemies);
+      return;
+    }
     const result = onResolveTowerWave(floorNumber, wave, waveCommittedItems);
     if (!result.ok || !result.outcome) {
       setNoticeTone("error");
@@ -919,6 +3198,31 @@ export const QuestsScreen = ({
     setNoticeTone("ok");
     setNotice(`Examiner ${rankExaminerProfile.name}: Return when your preparation is complete.`);
   };
+  const promptTamsinVisit = () => {
+    onRecordNpcInteraction("npc-tamsin-vale", 2, 0);
+    setGuildDialog("tamsin-floor2");
+  };
+  const promptTamsinFollowup = () => {
+    onRecordNpcInteraction("npc-tamsin-vale", 1, 0);
+    setGuildDialog("tamsin-followup");
+  };
+  const handleTamsinDialogChoice = (choice: "steady" | "mercenary") => {
+    const result = onRespondThornRunnerIntroduction(choice);
+    setGuildDialog(null);
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Tamsin's route briefing recorded." : "Tamsin has nothing new to say."));
+    if (result.ok) {
+      setGuildTab("board");
+    }
+  };
+  const handleTamsinFollowup = () => {
+    const result = onAcknowledgeThornRunnerFollowup();
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Tamsin's corridor notes recorded." : "Tamsin has nothing new to add."));
+    if (result.ok) {
+      setGuildDialog(null);
+    }
+  };
   const returnToNpcHall = () => {
     setGuildTab("npc");
     setNoticeTone("ok");
@@ -960,6 +3264,10 @@ export const QuestsScreen = ({
     }
     return item.rarity;
   };
+  const getNpcDialogProfile = (npcId: string) =>
+    npcProfiles.find((profile) => profile.id === npcId) ??
+    encounteredNpcById.get(npcId) ??
+    null;
   const hasFloorIntel = (floorNumber: number) => (character.purchasedFloorIntelNumbers ?? []).includes(floorNumber);
   const getTowerEnemyFloorNumber = (enemyId: string) => {
     const match = enemyId.match(/^f(\d+)-/i);
@@ -1159,6 +3467,7 @@ export const QuestsScreen = ({
     () => new Map(encounteredNpcProfiles.map((profile) => [profile.id, profile] as const)),
     [encounteredNpcProfiles],
   );
+  const unlockedBattleSkills = useMemo(() => getUnlockedActiveSkills(character), [character]);
   const getNpcFloorReached = (npc: GuildNpcProfile): number => {
     const encountered = encounteredNpcById.get(npc.id);
     if (encountered) {
@@ -1177,6 +3486,15 @@ export const QuestsScreen = ({
       : 0;
   const getNpcSummaryText = (npc: GuildNpcProfile): string => {
     if (npc.id === RESCUE_REQUEST_NPC_PROFILE.id) {
+      if (storyState.aldricQuestPath === "saved") {
+        return "Aldric's daughter lives. He now treats your climb as something worth guarding, and his loyalty to you is no longer in doubt.";
+      }
+      if (storyState.aldricQuestPath === "too_late") {
+        return "Aldric knows you accepted the plea, but you arrived too late. He has begun walking a darker path, though he has not turned fully against you.";
+      }
+      if (storyState.aldricQuestPath === "refused") {
+        return "Aldric left the guild hall after your refusal. The plea is over, but the consequence is not.";
+      }
       return rescueNpcStatus === "accepted"
         ? "Aldric remains in the guild while the rescue operation is active."
         : "A father asks for your help rescuing his daughter from nearby bandits.";
@@ -1190,6 +3508,21 @@ export const QuestsScreen = ({
     if (npc.id === QUARTERMASTER_BRAN_NPC_ID) {
       return "Quartermaster Bran manages the guild store. Buy gear, supplies, and sell materials through this desk.";
     }
+    if (npc.id === "npc-tamsin-vale") {
+      if (storyState.thornRunnerQuestStatus === "completed" && storyState.thornRunnerFollowupReviewed) {
+        return "Tamsin has logged the recovered satchel and opened her thorn notes to you. Her corridor work now reads you as proven help.";
+      }
+      if (storyState.thornRunnerQuestStatus === "completed") {
+        return "Tamsin has seen you bring corridor work back alive. Return once to review what the recovered satchel taught her about Thorn Corridor.";
+      }
+      if (storyState.thornRunnerIntroductionChoice === "steady") {
+        return "Tamsin has posted her snagline recovery under your name. She expects you to treat Thorn Corridor like route work, not salvage gambling.";
+      }
+      if (storyState.thornRunnerIntroductionChoice === "mercenary") {
+        return "Tamsin still posted the snagline recovery, but she now watches to see whether you chase the pay faster than the lane.";
+      }
+      return "A thorn-lane runner who has started watching your rise past Floor 1. She has corridor work to offer if you can take it seriously.";
+    }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
       return `Assigned examiner for ${rankTrial.fromRank} -> ${rankTrial.toRank} promotion trial.`;
     }
@@ -1201,6 +3534,22 @@ export const QuestsScreen = ({
   };
   const getNpcTypeChips = (npc: GuildNpcProfile): Array<{ icon: string; color: string; text: string; itemId?: ItemId }> => {
     if (npc.id === RESCUE_REQUEST_NPC_PROFILE.id) {
+      if (storyState.aldricQuestPath === "saved") {
+        return [
+          { icon: "account-heart-outline", color: "#9ce8c2", text: "Loyal Ally" },
+          { icon: "shield-check-outline", color: "#ffd48f", text: "Daughter Saved" },
+          { icon: "sword-cross", color: "#a8d2ff", text: "Climb Support Expected" },
+          { icon: "star-four-points-circle-outline", color: "#d0b4ff", text: "Ending Weight" },
+        ];
+      }
+      if (storyState.aldricQuestPath === "too_late") {
+        return [
+          { icon: "timer-sand-empty", color: "#ffb18f", text: "Too Late" },
+          { icon: "skull-outline", color: "#ff8d8d", text: "Daughter Lost" },
+          { icon: "information-outline", color: "#a8d2ff", text: "Occasional Dark Intel" },
+          { icon: "star-four-points-circle-outline", color: "#d0b4ff", text: "Ending Weight" },
+        ];
+      }
       return [
         { icon: "account-heart-outline", color: "#ffb8ac", text: "Request: Daughter Rescue" },
         { icon: "alert-octagon-outline", color: "#ffd48f", text: "Threat: Bandit Cell" },
@@ -1233,6 +3582,42 @@ export const QuestsScreen = ({
         { icon: "sack", color: "#9ce8c2", text: "Buy / Sell Materials" },
         { icon: "sword-cross", color: "#a8d2ff", text: "Weapon Inventory" },
         { icon: "flask-outline", color: "#d0b4ff", text: "Sigil & Potion Supply" },
+      ];
+    }
+    if (npc.id === "npc-tamsin-vale") {
+      return [
+        { icon: "map-marker-path", color: "#9ce8c2", text: "Floor 2: Thorn Corridor" },
+        { icon: "hook", color: "#ffd48f", text: "Snagline Recovery" },
+        {
+          icon: storyState.thornRunnerIntroductionChoice === "mercenary" ? "cash-multiple" : "shield-check-outline",
+          color: storyState.thornRunnerIntroductionChoice === "mercenary" ? "#ffb59d" : "#a8d2ff",
+          text:
+            storyState.thornRunnerIntroductionChoice === "mercenary"
+              ? "First Read: Coin First"
+              : storyState.thornRunnerIntroductionChoice === "steady"
+                ? "First Read: Steady Hands"
+                : "Awaiting First Read",
+        },
+        {
+          icon:
+            storyState.thornRunnerQuestStatus === "completed"
+              ? storyState.thornRunnerFollowupReviewed
+                ? "notebook-check-outline"
+                : "book-clock-outline"
+              : "script-text-outline",
+          color:
+            storyState.thornRunnerQuestStatus === "completed"
+              ? storyState.thornRunnerFollowupReviewed
+                ? "#9ce8c2"
+                : "#ffd48f"
+              : "#d0b4ff",
+          text:
+            storyState.thornRunnerQuestStatus === "completed"
+              ? storyState.thornRunnerFollowupReviewed
+                ? "Thorn Notes Logged"
+                : "Follow-Up Waiting"
+              : "Board Contract Available",
+        },
       ];
     }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
@@ -1299,6 +3684,33 @@ export const QuestsScreen = ({
       };
     }
     if (npc.id === RESCUE_REQUEST_NPC_PROFILE.id) {
+      if (storyState.aldricQuestPath === "saved") {
+        return {
+          label: "Oathbound",
+          score: npcDispositionById[npc.id] ?? 92,
+          icon: "shield-account-outline",
+          color: "#8fe4b0",
+          flavor: "Aldric now treats your climb as a vow he means to honor beside you.",
+        };
+      }
+      if (storyState.aldricQuestPath === "too_late") {
+        return {
+          label: "Grieving",
+          score: npcDispositionById[npc.id] ?? 34,
+          icon: "weather-night",
+          color: "#c9a6ff",
+          flavor: "He does not deny that you tried, but grief has bent him toward darker answers.",
+        };
+      }
+      if (storyState.aldricQuestPath === "refused") {
+        return {
+          label: "Ashbound",
+          score: npcDispositionById[npc.id] ?? 12,
+          icon: "emoticon-devil-outline",
+          color: "#ff8d8d",
+          flavor: "Aldric's plea ended in refusal, and what follows will not stay buried near Watchtrail.",
+        };
+      }
       const score = npcDispositionById[npc.id] ?? (rescueNpcStatus === "accepted" ? 72 : rescueNpcStatus === "refused_once" ? 28 : 40);
       if (rescueNpcStatus === "accepted") {
         return {
@@ -1349,6 +3761,47 @@ export const QuestsScreen = ({
           interactions >= 4
             ? "Bran recognizes you as a regular and loosens his tone."
             : "Bran treats you as another adventurer to outfit and send out.",
+      };
+    }
+    if (npc.id === "npc-tamsin-vale") {
+      const choice = storyState.thornRunnerIntroductionChoice;
+      const completed = storyState.thornRunnerQuestStatus === "completed";
+      const score =
+        npcDispositionById[npc.id] ??
+        (completed ? 76 : choice === "steady" ? 66 : choice === "mercenary" ? 42 : 52);
+      if (completed) {
+        return {
+          label: "Proven",
+          score,
+          icon: "shield-check-outline",
+          color: "#9ce8c2",
+          flavor: "Tamsin now treats you as someone worth trusting with corridor work that comes back alive.",
+        };
+      }
+      if (choice === "steady") {
+        return {
+          label: "Measured",
+          score,
+          icon: "map-marker-path",
+          color: "#8fd8ff",
+          flavor: "She sees you as careful enough to work a live thorn lane without feeding it your nerve.",
+        };
+      }
+      if (choice === "mercenary") {
+        return {
+          label: "Wary",
+          score,
+          icon: "eye-outline",
+          color: "#ffbc9a",
+          flavor: "She posted the work, but she is still measuring whether you respect the lane or only the pay.",
+        };
+      }
+      return {
+        label: "Sizing You Up",
+        score,
+        icon: "compass-outline",
+        color: "#d7c19b",
+        flavor: "Tamsin watches for how you carry yourself before she decides what kind of runner you are.",
       };
     }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
@@ -1442,8 +3895,17 @@ export const QuestsScreen = ({
   };
 
   const getCounterItemIdFromMechanicText = (mechanic: string): ItemId | null => {
-    const marker = "counter supply:";
     const lower = mechanic.toLowerCase();
+    const marker = lower.includes("counter with item:")
+      ? "counter with item:"
+      : lower.includes("counter with")
+        ? "counter with"
+        : lower.includes("counter supply:")
+          ? "counter supply:"
+          : null;
+    if (!marker) {
+      return null;
+    }
     const markerIndex = lower.indexOf(marker);
     if (markerIndex < 0) {
       return null;
@@ -1630,9 +4092,9 @@ export const QuestsScreen = ({
               >
                 NPC
               </Text>
-              {npcUnreadCount > 0 ? (
+              {npcAttentionCount > 0 ? (
                 <View style={styles.guildTabBadge}>
-                  <Text style={styles.guildTabBadgeText}>{Math.min(9, npcUnreadCount)}</Text>
+                  <Text style={styles.guildTabBadgeText}>{Math.min(9, npcAttentionCount)}</Text>
                 </View>
               ) : null}
             </View>
@@ -1768,7 +4230,7 @@ export const QuestsScreen = ({
             </Text>
           </Pressable>
         ) : null}
-        {npcUnreadCount > 0 ? (
+        {npcAttentionCount > 0 ? (
           <Pressable
             onPress={() => {
               if (towerModeScreenActive) {
@@ -1782,7 +4244,9 @@ export const QuestsScreen = ({
             style={styles.storyAlertButton}
           >
             <MaterialCommunityIcons name="bell-ring-outline" size={15} color="#ffe8b2" />
-            <Text style={styles.storyAlertText}>Guild Alert: An NPC is looking for help in the NPC Hall.</Text>
+            <Text style={styles.storyAlertText}>
+              Guild Alert: {npcAttentionCount} {npcAttentionCount === 1 ? "NPC entry needs your attention" : "NPC entries need your attention"} in the hall.
+            </Text>
           </Pressable>
         ) : null}
         {notice ? (
@@ -1902,8 +4366,22 @@ export const QuestsScreen = ({
               </View>
               {activeQuest && activeQuestDef ? (
                 <>
+                  {activeQuestDef.id === SPECIAL_RESCUE_QUEST_ID ? (
+                    <View style={styles.questCriticalTimerHero}>
+                      <Text style={styles.questCriticalTimerLabel}>Aldric Rescue Window</Text>
+                      <Text style={styles.questCriticalTimerValue}>{formatRemainingDetailed(remainingMs)}</Text>
+                    </View>
+                  ) : null}
                   <Text style={styles.questTitle}>{activeQuestDef.title}</Text>
                   <Text style={styles.questMeta}>Remaining: {formatRemaining(remainingMs)}</Text>
+                  {activeQuestDef.id === SPECIAL_RESCUE_QUEST_ID ? (
+                    <View style={styles.questUrgencyBanner}>
+                      <MaterialCommunityIcons name="timer-alert-outline" size={16} color="#ffd6a2" />
+                      <Text style={styles.questUrgencyText}>
+                        Time-sensitive rescue. If this slips, Aldric's story turns darker.
+                      </Text>
+                    </View>
+                  ) : null}
 
                   <View style={styles.questMeterBlock}>
                     <View style={styles.meterLabelRow}>
@@ -2006,300 +4484,111 @@ export const QuestsScreen = ({
               </View>
             ) : null}
 
-            {boardVisibleQuests.map((quest) => {
-              const selectedItems = selectedItemsByQuest[quest.id] ?? {};
-              const successChance = getQuestSuccessChance(quest.id, selectedItems);
-              const access = getQuestAccess(quest.id);
-              const blocked = !access.allowed;
-              const questArt = QUEST_BACKGROUND_ART[quest.id];
-              const isSpecialQuest = quest.id === SPECIAL_RESCUE_QUEST_ID;
-              const titleTrails = TITLES.filter(
-                (title) => title.unlockRequirement?.type === "quest_starts" && title.unlockRequirement.questId === quest.id,
-              );
-              return (
-                <View key={quest.id} style={[styles.questCard, isSpecialQuest ? styles.specialQuestCard : null]}>
-                  {questArt ? (
-                    <ImageBackground source={questArt.backdrop} style={styles.questCardBackdropFull} resizeMode="cover">
-                      <LinearGradient
-                        pointerEvents="none"
-                        colors={questArt.overlay}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.questSceneOverlay}
-                      />
-                    </ImageBackground>
-                  ) : null}
-                  <LinearGradient
-                    pointerEvents="none"
-                    colors={
-                      isSpecialQuest
-                        ? ["rgba(234, 92, 96, 0.2)", "rgba(168, 80, 210, 0.12)", "rgba(29, 18, 44, 0.04)"]
-                        : ["rgba(204, 149, 73, 0.09)", "rgba(93, 60, 147, 0.06)", "rgba(24, 17, 39, 0.02)"]
-                    }
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.cardGradient}
-                  />
-                  <View style={styles.questHeader}>
-                    <Image source={QUEST_TYPE_SPRITE[quest.type]} style={styles.questTypeSprite} resizeMode="contain" />
-                    <IconTooltip text={`${questTypeLabel[quest.type]} quest type.`} />
-                    <Text style={styles.questTitle}>{quest.title}</Text>
-                    {isSpecialQuest ? (
-                      <View style={styles.specialQuestBadge}>
-                        <Text style={styles.specialQuestBadgeText}>SPECIAL</Text>
-                      </View>
-                    ) : null}
-                    <View style={styles.typePill}>
-                      <Text style={styles.typePillText}>{questTypeLabel[quest.type]}</Text>
-                    </View>
+            {boardQuestSections.map((section) => (
+              <View
+                key={`board-section-${section.key}`}
+                style={[
+                  styles.boardSectionCard,
+                  section.tone === "urgent"
+                    ? styles.boardSectionCardUrgent
+                  : section.tone === "story"
+                    ? styles.boardSectionCardStory
+                    : section.tone === "special"
+                      ? styles.boardSectionCardSpecial
+                      : section.tone === "hunt"
+                        ? styles.boardSectionCardHunt
+                    : null,
+                ]}
+              >
+                <View style={styles.boardSectionHead}>
+                  <View style={styles.boardSectionTitleWrap}>
+                    <MaterialCommunityIcons
+                      name={section.icon}
+                      size={16}
+                      color={
+                        section.tone === "urgent"
+                          ? "#ffb3b8"
+                          : section.tone === "story"
+                            ? "#a9ddff"
+                            : section.tone === "special"
+                              ? "#e2b4ff"
+                              : "#ffd48f"
+                      }
+                    />
+                    <Text style={styles.boardSectionTitle}>{section.title}</Text>
                   </View>
-
-                  <View style={styles.chipsRow}>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="clock-outline" size={14} color={colors.warning} />
-                      <Text style={styles.rewardChipText}>{quest.durationSeconds}s</Text>
-                      <IconTooltip text="Quest timer duration." />
-                    </View>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
-                      <Text style={styles.rewardChipText}>{quest.staminaCost}</Text>
-                      <IconTooltip text="Stamina cost to start this quest." />
-                    </View>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="signal" size={14} color={difficultyColor(quest.difficulty)} />
-                      <Text style={styles.rewardChipText}>D{quest.difficulty}</Text>
-                      <IconTooltip text="Difficulty tier. Higher tiers need better item readiness." />
-                    </View>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="badge-account-outline" size={14} color="#8ac3ff" />
-                      <Text style={styles.rewardChipText}>{quest.rank}</Text>
-                      <IconTooltip text="Minimum Adventurer Rank to access this quest." />
-                    </View>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="account-arrow-up-outline" size={14} color="#b5dc8b" />
-                      <Text style={styles.rewardChipText}>Lv {quest.minLevel}</Text>
-                      <IconTooltip text="Minimum player level to unlock this quest." />
-                    </View>
+                  <View style={styles.boardSectionCountPill}>
+                    <Text style={styles.boardSectionCountText}>{section.quests.length}</Text>
                   </View>
-
-                  <View style={styles.questMeterBlock}>
-                    <View style={styles.meterLabelRow}>
-                      <Text style={styles.meterLabel}>Success Chance</Text>
-                      <Text style={styles.meterLabel}>{successChance}%</Text>
-                    </View>
-                    <ProgressBar value={successChance} max={100} variant="chance" />
-                  </View>
-
-                  <View style={styles.requirementsBlock}>
-                    <Text style={styles.reqTitle}>Guaranteed Rewards</Text>
-                    <View style={styles.chipsRow}>
-                      <View style={styles.rewardChip}>
-                        <MaterialCommunityIcons name="cash-multiple" size={14} color={colors.gold} />
-                        <Text style={styles.rewardChipText}>+{quest.reward.gold}g</Text>
-                      </View>
-                      <View style={styles.rewardChip}>
-                        <MaterialCommunityIcons name="star-circle-outline" size={14} color="#8ac3ff" />
-                        <Text style={styles.rewardChipText}>+{quest.reward.xp} XP</Text>
-                      </View>
-                      <View style={styles.rewardChip}>
-                        <MaterialCommunityIcons name="school-outline" size={14} color="#ffcf7a" />
-                        <Text style={styles.rewardChipText}>+{quest.reward.masteryXp} Mastery</Text>
-                      </View>
-                    </View>
-                    {titleTrails.map((title) => {
-                      const required = title.unlockRequirement?.requiredCount ?? 1;
-                      const progress = Math.min(required, character.titleProgressById?.[title.id] ?? 0);
-                      const progressPercent = Math.round((progress / Math.max(1, required)) * 100);
-                      const rarityColor = rarityColorMap[title.rarity];
-                      const isLegendary = title.rarity === "legendary";
-                      const isEarned = (character.ownedTitleIds ?? []).includes(title.id);
-                      return (
-                        <View
-                          key={`${quest.id}-title-${title.id}`}
-                          style={[
-                            styles.titleRewardCard,
-                            { borderColor: rarityColor },
-                            isLegendary ? styles.titleRewardLegendary : null,
-                          ]}
-                        >
-                          <View style={[styles.titleRewardIconWrap, { borderColor: rarityColor }]}>
-                            <Image source={TITLE_ICON_ART[title.id]} style={styles.titleRewardIcon} resizeMode="contain" />
-                          </View>
-                          <View style={styles.titleRewardTextWrap}>
-                            <View style={styles.titleRewardTopRow}>
-                              <Text style={styles.titleRewardLabel}>TITLE TRAIL</Text>
-                              <View style={[styles.titleRewardGradePill, { borderColor: rarityColor }]}>
-                                <Text style={[styles.titleRewardGradeText, { color: rarityColor }]}>
-                                  {title.rarity.toUpperCase()}
-                                </Text>
-                              </View>
-                            </View>
-                            <Text style={styles.titleRewardName}>{title.name}</Text>
-                            <View style={styles.titleRewardStatusRow}>
-                              <Text style={styles.titleRewardMeta}>Progress {progress}/{required}</Text>
-                              {isEarned ? (
-                                <View style={styles.titleEarnedPill}>
-                                  <MaterialCommunityIcons name="check-decagram" size={11} color="#9af3bf" />
-                                  <Text style={styles.titleEarnedText}>EARNED</Text>
-                                </View>
-                              ) : null}
-                            </View>
-                            <View style={styles.titleRewardProgressTrack}>
-                              <View
-                                style={[
-                                  styles.titleRewardProgressFill,
-                                  { width: `${progressPercent}%`, backgroundColor: rarityColor },
-                                ]}
-                              />
-                            </View>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-
-                  {quest.requiredItems.length > 0 ? (
-                    <View style={styles.requirementsBlock}>
-                      <Text style={styles.reqTitle}>Key Items</Text>
-                      <View style={styles.requirementsRow}>
-                        {quest.requiredItems.map((requirement) => {
-                          const item = ITEM_BY_ID[requirement.itemId];
-                          const owned = character.inventory[requirement.itemId] ?? 0;
-                          const committed = getCommittedCount(quest.id, requirement.itemId);
-                          const satisfied = committed >= requirement.needed;
-                          return (
-                            <View key={`${quest.id}-${requirement.itemId}`} style={styles.reqItem}>
-                              <GameItemIcon itemId={requirement.itemId} size={14} />
-                              <IconTooltip
-                                text={`${item?.name ?? requirement.itemId}: commit items with +/-. Committed items are consumed when quest starts. Key items heavily influence success.`}
-                              />
-                              <Pressable
-                                onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
-                                style={styles.stepperButton}
-                              >
-                                <Text style={styles.stepperButtonText}>-</Text>
-                              </Pressable>
-                              <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
-                                {committed}/{requirement.needed}
-                              </Text>
-                              <Pressable
-                                onPress={() => adjustCommittedItem(quest.id, requirement.itemId, 1, requirement.needed, owned)}
-                                style={styles.stepperButton}
-                              >
-                                <Text style={styles.stepperButtonText}>+</Text>
-                              </Pressable>
-                              <Text style={styles.reqOwnedText}>Owned {owned}</Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ) : (
-                    <Text style={styles.gatherHint}>No key items required. Great for steady farming.</Text>
-                  )}
-
-                  {quest.recommendedItems && quest.recommendedItems.length > 0 ? (
-                    <View style={styles.requirementsBlock}>
-                      <Text style={styles.reqTitle}>Optional Supplies</Text>
-                      <View style={styles.requirementsRow}>
-                        {quest.recommendedItems.map((requirement) => {
-                          const item = ITEM_BY_ID[requirement.itemId];
-                          const owned = character.inventory[requirement.itemId] ?? 0;
-                          const committed = getCommittedCount(quest.id, requirement.itemId);
-                          const satisfied = committed >= requirement.needed;
-                          return (
-                            <View key={`${quest.id}-optional-${requirement.itemId}`} style={styles.reqItem}>
-                              <GameItemIcon itemId={requirement.itemId} size={14} />
-                              <IconTooltip
-                                text={`${item?.name ?? requirement.itemId}: commit optional supplies with +/-. Committed amount is consumed on quest start and provides bonus success chance.`}
-                              />
-                              <Pressable
-                                onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
-                                style={styles.stepperButton}
-                              >
-                                <Text style={styles.stepperButtonText}>-</Text>
-                              </Pressable>
-                              <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
-                                {committed}/{requirement.needed}
-                              </Text>
-                              <Pressable
-                                onPress={() => adjustCommittedItem(quest.id, requirement.itemId, 1, requirement.needed, owned)}
-                                style={styles.stepperButton}
-                              >
-                                <Text style={styles.stepperButtonText}>+</Text>
-                              </Pressable>
-                              <Text style={styles.reqOwnedText}>Owned {owned}</Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {quest.itemRewards.length > 0 ? (
-                    <View style={styles.requirementsBlock}>
-                      <Text style={styles.reqTitle}>Possible Reward Drops</Text>
-                      <View style={styles.requirementsRow}>
-                        {quest.itemRewards.map((reward) => {
-                          const rewardItem = ITEM_BY_ID[reward.itemId];
-                          const rewardRarity = rewardItem?.rarity ?? "common";
-                          return (
-                            <Pressable
-                              key={`${quest.id}-reward-${reward.itemId}`}
-                              style={[
-                                styles.rewardItem,
-                                { borderColor: rarityColorMap[rewardRarity] },
-                              ]}
-                              onPress={() =>
-                                showQuickInfo(
-                                  rewardItem?.name ?? reward.itemId,
-                                  `Grade: ${rewardRarity.toUpperCase()}\nDrop Chance: ${Math.round(reward.chance * 100)}%\nAmount: x${reward.amount}`,
-                                  rewardRarity,
-                                  reward.itemId,
-                                )
-                              }
-                            >
-                              <GameItemIcon itemId={reward.itemId} size={14} />
-                              <Text style={styles.rewardItemName} numberOfLines={1}>
-                                {rewardItem?.name ?? reward.itemId}
-                              </Text>
-                              <View style={[styles.rewardGradePill, { borderColor: rarityColorMap[rewardRarity] }]}>
-                                <Text style={[styles.rewardGradeText, { color: rarityColorMap[rewardRarity] }]}>
-                                  {rewardRarity.toUpperCase()}
-                                </Text>
-                              </View>
-                              <Text style={styles.rewardChanceText}>
-                                {Math.round(reward.chance * 100)}%
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {blocked ? (
-                    <View style={styles.lockRow}>
-                      <MaterialCommunityIcons name="lock-outline" size={14} color="#ff9b92" />
-                      <Text style={styles.lockText}>{access.reason}</Text>
-                    </View>
-                  ) : null}
-
-                  <Pressable
-                    disabled={Boolean(activeQuest) || blocked || questHealthLocked || isDead}
-                    onPress={() => handleStartQuest(quest.id)}
-                    style={styles.actionWrap}
-                  >
-                    <View style={[styles.startButton, activeQuest || blocked || questHealthLocked || isDead ? styles.actionDisabled : null]}>
-                      <Text style={styles.startText}>
-                        {isDead ? "Being Fractured" : questHealthLocked ? "Need 50% HP" : blocked ? "Locked" : activeQuest ? "On a Quest" : "Take This Quest"}
-                      </Text>
-                    </View>
-                  </Pressable>
                 </View>
-              );
-            })}
-            {boardVisibleQuests.length === 0 ? (
+                <Text style={styles.boardSectionMeta}>{section.subtitle}</Text>
+                <View style={styles.boardSectionList}>
+                  {section.quests.map((quest) => renderQuestBoardCard(quest))}
+                </View>
+              </View>
+            ))}
+            {showAldricWantedPlaceholder ? (
+              <View style={[styles.boardSectionCard, styles.boardSectionCardWanted]}>
+                <View style={styles.boardSectionHead}>
+                  <View style={styles.boardSectionTitleWrap}>
+                    <MaterialCommunityIcons name="target-account" size={16} color="#ffb9a7" />
+                    <Text style={styles.boardSectionTitle}>Wanted</Text>
+                  </View>
+                  <View style={styles.boardSectionCountPill}>
+                    <Text style={styles.boardSectionCountText}>1</Text>
+                  </View>
+                </View>
+                <Text style={styles.boardSectionMeta}>Future outlaw and consequence routes tied to named targets.</Text>
+                <View style={[styles.questCard, styles.wantedPlaceholderCard]}>
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(145, 45, 48, 0.22)", "rgba(79, 23, 31, 0.14)", "rgba(21, 14, 24, 0.04)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.cardGradient}
+                />
+                <View style={styles.questHeader}>
+                  <MaterialCommunityIcons name="target-account" size={18} color="#ffb9a7" />
+                  <Text style={styles.questTitle}>Wanted: The Watchtrail Butcher</Text>
+                  <View style={styles.wantedQuestBadge}>
+                    <Text style={styles.wantedQuestBadgeText}>PLACEHOLDER</Text>
+                  </View>
+                  <View style={styles.typePill}>
+                    <Text style={styles.typePillText}>Wanted</Text>
+                  </View>
+                </View>
+                <View style={styles.chipsRow}>
+                  <View style={styles.rewardChip}>
+                    <MaterialCommunityIcons name="knife-military" size={14} color="#ffb9a7" />
+                    <Text style={styles.rewardChipText}>Bandit Leader</Text>
+                  </View>
+                  <View style={styles.rewardChip}>
+                    <MaterialCommunityIcons name="map-marker-path" size={14} color="#ffd487" />
+                    <Text style={styles.rewardChipText}>Watchtrail Fringe</Text>
+                  </View>
+                  <View style={styles.rewardChip}>
+                    <MaterialCommunityIcons name="alert-circle-outline" size={14} color="#ff9c8f" />
+                    <Text style={styles.rewardChipText}>Tied To Aldric</Text>
+                  </View>
+                </View>
+                <Text style={styles.questMeta}>
+                  A guild-side wanted notice is starting to form around the bandit leader behind the Watchtrail killing. Aldric's fall and this man's trail are now tied together.
+                </Text>
+                <View style={styles.requirementsBlock}>
+                  <Text style={styles.reqTitle}>Known Details</Text>
+                  <View style={styles.wantedDetailsList}>
+                    <Text style={styles.wantedDetailText}>Alias: `The Watchtrail Butcher`</Text>
+                    <Text style={styles.wantedDetailText}>Crime: abduction, assault, murder, and roadside predation</Text>
+                    <Text style={styles.wantedDetailText}>Status: questline placeholder for Aldric's future dark-route encounters</Text>
+                  </View>
+                </View>
+                <View style={[styles.startButton, styles.actionDisabled]}>
+                  <Text style={styles.startText}>Wanted Route Not Yet Open</Text>
+                </View>
+                </View>
+              </View>
+            ) : null}
+            {boardVisibleQuests.length === 0 && !showAldricWantedPlaceholder ? (
               <View style={styles.activeCard}>
                 <Text style={styles.questMeta}>No quests match your current board filters.</Text>
               </View>
@@ -2387,73 +4676,89 @@ export const QuestsScreen = ({
                       end={{ x: 1, y: 1 }}
                       style={styles.cardGradient}
                     />
-                    <View
-                      style={[
-                        styles.offerVisualWrap,
-                        !isLegendary ? { borderColor: rarityColorMap[rarity] } : null,
-                        isLegendary ? styles.legendaryGlow : null,
-                      ]}
+                    <Pressable
+                      onPress={() =>
+                        showQuickInfo(
+                          item?.name ?? entry.label,
+                          item?.description ?? entry.sellText,
+                          rarity,
+                          entry.itemId,
+                        )
+                      }
+                      style={styles.offerInspectArea}
                     >
-                      <GameItemIcon itemId={entry.itemId} size={38} />
-                    </View>
-                    <View style={styles.offerMain}>
-                      <View style={styles.offerTitleRow}>
-                        <Text style={styles.offerTitle}>{entry.label}</Text>
-                        <View style={styles.storeTipWrap}>
-                          <IconTooltip text={`${item?.name ?? entry.itemId}. ${entry.sellText}`} />
-                        </View>
-                      </View>
-                      <View style={styles.offerBadgeRow}>
-                        <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
-                          <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>
-                            {rarity.toUpperCase()}
-                          </Text>
-                        </View>
-                        <View style={styles.levelPill}>
-                          <Text style={styles.levelPillText}>LV {item?.requiredLevel ?? 1}+</Text>
-                        </View>
-                        {entry.classRestriction ? (
-                          <View style={styles.classPill}>
-                            <Text style={styles.classPillText}>{entry.classRestriction.toUpperCase()}</Text>
-                          </View>
-                        ) : null}
-                        {owned > 0 ? (
-                          <View style={styles.ownedPill}>
-                            <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
-                          </View>
-                        ) : null}
-                        {isEquipped ? (
-                          <View style={styles.equippedPill}>
-                            <Text style={styles.equippedPillText}>EQUIPPED</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <Text style={styles.offerMeta} numberOfLines={1}>
-                        {entry.sellText}
-                      </Text>
-                      {isWeapon ? (
-                        <View style={styles.weaponStatRow}>
-                          <View style={styles.weaponStatChip}>
-                            <GameItemIcon itemId="weapon-warrior-training-blade" size={12} />
-                            <Text style={styles.weaponStatText}>ATK {baseWeaponAttack}</Text>
-                            <Text style={styles.weaponStatApplied}>now +{weaponAttack}</Text>
-                          </View>
-                          <View style={styles.weaponStatChip}>
-                            <GameItemIcon itemId="buff-arcane-sigil" size={12} />
-                            <Text style={styles.weaponStatText}>CRIT {baseWeaponCrit}%</Text>
-                            <Text style={styles.weaponStatApplied}>now +{weaponCrit}%</Text>
-                          </View>
-                          <View style={styles.weaponStatChip}>
-                            <GameItemIcon itemId="buff-gale-feather" size={12} />
-                            <Text style={styles.weaponStatText}>SPD {baseWeaponSpeed}</Text>
-                            <Text style={styles.weaponStatApplied}>now +{weaponSpeed}</Text>
-                          </View>
-                          <IconTooltip
-                            text={`Base stats are the weapon's full power. "now" shows what you currently get after proficiency scaling. If your level is below the requirement, you only receive 25% until you meet it.`}
+                      <View style={styles.offerVisualWrap}>
+                        {item?.image ? (
+                          <Image
+                            source={item.image}
+                            style={entry.itemId === "weapon-hidden-steward-edict" ? styles.offerWeaponArtHero : styles.offerWeaponArt}
+                            resizeMode="contain"
                           />
+                        ) : (
+                          <GameItemIcon itemId={entry.itemId} size={entry.itemId === "weapon-hidden-steward-edict" ? 122 : 92} />
+                        )}
+                      </View>
+                      <View style={styles.offerMain}>
+                        <View style={styles.offerTitleRow}>
+                          <Text style={styles.offerTitle}>{entry.label}</Text>
+                          <View style={styles.storeTipWrap}>
+                            <IconTooltip text={`${item?.name ?? entry.itemId}. ${entry.sellText}`} />
+                          </View>
                         </View>
-                      ) : null}
-                    </View>
+                        <View style={styles.offerBadgeRow}>
+                          <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
+                            <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }, rarity === "legendary" ? styles.legendaryTextGlow : null]}>
+                              {rarity.toUpperCase()}
+                            </Text>
+                          </View>
+                          {entry.itemId !== "weapon-hidden-steward-edict" ? (
+                            <View style={styles.levelPill}>
+                              <Text style={styles.levelPillText}>LV {item?.requiredLevel ?? 1}+</Text>
+                            </View>
+                          ) : null}
+                          {entry.classRestriction ? (
+                            <View style={styles.classPill}>
+                              <Text style={styles.classPillText}>{entry.classRestriction.toUpperCase()}</Text>
+                            </View>
+                          ) : null}
+                          {owned > 0 ? (
+                            <View style={styles.ownedPill}>
+                              <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
+                            </View>
+                          ) : null}
+                          {isEquipped ? (
+                            <View style={styles.equippedPill}>
+                              <Text style={styles.equippedPillText}>EQUIPPED</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.offerMeta} numberOfLines={2}>
+                          {entry.sellText}
+                        </Text>
+                        {isWeapon ? (
+                          <View style={styles.weaponStatRow}>
+                            <View style={styles.weaponStatChip}>
+                              <GameItemIcon itemId="weapon-warrior-training-blade" size={12} />
+                              <Text style={styles.weaponStatText}>ATK {baseWeaponAttack}</Text>
+                              <Text style={styles.weaponStatApplied}>now +{weaponAttack}</Text>
+                            </View>
+                            <View style={styles.weaponStatChip}>
+                              <GameItemIcon itemId="buff-arcane-sigil" size={12} />
+                              <Text style={styles.weaponStatText}>CRIT {baseWeaponCrit}%</Text>
+                              <Text style={styles.weaponStatApplied}>now +{weaponCrit}%</Text>
+                            </View>
+                            <View style={styles.weaponStatChip}>
+                              <GameItemIcon itemId="buff-gale-feather" size={12} />
+                              <Text style={styles.weaponStatText}>SPD {baseWeaponSpeed}</Text>
+                              <Text style={styles.weaponStatApplied}>now +{weaponSpeed}</Text>
+                            </View>
+                            <IconTooltip
+                              text={`Base stats are the weapon's full power. "now" shows what you currently get after proficiency scaling. If your level is below the requirement, you only receive 25% until you meet it.`}
+                            />
+                          </View>
+                        ) : null}
+                      </View>
+                    </Pressable>
                     <View style={styles.offerAction}>
                       <Text style={styles.storePrice}>{entry.unitPrice}g</Text>
                       {entry.unitPrice > 0 ? (
@@ -2510,25 +4815,39 @@ export const QuestsScreen = ({
                       end={{ x: 1, y: 1 }}
                       style={styles.cardGradient}
                     />
-                    <GameItemIcon itemId={entry.itemId} size={24} />
-                    <View style={styles.offerMain}>
-                      <View style={styles.offerTitleRow}>
-                        <Text style={styles.offerTitle}>{entry.label}</Text>
-                        <View style={styles.storeTipWrap}>
-                          <IconTooltip text={`${item?.name ?? entry.itemId}. ${entry.sellText}`} />
+                    <Pressable
+                      onPress={() =>
+                        showQuickInfo(
+                          item?.name ?? entry.label,
+                          item?.description ?? entry.sellText,
+                          rarity,
+                          entry.itemId,
+                        )
+                      }
+                      style={styles.offerInspectArea}
+                    >
+                      <View style={styles.offerVisualWrap}>
+                        <GameItemIcon itemId={entry.itemId} size={56} />
+                      </View>
+                      <View style={styles.offerMain}>
+                        <View style={styles.offerTitleRow}>
+                          <Text style={styles.offerTitle}>{entry.label}</Text>
+                          <View style={styles.storeTipWrap}>
+                            <IconTooltip text={`${item?.name ?? entry.itemId}. ${entry.sellText}`} />
+                          </View>
+                        </View>
+                        <View style={styles.offerBadgeRow}>
+                          <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
+                            <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>
+                              {rarity.toUpperCase()}
+                            </Text>
+                          </View>
+                          <View style={styles.ownedPill}>
+                            <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
+                          </View>
                         </View>
                       </View>
-                      <View style={styles.offerBadgeRow}>
-                        <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
-                          <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>
-                            {rarity.toUpperCase()}
-                          </Text>
-                        </View>
-                        <View style={styles.ownedPill}>
-                          <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
-                        </View>
-                      </View>
-                    </View>
+                    </Pressable>
                     <View style={styles.offerAction}>
                       <Text style={styles.storePrice}>{entry.unitPrice}g</Text>
                       {entry.unitPrice > 0 ? (
@@ -2839,30 +5158,37 @@ export const QuestsScreen = ({
                         end={{ x: 1, y: 1 }}
                         style={styles.cardGradient}
                       />
-                      <GameItemIcon itemId={item.id} size={24} />
-                      <View style={styles.offerMain}>
-                        <View style={styles.offerTitleRow}>
-                          <Text style={styles.offerTitle}>{displayName}</Text>
-                          <View style={styles.storeTipWrap}>
-                            <IconTooltip text={`${displayName}. ${displayDescription || "Tower remnant."}`} />
-                          </View>
+                      <Pressable
+                        onPress={() => showQuickInfo(displayName, displayDescription || "Tower remnant.", appraised ? rarity : undefined, item.id)}
+                        style={styles.offerInspectArea}
+                      >
+                        <View style={styles.offerVisualWrap}>
+                          <GameItemIcon itemId={item.id} size={56} />
                         </View>
-                        <View style={styles.offerBadgeRow}>
-                          {appraised ? (
-                            <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
-                              <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>{rarity.toUpperCase()}</Text>
+                        <View style={styles.offerMain}>
+                          <View style={styles.offerTitleRow}>
+                            <Text style={styles.offerTitle}>{displayName}</Text>
+                            <View style={styles.storeTipWrap}>
+                              <IconTooltip text={`${displayName}. ${displayDescription || "Tower remnant."}`} />
                             </View>
-                          ) : (
+                          </View>
+                          <View style={styles.offerBadgeRow}>
+                            {appraised ? (
+                              <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
+                                <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>{rarity.toUpperCase()}</Text>
+                              </View>
+                            ) : (
+                              <View style={styles.ownedPill}>
+                                <Text style={styles.ownedPillText}>APPRAISE</Text>
+                              </View>
+                            )}
                             <View style={styles.ownedPill}>
-                              <Text style={styles.ownedPillText}>APPRAISE</Text>
+                              <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
                             </View>
-                          )}
-                          <View style={styles.ownedPill}>
-                            <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
                           </View>
+                          <Text style={styles.offerLore}>{displayDescription}</Text>
                         </View>
-                        <Text style={styles.offerLore}>{displayDescription}</Text>
-                      </View>
+                      </Pressable>
                       <View style={styles.offerAction}>
                         <Text style={styles.storePrice}>{item.requiresAppraisal ? (appraised ? "Appraised" : "Sealed") : "Sale Ready"}</Text>
                         <Text style={styles.storeSellPrice}>{item.requiresAppraisal && !appraised ? "Appraise with Bran" : `Sell ${sellValue}g`}</Text>
@@ -2922,33 +5248,47 @@ export const QuestsScreen = ({
                       end={{ x: 1, y: 1 }}
                       style={styles.cardGradient}
                     />
-                    <GameItemIcon itemId={entry.itemId} size={22} />
-                    <View style={styles.offerMain}>
-                      <View style={styles.offerTitleRow}>
-                        <Text style={styles.offerTitle}>{entry.label}</Text>
-                        <View style={styles.storeTipWrap}>
-                          <IconTooltip text={`${entry.sellText}`} />
-                        </View>
+                    <Pressable
+                      onPress={() =>
+                        showQuickInfo(
+                          item?.name ?? entry.label,
+                          item?.description ?? entry.sellText,
+                          rarity,
+                          entry.itemId,
+                        )
+                      }
+                      style={styles.offerInspectArea}
+                    >
+                      <View style={styles.offerVisualWrap}>
+                        <GameItemIcon itemId={entry.itemId} size={52} />
                       </View>
-                      <View style={styles.offerBadgeRow}>
-                        <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
-                          <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>
-                            {rarity.toUpperCase()}
-                          </Text>
-                        </View>
-                        {owned > 0 ? (
-                          <View style={styles.ownedPill}>
-                            <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
+                      <View style={styles.offerMain}>
+                        <View style={styles.offerTitleRow}>
+                          <Text style={styles.offerTitle}>{entry.label}</Text>
+                          <View style={styles.storeTipWrap}>
+                            <IconTooltip text={`${entry.sellText}`} />
                           </View>
-                        ) : null}
+                        </View>
+                        <View style={styles.offerBadgeRow}>
+                          <View style={[styles.rarityPill, { borderColor: rarityColorMap[rarity] }]}>
+                            <Text style={[styles.rarityText, { color: rarityColorMap[rarity] }]}>
+                              {rarity.toUpperCase()}
+                            </Text>
+                          </View>
+                          {owned > 0 ? (
+                            <View style={styles.ownedPill}>
+                              <Text style={styles.ownedPillText}>OWNED x{owned}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.weaponStatApplied}>
+                          DMG +{item?.buffStats?.damageFlat ?? 0} • CRIT +{item?.buffStats?.critFlat ?? 0}% • SPD +{item?.buffStats?.speedFlat ?? 0} • QUEST +{item?.buffStats?.questSuccessFlat ?? 0}%
+                        </Text>
+                        <Text style={styles.weaponStatApplied}>
+                          Duration {Math.floor((item?.buffDurationSeconds ?? 0) / 60)}m {(item?.buffDurationSeconds ?? 0) % 60}s
+                        </Text>
                       </View>
-                      <Text style={styles.weaponStatApplied}>
-                        DMG +{item?.buffStats?.damageFlat ?? 0} • CRIT +{item?.buffStats?.critFlat ?? 0}% • SPD +{item?.buffStats?.speedFlat ?? 0} • QUEST +{item?.buffStats?.questSuccessFlat ?? 0}%
-                      </Text>
-                      <Text style={styles.weaponStatApplied}>
-                        Duration {Math.floor((item?.buffDurationSeconds ?? 0) / 60)}m {(item?.buffDurationSeconds ?? 0) % 60}s
-                      </Text>
-                    </View>
+                    </Pressable>
                     <View style={styles.offerAction}>
                       <Text style={styles.storePrice}>{entry.unitPrice}g</Text>
                       {entry.unitPrice > 0 ? (
@@ -3027,7 +5367,8 @@ export const QuestsScreen = ({
                 const blocked = !access.allowed;
                 const towerEnemies = getTowerEnemiesForFloor(currentTowerFloor);
                 const towerRunStage = towerRunStageByFloor[currentTowerFloor.floorNumber] ?? "entrance";
-                const inWavesStage = towerRunStage === "waves";
+                const towerStageIsWaves = (towerRunStageByFloor[currentTowerFloor.floorNumber] ?? "entrance") === "waves";
+                const inWavesStage = towerStageIsWaves;
                 const waveProgress = towerWaveProgressByFloor[currentTowerFloor.floorNumber] ?? {
                   normal: "available",
                   subBoss: "locked",
@@ -3128,15 +5469,6 @@ export const QuestsScreen = ({
                     tone: "good",
                   });
                 }
-                if (character.activeClassSkillId && ABILITY_BY_ID[character.activeClassSkillId]) {
-                  towerEffectIcons.push({
-                    key: `skill-${character.activeClassSkillId}`,
-                    label: ABILITY_BY_ID[character.activeClassSkillId].name,
-                    kind: "mc",
-                    icon: ABILITY_BY_ID[character.activeClassSkillId].icon as keyof typeof MaterialCommunityIcons.glyphMap,
-                    tone: "good",
-                  });
-                }
                 for (const passiveId of character.equippedPassiveAbilityIds ?? []) {
                   const passive = ABILITY_BY_ID[passiveId];
                   if (!passive) {
@@ -3204,13 +5536,7 @@ export const QuestsScreen = ({
                   });
                 }
                 if (towerEffectIcons.length <= 0) {
-                  towerEffectIcons.push({
-                    key: "stable",
-                    label: "Stable",
-                    kind: "mc",
-                    icon: "circle-slice-3",
-                    tone: "neutral",
-                  });
+                  
                 }
 
                 return (
@@ -3236,20 +5562,23 @@ export const QuestsScreen = ({
                       <View
                         style={[
                           styles.towerStagePill,
-                          towerRunStage === "briefing" || towerRunStage === "waves" ? styles.towerStagePillDone : null,
+                          towerRunStage === "briefing" || towerStageIsWaves ? styles.towerStagePillDone : null,
                         ]}
                       >
                         <Text style={styles.towerStagePillText}>Lore</Text>
                       </View>
                       <MaterialCommunityIcons name="chevron-right" size={14} color="#baa07a" />
-                      <View style={[styles.towerStagePill, towerRunStage === "waves" ? styles.towerStagePillDone : null]}>
+                      <View style={[styles.towerStagePill, towerStageIsWaves ? styles.towerStagePillDone : null]}>
                         <Text style={styles.towerStagePillText}>Waves</Text>
                       </View>
                     </View>
                     {!blocked && towerRunStage === "entrance" ? (
                       <Pressable onPress={() => handleEnterTowerFloor(currentTowerFloor.floorNumber)} style={styles.actionWrap}>
-                        <View style={styles.buyButton}>
-                          <Text style={styles.buyText}>Enter Tower Entrance</Text>
+                        <View style={styles.towerEntryButton}>
+                          <View style={styles.towerPrimaryActionInner}>
+                            <MaterialCommunityIcons name="gate-open" size={15} color="#ecfbff" />
+                            <Text style={styles.towerPrimaryActionText}>Enter Tower Entrance</Text>
+                          </View>
                         </View>
                       </Pressable>
                     ) : null}
@@ -3260,13 +5589,13 @@ export const QuestsScreen = ({
                         </View>
                       </Pressable>
                     ) : null}
-                    {!blocked && towerRunStage === "waves" ? (
+                    {!blocked && towerStageIsWaves ? (
                       <View style={styles.rewardChip}>
                         <MaterialCommunityIcons name="check-circle-outline" size={13} color="#8de9a8" />
                         <Text style={styles.rewardChipText}>Tower route opened. Resolve waves to continue.</Text>
                       </View>
                     ) : null}
-                    {inWavesStage ? (
+                    {inWavesStage && !USE_SHARED_TOWER_WAVE_LAYOUT ? (
                       <View style={styles.towerCombatHudCard}>
                         <LinearGradient
                           pointerEvents="none"
@@ -3280,7 +5609,7 @@ export const QuestsScreen = ({
                           <Text style={styles.reqTitle}>Combat HUD</Text>
                           {latestWaveReport ? (
                             <View style={styles.towerHudWaveTag}>
-                              <Text style={styles.towerHudWaveTagText}>{latestWaveReport.title}</Text>
+                              <Text style={styles.towerHudWaveTagText}>{latestWaveReport?.title}</Text>
                             </View>
                           ) : null}
                         </View>
@@ -3321,8 +5650,8 @@ export const QuestsScreen = ({
                         </View>
                         {effectHint ? (
                           <Text style={styles.effectHintText}>
-                            {effectHint.title}
-                            {effectHint.detail ? ` • ${effectHint.detail}` : ""}
+                            {effectHint?.title}
+                            {effectHint?.detail ? ` • ${effectHint.detail}` : ""}
                           </Text>
                         ) : null}
                       </View>
@@ -3376,7 +5705,7 @@ export const QuestsScreen = ({
                       </View>
                     ) : null}
 
-                    {inWavesStage ? (
+                    {inWavesStage && !USE_SHARED_TOWER_WAVE_LAYOUT ? (
                       <>
                     <View style={styles.towerIconGrid}>
                       <Pressable
@@ -3618,8 +5947,18 @@ export const QuestsScreen = ({
                         style={styles.actionWrap}
                         disabled={waveProgress.normal !== "available"}
                       >
-                        <View style={[styles.buyButton, waveProgress.normal !== "available" ? styles.actionDisabled : null]}>
-                          <Text style={styles.buyText}>{waveProgress.normal === "cleared" ? "Normal Wave Conquered" : "Conquer Normal Wave"}</Text>
+                        <View
+                          style={[
+                            styles.towerWaveActionButton,
+                            waveProgress.normal !== "available" ? styles.towerWaveActionButtonDisabled : null,
+                          ]}
+                        >
+                          <View style={styles.towerPrimaryActionInner}>
+                            <MaterialCommunityIcons name="sword-cross" size={15} color="#fff1dc" />
+                            <Text style={styles.towerPrimaryActionText}>
+                              {waveProgress.normal === "cleared" ? "Normal Wave Conquered" : "Conquer Normal Wave"}
+                            </Text>
+                          </View>
                         </View>
                       </Pressable>
                     </View>
@@ -3809,15 +6148,25 @@ export const QuestsScreen = ({
                               ))}
                             </View>
                           ) : null}
-                          <Pressable
-                            onPress={() => handleConquerTowerWaveSection(currentTowerFloor.floorNumber, "subBoss")}
-                            style={styles.actionWrap}
-                            disabled={waveProgress.subBoss !== "available"}
+                        <Pressable
+                          onPress={() => handleConquerTowerWaveSection(currentTowerFloor.floorNumber, "subBoss")}
+                          style={styles.actionWrap}
+                          disabled={waveProgress.subBoss !== "available"}
+                        >
+                          <View
+                            style={[
+                              styles.towerWaveActionButton,
+                              waveProgress.subBoss !== "available" ? styles.towerWaveActionButtonDisabled : null,
+                            ]}
                           >
-                            <View style={[styles.buyButton, waveProgress.subBoss !== "available" ? styles.actionDisabled : null]}>
-                              <Text style={styles.buyText}>{waveProgress.subBoss === "cleared" ? "Sub-Boss Conquered" : "Conquer Sub-Boss"}</Text>
+                            <View style={styles.towerPrimaryActionInner}>
+                              <MaterialCommunityIcons name="sword-cross" size={15} color="#fff1dc" />
+                              <Text style={styles.towerPrimaryActionText}>
+                                {waveProgress.subBoss === "cleared" ? "Sub-Boss Conquered" : "Conquer Sub-Boss"}
+                              </Text>
                             </View>
-                          </Pressable>
+                          </View>
+                        </Pressable>
                         </>
                       ) : (
                         <View style={styles.lockRow}>
@@ -4012,15 +6361,25 @@ export const QuestsScreen = ({
                               ))}
                             </View>
                           ) : null}
-                          <Pressable
-                            onPress={() => handleConquerTowerWaveSection(currentTowerFloor.floorNumber, "boss")}
-                            style={styles.actionWrap}
-                            disabled={waveProgress.boss !== "available"}
+                        <Pressable
+                          onPress={() => handleConquerTowerWaveSection(currentTowerFloor.floorNumber, "boss")}
+                          style={styles.actionWrap}
+                          disabled={waveProgress.boss !== "available"}
+                        >
+                          <View
+                            style={[
+                              styles.towerWaveActionButton,
+                              waveProgress.boss !== "available" ? styles.towerWaveActionButtonDisabled : null,
+                            ]}
                           >
-                            <View style={[styles.buyButton, waveProgress.boss !== "available" ? styles.actionDisabled : null]}>
-                              <Text style={styles.buyText}>{waveProgress.boss === "cleared" ? "Main Boss Conquered" : "Conquer Main Boss"}</Text>
+                            <View style={styles.towerPrimaryActionInner}>
+                              <MaterialCommunityIcons name="sword-cross" size={15} color="#fff1dc" />
+                              <Text style={styles.towerPrimaryActionText}>
+                                {waveProgress.boss === "cleared" ? "Main Boss Conquered" : "Conquer Main Boss"}
+                              </Text>
                             </View>
-                          </Pressable>
+                          </View>
+                        </Pressable>
                         </>
                       ) : (
                         <View style={styles.lockRow}>
@@ -4066,7 +6425,7 @@ export const QuestsScreen = ({
                             </View>
                             <View style={styles.towerScoutStatePill}>
                               <Text style={styles.towerScoutStateText}>
-                                {towerRunStage === "briefing" ? "Lore Ready" : "Preparation"}
+                                {towerStageIsWaves ? "Wave Resolve" : towerRunStage === "briefing" ? "Lore Ready" : "Preparation"}
                               </Text>
                             </View>
                           </View>
@@ -4091,10 +6450,68 @@ export const QuestsScreen = ({
                               <Text style={styles.towerScoutStatText}>{supplyReadiness}% Ready</Text>
                             </Pressable>
                           </View>
+                          {towerStageIsWaves ? (
+                            <>
+                              <View style={styles.waveResolveMeterWrap}>
+                                <HealthMeter current={character.health} max={character.healthCap} compact />
+                              </View>
+                              <View style={styles.waveHudIconRow}>
+                                {towerEffectIcons.slice(0, 8).map((entry) => (
+                                  <Pressable
+                                    key={`scout-wave-effect-${entry.key}`}
+                                    onHoverIn={() => setEffectHint({ title: entry.label, detail: entry.detail })}
+                                    onHoverOut={() => setEffectHint((current) => (current?.title === entry.label ? null : current))}
+                                    onPress={() => setEffectHint({ title: entry.label, detail: entry.detail })}
+                                    style={[
+                                      styles.waveHudIconBadge,
+                                      entry.tone === "good"
+                                        ? styles.towerStatusIconBadgeGood
+                                        : entry.tone === "bad"
+                                          ? styles.towerStatusIconBadgeBad
+                                          : styles.towerStatusIconBadgeNeutral,
+                                    ]}
+                                  >
+                                    {entry.kind === "item" ? (
+                                      <GameItemIcon itemId={entry.itemId} size={14} />
+                                    ) : entry.kind === "title" ? (
+                                      <Image source={entry.source} style={styles.waveHudIconImage} resizeMode="cover" />
+                                    ) : (
+                                      <MaterialCommunityIcons
+                                        name={entry.icon}
+                                        size={12}
+                                        color={entry.tone === "good" ? "#9effc4" : entry.tone === "bad" ? "#ffb1b1" : "#e8d3ac"}
+                                      />
+                                    )}
+                                  </Pressable>
+                                ))}
+                              </View>
+                              {effectHint ? (
+                                <Text style={styles.effectHintText}>
+                                  {effectHint.title}
+                                  {effectHint.detail ? ` • ${effectHint.detail}` : ""}
+                                </Text>
+                              ) : null}
+                            </>
+                          ) : null}
                         </View>
 
                         <View style={styles.towerScoutGrid}>
                           {scoutWaveConfigs.map((wave) => {
+                            const waveStageState = waveProgress[wave.key];
+                            const waveLocked =
+                              waveStageState === "locked" ||
+                              (blocked && towerStageIsWaves);
+                            const waveAvailable = waveStageState === "available" && !blocked;
+                            const waveCleared = waveStageState === "cleared";
+                            const waveStateLabel = waveCleared ? "CLEARED" : waveAvailable ? "OPEN" : "LOCKED";
+                            const waveLockText =
+                              wave.key === "subBoss"
+                                ? "Conquer Normal Wave to unlock Sub-Boss."
+                                : wave.key === "boss"
+                                  ? "Conquer Sub-Boss to unlock Main Boss."
+                                  : blocked
+                                    ? access.reason ?? "Tower route locked."
+                                    : "";
                             const waveSupplyState = wave.recommended.map((requirement) => {
                               const owned = character.inventory[requirement.itemId] ?? 0;
                               const committed = getTowerCommittedCount(towerSelectionKey, requirement.itemId);
@@ -4111,8 +6528,24 @@ export const QuestsScreen = ({
                                   <Image source={wave.icon} style={styles.waveHeaderIcon} resizeMode="contain" />
                                   <Text style={styles.reqTitle}>{wave.label}</Text>
                                 </View>
-                                <View style={styles.towerScoutCountPill}>
-                                  <Text style={styles.towerScoutCountText}>{wave.enemies.length} foes</Text>
+                                <View style={styles.towerScoutCardHeadRight}>
+                                  <View style={styles.towerScoutCountPill}>
+                                    <Text style={styles.towerScoutCountText}>{wave.enemies.length} foes</Text>
+                                  </View>
+                                  {towerStageIsWaves ? (
+                                    <View
+                                      style={[
+                                        styles.towerPhaseResultPill,
+                                        waveCleared
+                                          ? styles.towerPhaseResultOk
+                                          : waveAvailable
+                                            ? styles.towerPhaseResultSkipped
+                                            : styles.towerPhaseResultFail,
+                                      ]}
+                                    >
+                                      <Text style={styles.towerPhaseResultText}>{waveStateLabel}</Text>
+                                    </View>
+                                  ) : null}
                                 </View>
                               </View>
                               <View style={[styles.towerScoutCardBody, useWideTowerScout ? styles.towerScoutCardBodyWide : null]}>
@@ -4120,6 +6553,9 @@ export const QuestsScreen = ({
                                   <Text style={styles.waveSectionLabel}>Enemy Preview</Text>
                                   <View style={[styles.enemyRosterRow, useWideTowerScout ? styles.enemyRosterRowScout : null]}>
                                     {wave.enemies.map((enemy) => (
+                                      (() => {
+                                        const enemyHpVisible = character.progression.level >= enemy.level;
+                                        return (
                                       <Pressable
                                         key={`scout-enemy-${enemy.id}`}
                                         style={[
@@ -4127,9 +6563,15 @@ export const QuestsScreen = ({
                                           styles.enemyCardScout,
                                           useWideTowerScout ? styles.enemyCardScoutWide : null,
                                           wave.enemies.length === 1 ? styles.enemyCardScoutSolo : null,
+                                          towerStageIsWaves && waveCleared ? styles.enemyCardScoutDefeated : null,
                                         ]}
                                         onPress={() => setSelectedTowerEnemy(enemy)}
                                       >
+                                        {towerStageIsWaves && waveCleared ? (
+                                          <View style={styles.enemyDefeatedOverlay}>
+                                            <MaterialCommunityIcons name="close-thick" size={useWideTowerScout ? 52 : 34} color="rgba(255, 98, 98, 0.92)" />
+                                          </View>
+                                        ) : null}
                                         {getTowerEnemyArt(enemy) ? (
                                           <Image
                                             source={getTowerEnemyArt(enemy)}
@@ -4138,6 +6580,7 @@ export const QuestsScreen = ({
                                               styles.enemyPortraitScout,
                                               useWideTowerScout ? styles.enemyPortraitScoutWide : null,
                                               wave.enemies.length === 1 ? styles.enemyPortraitScoutSolo : null,
+                                              towerStageIsWaves && waveCleared ? styles.enemyPortraitDefeated : null,
                                             ]}
                                             resizeMode="contain"
                                           />
@@ -4152,7 +6595,28 @@ export const QuestsScreen = ({
                                           <Text style={styles.enemyName} numberOfLines={wave.enemies.length === 1 ? 2 : 1}>{enemy.name}</Text>
                                           <Text style={styles.enemyLevel}>Lv {enemy.level}</Text>
                                         </View>
+                                        {towerStageIsWaves ? (
+                                          <View style={styles.enemyScoutHpWrap}>
+                                            <View style={styles.enemyScoutHpHead}>
+                                              <Text style={styles.enemyScoutHpLabel}>HP</Text>
+                                              <Text style={styles.enemyScoutHpValue}>
+                                                {enemyHpVisible ? (waveCleared ? `0/${enemy.health}` : `${enemy.health}/${enemy.health}`) : "???/???"}
+                                              </Text>
+                                            </View>
+                                            <View style={styles.enemyScoutHpTrack}>
+                                              <View
+                                                style={[
+                                                  styles.enemyScoutHpFill,
+                                                  { width: waveCleared ? "0%" : "100%" },
+                                                  waveCleared ? styles.enemyScoutHpFillEmpty : null,
+                                                ]}
+                                              />
+                                            </View>
+                                          </View>
+                                        ) : null}
                                       </Pressable>
+                                        );
+                                      })()
                                     ))}
                                   </View>
                                 </View>
@@ -4248,6 +6712,53 @@ export const QuestsScreen = ({
                                   </View>
                                 </View>
                               </View>
+                              {towerStageIsWaves ? (
+                                <>
+                                  {waveReport[wave.key] ? (
+                                    <View style={styles.waveReportCard}>
+                                      <Text style={styles.waveReportTitle}>{waveReport[wave.key]?.title} Mechanics</Text>
+                                      <Text style={styles.waveReportMeta}>
+                                        Countered {waveReport[wave.key]?.countered} • Triggered {waveReport[wave.key]?.triggered}
+                                      </Text>
+                                      {waveReport[wave.key]?.lines.slice(0, 4).map((line, idx) => (
+                                        <View key={`scout-wave-report-${wave.key}-${idx}`} style={styles.waveEventRow}>
+                                          <MaterialCommunityIcons
+                                            name={classifyWaveLine(line).icon}
+                                            size={12}
+                                            color={classifyWaveLine(line).color}
+                                          />
+                                          <Text style={styles.waveEventText}>{line}</Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  ) : null}
+                                  {waveLocked && waveLockText ? (
+                                    <View style={styles.lockRow}>
+                                      <MaterialCommunityIcons name="lock-outline" size={14} color="#ffb28f" />
+                                      <Text style={styles.lockText}>{waveLockText}</Text>
+                                    </View>
+                                  ) : null}
+                                  <Pressable
+                                    onPress={() => handleConquerTowerWaveSection(currentTowerFloor.floorNumber, wave.key)}
+                                    style={styles.actionWrap}
+                                    disabled={!waveAvailable}
+                                  >
+                                    <View
+                                      style={[
+                                        styles.towerWaveActionButton,
+                                        !waveAvailable ? styles.towerWaveActionButtonDisabled : null,
+                                      ]}
+                                    >
+                                      <View style={styles.towerPrimaryActionInner}>
+                                        <MaterialCommunityIcons name="sword-cross" size={15} color="#fff1dc" />
+                                        <Text style={styles.towerPrimaryActionText}>
+                                        {waveCleared ? `${wave.label} Conquered` : `Conquer ${wave.label}`}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  </Pressable>
+                                </>
+                              ) : null}
                             </View>
                             );
                           })}
@@ -4256,9 +6767,30 @@ export const QuestsScreen = ({
                         <View style={styles.towerScoutFootnote}>
                           <MaterialCommunityIcons name="book-open-variant" size={16} color="#f1d59a" />
                           <Text style={styles.questMeta}>
-                            Scout what the guild currently knows, then enter when your loadout feels right. Better intel reveals more of the floor before the run begins.
+                            {towerStageIsWaves
+                              ? "Guild intel is still in effect inside the run. Resolve the open wave with the loadout you prepared, and better intel will continue to reveal more."
+                              : "Scout what the guild currently knows, then enter when your loadout feels right. Better intel reveals more of the floor before the run begins."}
                           </Text>
                         </View>
+                        {towerStageIsWaves && blocked ? (
+                          <View style={styles.lockRow}>
+                            <MaterialCommunityIcons name="lock-outline" size={14} color="#ff9b92" />
+                            <Text style={styles.lockText}>{access.reason}</Text>
+                          </View>
+                        ) : null}
+                        {towerStageIsWaves ? (
+                          <Pressable
+                            onPress={() => handleConquerTowerFloor(currentTowerFloor.floorNumber)}
+                            style={styles.actionWrap}
+                            disabled={blocked || !floorFinalEngageReady}
+                          >
+                            <View style={[styles.startButton, blocked || !floorFinalEngageReady ? styles.actionDisabled : null]}>
+                              <Text style={styles.startText}>
+                                {blocked ? (isDead ? "Being Fractured" : "Locked") : floorFinalEngageReady ? "Finalize Floor Conquest" : "Main Boss Not Cleared"}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ) : null}
                       </View>
                     )}
                   </View>
@@ -4322,6 +6854,7 @@ export const QuestsScreen = ({
               <View key={npc.id} style={styles.npcCard}>
                 {(() => {
                   const disposition = getNpcDisposition(npc);
+                  const needsAttention = npcAttentionTargets.includes(npc.id);
                   return (
                     <>
                 <LinearGradient
@@ -4344,10 +6877,18 @@ export const QuestsScreen = ({
                     <Text style={styles.licenseTopKicker}>Adventurers Guild</Text>
                     <Text style={styles.licenseTopTitle}>Adventurer License</Text>
                   </View>
-                  <ImageBackground source={HUD_ASSETS.badges.rank} style={styles.rankSeal} resizeMode="contain">
-                    <Text style={styles.rankSealLabel}>Rank</Text>
-                    <Text style={styles.rankSealValue}>{getMaxRankForLevel(npc.level)}</Text>
-                  </ImageBackground>
+                  <View style={styles.npcTopRightWrap}>
+                    {needsAttention ? (
+                      <View style={styles.npcAttentionPill}>
+                        <MaterialCommunityIcons name="bell-ring-outline" size={12} color="#ffe8b2" />
+                        <Text style={styles.npcAttentionPillText}>Attention</Text>
+                      </View>
+                    ) : null}
+                    <ImageBackground source={HUD_ASSETS.badges.rank} style={styles.rankSeal} resizeMode="contain">
+                      <Text style={styles.rankSealLabel}>Rank</Text>
+                      <Text style={styles.rankSealValue}>{getMaxRankForLevel(npc.level)}</Text>
+                    </ImageBackground>
+                  </View>
                 </View>
                 <View style={styles.npcBody}>
                   <View style={styles.npcAvatar}>
@@ -4456,7 +6997,25 @@ export const QuestsScreen = ({
                 ) : null}
                 <Text style={styles.questMeta}>{getNpcSummaryText(npc)}</Text>
                 {npc.id === RESCUE_REQUEST_NPC_PROFILE.id ? (
-                  rescueNpcStatus === "accepted" ? (
+                  storyState.aldricQuestPath === "saved" ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Aldric Stands With You</Text>
+                    </View>
+                  ) : storyState.aldricQuestPath === "refused" ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Aldric Has Left The Hall</Text>
+                    </View>
+                  ) : rescueNpcStatus === "refused_once" ? (
+                    <Pressable onPress={() => setRescueDialogOpen(true)} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Hear Aldric's Final Plea</Text>
+                      </View>
+                    </Pressable>
+                  ) : storyState.aldricQuestPath === "too_late" ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>The Watchtrail Loss Remains</Text>
+                    </View>
+                  ) : rescueNpcStatus === "accepted" ? (
                     <View style={[styles.sellButton, styles.actionDisabled]}>
                       <Text style={styles.buyText}>Quest Active In Board</Text>
                     </View>
@@ -4483,6 +7042,28 @@ export const QuestsScreen = ({
                       <Text style={styles.buyText}>Ask About Supplies</Text>
                     </View>
                   </Pressable>
+                ) : npc.id === "npc-tamsin-vale" ? (
+                  storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed ? (
+                    <Pressable onPress={promptTamsinFollowup} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Review Thorn Notes</Text>
+                      </View>
+                    </Pressable>
+                  ) : storyState.thornRunnerQuestStatus === "completed" ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Thorn Notes Recorded</Text>
+                    </View>
+                  ) : storyState.thornRunnerIntroductionChoice ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Quest Active In Board</Text>
+                    </View>
+                  ) : (
+                    <Pressable onPress={promptTamsinVisit} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Hear The Thorn Briefing</Text>
+                      </View>
+                    </Pressable>
+                  )
                 ) : (
                   <Pressable
                     onPress={npc.id === GUILD_MAGE_NPC_ID ? handleGuildMageRecovery : undefined}
@@ -4975,7 +7556,15 @@ export const QuestsScreen = ({
         </Modal>
       ) : null}
       {infoPanel ? (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setInfoPanel(null)}>
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setInfoArtExpanded(false);
+            setInfoPanel(null);
+          }}
+        >
           <View style={styles.resultOverlay}>
             <View style={styles.infoModalCard}>
               {(() => {
@@ -5008,21 +7597,35 @@ export const QuestsScreen = ({
                     </Text>
                   </View>
                 ) : null}
-                <Pressable onPress={() => setInfoPanel(null)}>
+                <Pressable
+                  onPress={() => {
+                    setInfoArtExpanded(false);
+                    setInfoPanel(null);
+                  }}
+                >
                   <MaterialCommunityIcons name="close-circle" size={20} color="#f1d8a8" />
                 </Pressable>
               </View>
               {infoPanel.itemId ? (
                 <View style={styles.infoItemShowcase}>
-                  <View
+                  <Pressable
+                    onPress={() => {
+                      if (ITEM_BY_ID[infoPanel.itemId!]?.image) {
+                        setInfoArtExpanded(true);
+                      }
+                    }}
                     style={[
                       styles.infoItemIconWrap,
                       displayRarity ? { borderColor: rarityColorMap[displayRarity] } : null,
                       needsAppraisal ? styles.appraisalGlow : null,
                     ]}
                   >
-                    <GameItemIcon itemId={infoPanel.itemId} size={54} />
-                  </View>
+                    {ITEM_BY_ID[infoPanel.itemId]?.image ? (
+                      <Image source={ITEM_BY_ID[infoPanel.itemId]?.image} style={styles.infoItemArt} resizeMode="contain" />
+                    ) : (
+                      <GameItemIcon itemId={infoPanel.itemId} size={82} />
+                    )}
+                  </Pressable>
                   {displayDescription ? (
                     <View style={styles.infoItemDescriptionCard}>
                       <Text style={styles.infoItemDescriptionTitle}>{needsAppraisal ? "Appraisal" : "Use"}</Text>
@@ -5064,13 +7667,46 @@ export const QuestsScreen = ({
                   </>
                 );
               })()}
-              <Pressable onPress={() => setInfoPanel(null)} style={styles.actionWrap}>
+              <Pressable
+                onPress={() => {
+                  setInfoArtExpanded(false);
+                  setInfoPanel(null);
+                }}
+                style={styles.actionWrap}
+              >
                 <View style={styles.claimButton}>
                   <Text style={styles.claimText}>Close</Text>
                 </View>
               </Pressable>
             </View>
           </View>
+        </Modal>
+      ) : null}
+      {infoArtExpanded && infoPanel?.itemId && ITEM_BY_ID[infoPanel.itemId]?.image ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setInfoArtExpanded(false)}>
+          <Pressable style={styles.expandedArtOverlay} onPress={() => setInfoArtExpanded(false)}>
+            {(() => {
+              const expandedRarity = getItemDisplayRarity(infoPanel.itemId) ?? "common";
+              return (
+                <View style={styles.expandedArtCard}>
+                  <Text style={styles.expandedArtTitle}>{getItemDisplayName(infoPanel.itemId)}</Text>
+                  <View style={[styles.expandedArtRarityPill, { borderColor: rarityColorMap[expandedRarity] }]}>
+                    <Text
+                      style={[
+                        styles.expandedArtRarityText,
+                        { color: rarityColorMap[expandedRarity] },
+                        expandedRarity === "legendary" ? styles.legendaryTextGlow : null,
+                      ]}
+                    >
+                      {expandedRarity.toUpperCase()}
+                    </Text>
+                  </View>
+                  <Image source={ITEM_BY_ID[infoPanel.itemId]?.image} style={styles.expandedArtImage} resizeMode="contain" />
+                  <Text style={styles.expandedArtHint}>Tap anywhere to close</Text>
+                </View>
+              );
+            })()}
+          </Pressable>
         </Modal>
       ) : null}
       {conditionalEncounterOpen && activeConditionalEncounter ? (
@@ -5124,14 +7760,669 @@ export const QuestsScreen = ({
           </View>
         </Modal>
       ) : null}
+      {liveTowerBattle ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setLiveTowerBattle(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              {(() => {
+                const activeTelegraph = liveTowerBattle.telegraphs[liveTowerBattle.activeIndex] ?? null;
+                const currentEnemy = liveTowerBattle.enemies.find((enemy) => enemy.id === activeTelegraph?.enemyId);
+                const battleSkills = unlockedBattleSkills;
+                const battleWon = Object.values(liveTowerBattle.enemyHpById).every((hp) => hp <= 0);
+                const battleLost = liveTowerBattle.playerHp <= 0;
+                const battleFinished = battleWon || battleLost;
+                const awaitingNextEnemy = liveTowerBattle.queuedEnemyIndex != null;
+                const effectNowMs = getLiveBattleEffectClockMs(liveTowerBattle, nowMs);
+                const currentEnemyHp = currentEnemy ? liveTowerBattle.enemyHpById[currentEnemy.id] ?? currentEnemy.health ?? 1 : 0;
+                const isPlayerTurn = liveTowerBattle.turnOwner === "player";
+                const currentEnemyStatusFx = currentEnemy ? pruneExpiredStatusFx(liveTowerBattle.enemyStatusFxById[currentEnemy.id] ?? [], effectNowMs) : [];
+                const equippedBattleWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : null;
+                const visiblePlayerStatusFx = pruneExpiredStatusFx(liveTowerBattle.playerStatusFx, effectNowMs);
+                const activeSkillBonuses = getCombinedLiveSkillBonuses(
+                  visiblePlayerStatusFx,
+                  battleSkills.map((skill) => skill.id),
+                  effectNowMs,
+                );
+                const playerStatusSnapshot = getBattleStatusSnapshot(visiblePlayerStatusFx);
+                const livePlayerAttackBonus =
+                  activeSkillBonuses.attackBonus + (playerStatusSnapshot.hasFrenzied ? 4 : 0);
+                const livePlayerCritBonus =
+                  activeSkillBonuses.critBonus + (playerStatusSnapshot.hasFrenzied ? 3 : 0);
+                const livePlayerSpeedBonus = activeSkillBonuses.speedBonus;
+                const skillStateEntries = battleSkills.map((skill) => {
+                  const profile = getLiveBattleSkillProfile(skill.id);
+                  const activeEffect = profile ? visiblePlayerStatusFx.find((effect) => effect.id === profile.effectId) : null;
+                  const activeRemainingMs =
+                    activeEffect?.expiresAtMs && activeEffect.expiresAtMs > effectNowMs ? activeEffect.expiresAtMs - effectNowMs : 0;
+                  const cooldownRemainingMs = Math.max(0, (liveTowerBattle.skillCooldownEndsAtMsById?.[skill.id] ?? 0) - nowMs);
+                  return {
+                    skill,
+                    profile,
+                    activeEffect,
+                    activeRemainingMs,
+                    cooldownRemainingMs,
+                  };
+                });
+                const primarySkillState = skillStateEntries.find((entry) => entry.activeRemainingMs > 0 || entry.cooldownRemainingMs > 0) ?? skillStateEntries[0] ?? null;
+                const effectivePlayerSpeed = liveTowerBattle.playerStats.speed + activeSkillBonuses.speedBonus;
+                const initiativePreview = buildInitiativePreview(liveTowerBattle, currentEnemy?.id, effectivePlayerSpeed);
+                const playerEffectIcons = [
+                  ...(equippedBattleWeapon
+                    ? [
+                        {
+                          key: `battle-weapon-${equippedBattleWeapon.id}`,
+                          label: equippedBattleWeapon.name,
+                          detail: "Equipped weapon effect",
+                          kind: "item" as const,
+                          itemId: equippedBattleWeapon.id,
+                          tone: "neutral" as const,
+                        },
+                      ]
+                    : []),
+                  ...activeBuffIds.map((buffId) => ({
+                    key: `battle-buff-${buffId}`,
+                    label: ITEM_BY_ID[buffId]?.name ?? "Active Sigil",
+                    detail: "Active before and during the run",
+                    kind: "item" as const,
+                    itemId: buffId,
+                    tone: "good" as const,
+                  })),
+                  ...(character.equippedPassiveAbilityIds ?? []).flatMap((passiveId) => {
+                    const passive = ABILITY_BY_ID[passiveId];
+                    return passive
+                      ? [
+                          {
+                            key: `battle-passive-${passiveId}`,
+                            abilityId: passiveId,
+                            label: passive.name,
+                            detail: getCombatAbilityEffectSummary(passiveId),
+                            kind: "mc" as const,
+                            icon: passive.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+                            tone: "good" as const,
+                          },
+                        ]
+                      : [];
+                  }),
+                  ...visiblePlayerStatusFx.map((effect) => ({
+                    key: `battle-status-${effect.id}`,
+                    abilityId: getAbilityIdForBattleStatus(effect.id),
+                    label: effect.label,
+                    detail: formatStatusDetail(effect, effectNowMs),
+                    kind: "mc" as const,
+                    icon: effect.icon,
+                    tone: effect.tone,
+                  })),
+                ];
+                return (
+                  <>
+                    <View style={styles.encounterHead}>
+                      <View style={styles.encounterHeadLeft}>
+                        <MaterialCommunityIcons name="sword-cross" size={20} color="#ffd58f" />
+                        <Text style={styles.resultTitle}>
+                          {liveTowerBattle.source === "quest"
+                            ? liveTowerBattle.encounterTitle ?? "Live Contract"
+                            : liveTowerBattle.encounterTitle ??
+                              (liveTowerBattle.wave === "normal"
+                                ? "Live Clash: Normal Wave"
+                                : liveTowerBattle.wave === "subBoss"
+                                  ? "Live Clash: Sub-Boss"
+                                  : "Live Clash: Main Boss")}
+                        </Text>
+                      </View>
+                      <View style={[styles.encounterStatusPill, isPlayerTurn ? styles.towerPhaseResultOk : styles.towerPhaseResultFail]}>
+                        <Text style={styles.encounterStatusText}>
+                          {isPlayerTurn ? "YOUR TURN" : "ENEMY TURN"}
+                        </Text>
+                      </View>
+                    </View>
+                    <ScrollView style={styles.waveResolveScroll} contentContainerStyle={styles.waveResolveScrollContent} showsVerticalScrollIndicator={false}>
+                      {liveTowerBattle.source === "quest" && liveTowerBattle.encounterSummary ? (
+                        <Text style={styles.questMeta}>{liveTowerBattle.encounterSummary}</Text>
+                      ) : null}
+                      {initiativePreview.length ? (
+                        <View style={styles.liveBattleInitiativeCard}>
+                          <View style={styles.liveBattleSectionHead}>
+                            <MaterialCommunityIcons name="timeline-outline" size={15} color="#9ecfff" />
+                            <Text style={styles.reqTitle}>Initiative</Text>
+                          </View>
+                          <View style={styles.liveBattleInitiativeRow}>
+                            {liveTowerBattle.initiativeHistory.map((entry, index) => (
+                              <View
+                                key={`initiative-history-${entry}-${index}`}
+                                style={[
+                                  styles.liveBattleInitiativeToken,
+                                  styles.liveBattleInitiativeTokenResolved,
+                                  entry === "player" ? styles.liveBattleInitiativeTokenPlayer : styles.liveBattleInitiativeTokenEnemy,
+                                ]}
+                              >
+                                {entry === "player" ? (
+                                  <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                ) : currentEnemy && getTowerEnemyArt(currentEnemy) ? (
+                                  <Image source={getTowerEnemyArt(currentEnemy)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                ) : (
+                                  <MaterialCommunityIcons name="skull-outline" size={14} color="#fff0cf" />
+                                )}
+                                <View style={styles.liveBattleInitiativeResolvedMark}>
+                                  <MaterialCommunityIcons name="close" size={10} color="#1c0f15" />
+                                </View>
+                              </View>
+                            ))}
+                            {initiativePreview.map((entry, index) => (
+                              <View
+                                key={`initiative-${entry.key}`}
+                                style={[
+                                  styles.liveBattleInitiativeToken,
+                                  index === 0 ? styles.liveBattleInitiativeTokenActive : null,
+                                  entry.actor === "player" ? styles.liveBattleInitiativeTokenPlayer : styles.liveBattleInitiativeTokenEnemy,
+                                ]}
+                              >
+                                {entry.actor === "player" ? (
+                                  <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                ) : currentEnemy && getTowerEnemyArt(currentEnemy) ? (
+                                  <Image source={getTowerEnemyArt(currentEnemy)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                ) : (
+                                  <MaterialCommunityIcons name="skull-outline" size={14} color="#fff0cf" />
+                                )}
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                      <View style={styles.liveBattleStatusGrid}>
+                        <View style={styles.liveBattleEnemyCardWrap}>
+                          {currentEnemy ? (
+                            <View style={styles.liveBattleEnemyCard}>
+                              {getTowerEnemyArt(currentEnemy) ? (
+                                <View style={styles.liveBattleEnemyArtWrap}>
+                                  <Image
+                                    source={getTowerEnemyArt(currentEnemy)}
+                                    style={[styles.liveBattleEnemyArt, currentEnemyHp <= 0 ? styles.liveBattleEnemyArtDowned : null]}
+                                    resizeMode="contain"
+                                  />
+                                  {currentEnemyHp <= 0 ? (
+                                    <View style={styles.liveBattleEnemyDownedMark}>
+                                      <MaterialCommunityIcons name="close-thick" size={34} color="#ff8f9a" />
+                                    </View>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                              <Text style={styles.liveBattleEnemyName}>{currentEnemy.name}</Text>
+                              <View style={styles.liveBattleEnemyMetaRow}>
+                                <Text style={styles.liveBattleEnemyMeta}>Lv {currentEnemy.level}</Text>
+                                <Text style={styles.liveBattleEnemyHpText}>Enemy HP</Text>
+                              </View>
+                              <HealthMeter
+                                current={currentEnemyHp}
+                                max={currentEnemy.health}
+                                title="Enemy HP"
+                                hideValues={currentEnemy.level > character.progression.level}
+                                meta={currentEnemy.level > character.progression.level ? "Unknown endurance. Damage still lands in real time." : `Current HP ${currentEnemyHp}/${currentEnemy.health}`}
+                              />
+                              <View style={styles.liveBattleDamageMetaRow}>
+                                <Text style={styles.liveBattleEnemyMeta}>
+                                  {currentEnemyHp <= 0
+                                    ? "Downed"
+                                    : liveTowerBattle.lastPlayerDamage
+                                      ? `Last hit ${liveTowerBattle.lastPlayerDamage}`
+                                      : "Awaiting strike"}
+                                </Text>
+                                {liveTowerBattle.lastCrit ? <Text style={styles.liveBattleCritText}>CRIT</Text> : null}
+                              </View>
+                              <View style={styles.waveBattleStatsRow}>
+                                <View style={styles.waveBattleStatChip}>
+                                  <MaterialCommunityIcons name="sword-cross" size={13} color="#99dcff" />
+                                  <Text style={styles.waveBattleStatText}>ATK {liveTowerBattle.enemyStatsById[currentEnemy.id]?.damage ?? 0}</Text>
+                                </View>
+                                <View style={styles.waveBattleStatChip}>
+                                  <MaterialCommunityIcons name="creation" size={13} color="#ffd58f" />
+                                  <Text style={styles.waveBattleStatText}>CRIT {liveTowerBattle.enemyStatsById[currentEnemy.id]?.critChance ?? 0}%</Text>
+                                </View>
+                                <View style={styles.waveBattleStatChip}>
+                                  <MaterialCommunityIcons name="run-fast" size={13} color="#ffb1b1" />
+                                  <Text style={styles.waveBattleStatText}>
+                                    SPD {liveTowerBattle.enemyStatsById[currentEnemy.id]?.speed ?? 0}
+                                    {liveTowerBattle.enemyStatsById[currentEnemy.id] && liveTowerBattle.enemyStatsById[currentEnemy.id].speed > liveTowerBattle.playerStats.speed ? " • Extra turns" : ""}
+                                  </Text>
+                                </View>
+                              </View>
+                              {currentEnemyStatusFx.length ? (
+                                <View style={styles.liveBattleStatusFxRow}>
+                                  {currentEnemyStatusFx.map((effect) => (
+                                    <Pressable
+                                      key={`enemy-fx-${currentEnemy.id}-${effect.id}`}
+                                      onHoverIn={() => setBattleStatusHint(formatStatusDetail(effect, effectNowMs))}
+                                      onHoverOut={() =>
+                                        setBattleStatusHint((currentHint) =>
+                                          currentHint === formatStatusDetail(effect, effectNowMs) ? null : currentHint,
+                                        )
+                                      }
+                                      onPress={() => setBattleStatusHint(formatStatusDetail(effect, effectNowMs))}
+                                      style={[styles.towerStatusIconBadge, getStatusToneBadgeStyle(effect.tone)]}
+                                    >
+                                      <MaterialCommunityIcons name={effect.icon} size={13} color="#ffe6bf" />
+                                    </Pressable>
+                                  ))}
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+                      {activeTelegraph ? (
+                        <View style={styles.liveBattleCallout}>
+                          <Text style={styles.liveBattleCalloutLabel}>Telegraph</Text>
+                          <Text style={styles.liveBattleCalloutTitle}>{activeTelegraph.enemyName}: {activeTelegraph.mechanic.split(":")[0]}</Text>
+                          <Text style={styles.liveBattleCalloutBody}>
+                            {awaitingNextEnemy
+                              ? `${activeTelegraph.enemyName} is down. Read the lane, then advance when you're ready.`
+                              : "Choose your turn. If your read is wrong, you eat the consequence."}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={styles.liveBattleActionSection}>
+                        <View style={styles.liveBattleSectionHead}>
+                          <MaterialCommunityIcons name="sword-cross" size={15} color="#ffd58f" />
+                          <Text style={styles.reqTitle}>Actions</Text>
+                        </View>
+                        <View style={styles.liveBattleActionRow}>
+                          <Pressable
+                            disabled={!isPlayerTurn || awaitingNextEnemy}
+                            onPress={() => recordLiveBattleResponse("attack", "attack")}
+                            onHoverIn={() => setBattleEffectHint("Attack: Strike the current target with your weapon.")}
+                            onHoverOut={() => setBattleEffectHint((currentHint) => (currentHint === "Attack: Strike the current target with your weapon." ? null : currentHint))}
+                            onPressIn={() => setBattleEffectHint("Attack: Strike the current target with your weapon.")}
+                            style={[styles.liveBattleActionButton, styles.liveBattleActionButtonAttack, !isPlayerTurn ? styles.actionDisabled : null]}
+                          >
+                            <View style={styles.liveBattleActionButtonInner}>
+                              <MaterialCommunityIcons name="sword-cross" size={15} color="#ffe6bf" />
+                              <Text style={styles.liveBattleActionText}>Attack</Text>
+                            </View>
+                          </Pressable>
+                          {(["front", "mid", "rear"] as TowerBattlePosition[]).map((position) => (
+                            <Pressable
+                              key={`tower-pos-${position}`}
+                              disabled={!isPlayerTurn}
+                              onPress={() => {
+                                setLiveTowerBattle((current) => (current ? { ...current, position } : current));
+                                recordLiveBattleResponse("move", position);
+                              }}
+                              style={[
+                                styles.liveBattleActionButton,
+                                styles.liveBattleActionButtonMove,
+                                liveTowerBattle.position === position ? styles.liveBattleActionButtonActive : null,
+                                !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null,
+                              ]}
+                              onHoverIn={() => setBattleEffectHint(`Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`)}
+                              onHoverOut={() =>
+                                setBattleEffectHint((currentHint) =>
+                                  currentHint === `Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.` ? null : currentHint,
+                                )
+                              }
+                              onPressIn={() => setBattleEffectHint(`Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`)}
+                            >
+                              <View style={styles.liveBattleActionButtonInner}>
+                                <MaterialCommunityIcons
+                                  name={position === "front" ? "sword" : position === "mid" ? "swap-horizontal" : "shield-sun-outline"}
+                                  size={15}
+                                  color="#ffe6bf"
+                                />
+                                <Text style={styles.liveBattleActionText}>Shift {position[0].toUpperCase()}{position.slice(1)}</Text>
+                              </View>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                      <Pressable
+                        style={styles.liveBattleActionSection}
+                        onHoverOut={() =>
+                          setBattleEffectHint((currentHint) =>
+                            currentHint === "Guard: Take less damage from the next enemy hit." ||
+                            currentHint === "Pass: End your turn and let the enemy act." ||
+                            currentHint === getBasicSkillHint("ability-warrior-iron-will") ||
+                            currentHint === getBasicSkillHint("ability-warrior-steel-rhythm") ||
+                            currentHint === getBasicSkillHint("ability-warrior-bulwark-oath") ||
+                            currentHint === getBasicSkillHint("ability-warrior-bloodrush") ||
+                            currentHint === getBasicSkillHint("ability-ranger-scout-path") ||
+                            currentHint === getBasicSkillHint("ability-mage-arcane-surge")
+                              ? null
+                              : currentHint,
+                          )
+                        }
+                      >
+                        <View style={styles.liveBattleSectionHead}>
+                          <MaterialCommunityIcons name="star-four-points-circle-outline" size={15} color="#9fe3ff" />
+                          <Text style={styles.reqTitle}>Skills</Text>
+                        </View>
+                        <View style={styles.liveBattleActionRow}>
+                          <Pressable
+                            disabled={!isPlayerTurn || awaitingNextEnemy}
+                            onPress={() => {
+                              setLiveTowerBattle((current) => (current ? { ...current, braceUsed: true } : current));
+                              recordLiveBattleResponse("brace", "brace");
+                            }}
+                            onHoverIn={() => setBattleEffectHint("Guard: Take less damage from the next enemy hit.")}
+                            onPressIn={() => setBattleEffectHint("Guard: Take less damage from the next enemy hit.")}
+                            style={[styles.liveBattleActionButton, styles.liveBattleActionButtonGuard, !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null]}
+                          >
+                            <View style={styles.liveBattleActionButtonInner}>
+                              <MaterialCommunityIcons name="shield-outline" size={18} color="#ffe6bf" />
+                              <Text style={styles.liveBattleActionText}>Guard</Text>
+                            </View>
+                          </Pressable>
+                          {battleSkills.map((skill) => {
+                            const profile = getLiveBattleSkillProfile(skill.id);
+                            const skillAccent = getAbilityKindAccent(skill);
+                            const cooldownRemainingMs = Math.max(0, (liveTowerBattle.skillCooldownEndsAtMsById?.[skill.id] ?? 0) - nowMs);
+                            const activeEffect = profile ? visiblePlayerStatusFx.find((effect) => effect.id === profile.effectId) : null;
+                            const skillReady =
+                              isPlayerTurn &&
+                              !battleFinished &&
+                              !awaitingNextEnemy &&
+                              cooldownRemainingMs <= 0;
+                            const stateText =
+                              activeEffect && activeEffect.expiresAtMs && activeEffect.expiresAtMs > effectNowMs
+                                ? `Active ${formatRemainingDetailed(activeEffect.expiresAtMs - effectNowMs)}`
+                                : cooldownRemainingMs > 0
+                                  ? `CD ${formatRemainingDetailed(cooldownRemainingMs)}`
+                                  : "Ready";
+                            const skillArtSource = getAbilityArtSource(skill.id);
+                            const hasSkillArt = Boolean(skillArtSource);
+                            const skillHint = getBasicSkillHint(skill.id);
+                            return (
+                              <Pressable
+                                key={`live-skill-${skill.id}`}
+                                disabled={!skillReady}
+                                onPress={() => {
+                                  setLiveTowerBattle((current) => (current ? { ...current, skillUsed: true } : current));
+                                  recordLiveBattleResponse("skill", skill.id);
+                                }}
+                                onHoverIn={() => setBattleEffectHint(skillHint)}
+                                onPressIn={() => setBattleEffectHint(skillHint)}
+                                style={[
+                                  styles.liveBattleActionButton,
+                                  getBattleSkillButtonTone(skill.id) === "defense"
+                                    ? styles.liveBattleActionButtonSkillDefense
+                                    : getBattleSkillButtonTone(skill.id) === "tempo"
+                                      ? styles.liveBattleActionButtonSkillTempo
+                                      : getBattleSkillButtonTone(skill.id) === "arcane"
+                                        ? styles.liveBattleActionButtonSkillArcane
+                                        : styles.liveBattleActionButtonSkillOffense,
+                                  !skillReady ? styles.actionDisabled : null,
+                                ]}
+                              >
+                                <View style={styles.liveBattleActionButtonInner}>
+                                  <View
+                                    style={[
+                                      styles.liveBattleSkillPillIconWrap,
+                                      hasSkillArt
+                                        ? styles.liveBattleSkillPillIconWrapArt
+                                        : {
+                                            borderColor: skillAccent.border,
+                                            backgroundColor: skillAccent.background,
+                                          },
+                                    ]}
+                                  >
+                                    {hasSkillArt ? (
+                                      <Image
+                                        fadeDuration={0}
+                                        source={skillArtSource ?? undefined}
+                                        style={styles.liveBattleSkillArt}
+                                        resizeMode="contain"
+                                      />
+                                    ) : (
+                                      <MaterialCommunityIcons
+                                        name={skill.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                                        size={21}
+                                        color={skillAccent.icon}
+                                      />
+                                    )}
+                                    {activeEffect ? <View style={styles.liveBattleSkillActiveDot} /> : null}
+                                  </View>
+                                  <Text style={styles.liveBattleActionText}>{skill.name}</Text>
+                                  {stateText !== "Ready" ? <Text style={styles.liveBattleSkillInlineState}>{stateText}</Text> : null}
+                                </View>
+                              </Pressable>
+                            );
+                          })}
+                          <Pressable
+                            disabled={!isPlayerTurn || awaitingNextEnemy}
+                            onPress={() => recordLiveBattleResponse("pass", "pass")}
+                            onHoverIn={() => setBattleEffectHint("Pass: End your turn and let the enemy act.")}
+                            onPressIn={() => setBattleEffectHint("Pass: End your turn and let the enemy act.")}
+                            style={[styles.liveBattleActionButton, styles.liveBattleActionButtonMove, !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null]}
+                          >
+                            <View style={styles.liveBattleActionButtonInner}>
+                              <MaterialCommunityIcons name="skip-next-circle-outline" size={18} color="#ffe6bf" />
+                              <Text style={styles.liveBattleActionText}>Pass</Text>
+                            </View>
+                          </Pressable>
+                        </View>
+                        <Text style={styles.liveBattleCommandHint}>{battleEffectHint ?? " "}</Text>
+                      </Pressable>
+                      <View style={styles.liveBattleActionSection}>
+                        <View style={styles.liveBattleSectionHead}>
+                          <MaterialCommunityIcons name="bag-personal-outline" size={15} color="#9effc4" />
+                          <Text style={styles.reqTitle}>Items</Text>
+                        </View>
+                        <View style={styles.liveBattleItemRow}>
+                          {Object.keys(liveTowerBattle.committedItems).length ? (
+                            (Object.keys(liveTowerBattle.committedItems) as ItemId[]).map((itemId) => (
+                              <Pressable
+                                key={`live-battle-item-${itemId}`}
+                                disabled={!isPlayerTurn || awaitingNextEnemy}
+                                onPress={() => recordLiveBattleResponse("item", itemId)}
+                                style={[styles.liveBattleItemButton, !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null]}
+                              >
+                                <GameItemIcon itemId={itemId} size={24} />
+                                <View style={styles.liveBattleItemTextWrap}>
+                                  <Text style={styles.liveBattleItemText}>{ITEM_BY_ID[itemId]?.name ?? itemId}</Text>
+                                  <Text style={styles.liveBattleItemSubtext}>Battle Item</Text>
+                                </View>
+                              </Pressable>
+                            ))
+                          ) : (
+                            <Text style={styles.questMeta}>No counter items committed for this wave.</Text>
+                          )}
+                        </View>
+                      </View>
+                      <View style={styles.liveBattlePlayerCard}>
+                        <View style={styles.liveBattleCombatHead}>
+                          <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattlePlayerAvatar} resizeMode="cover" />
+                          <View style={styles.liveBattleCombatText}>
+                            <Text style={styles.liveBattleCombatLabel}>Adventurer</Text>
+                            <Text style={styles.liveBattleCombatName}>{character.name}</Text>
+                            <Text style={styles.liveBattleCombatMeta}>Current HP {liveTowerBattle.playerHp}/{character.healthCap}</Text>
+                          </View>
+                        </View>
+                        {equippedBattleWeapon?.image ? (
+                          <View style={styles.liveBattleWeaponRow}>
+                            <View style={styles.liveBattleWeaponArtFrame}>
+                              <Image source={equippedBattleWeapon.image} style={styles.liveBattleWeaponArt} resizeMode="contain" />
+                            </View>
+                            <View style={styles.liveBattleWeaponTextWrap}>
+                              <Text style={styles.liveBattleWeaponLabel}>Equipped Weapon</Text>
+                              <Text style={styles.liveBattleWeaponName}>{equippedBattleWeapon.name}</Text>
+                              <Text
+                                style={[
+                                  styles.liveBattleWeaponGrade,
+                                  { color: rarityColorMap[equippedBattleWeapon.rarity] },
+                                  equippedBattleWeapon.rarity === "legendary" ? styles.legendaryTextGlow : null,
+                                ]}
+                              >
+                                {equippedBattleWeapon.rarity.toUpperCase()}
+                              </Text>
+                            </View>
+                          </View>
+                        ) : null}
+                        <HealthMeter
+                          current={liveTowerBattle.playerHp}
+                          max={character.healthCap}
+                          title="Player HP"
+                          meta={liveTowerBattle.lastEnemyDamage ? `Last hit taken: ${liveTowerBattle.lastEnemyDamage}` : "Live battle HP"}
+                        />
+                        <View style={styles.liveBattleCooldownCardSlim}>
+                          <View style={styles.meterLabelRow}>
+                            <Text style={styles.meterLabel}>Skill State</Text>
+                            <Text style={styles.meterLabel}>
+                              {primarySkillState?.activeRemainingMs
+                                ? "ACTIVE"
+                                : primarySkillState?.cooldownRemainingMs
+                                  ? "COOLDOWN"
+                                  : "READY"}
+                            </Text>
+                          </View>
+                          <ProgressBar
+                            value={
+                              primarySkillState?.activeRemainingMs
+                                ? primarySkillState.activeRemainingMs
+                                : primarySkillState?.cooldownRemainingMs
+                                  ? primarySkillState.cooldownRemainingMs
+                                  : 1
+                            }
+                            max={
+                              primarySkillState?.activeRemainingMs && primarySkillState.profile
+                                ? primarySkillState.profile.cooldownSeconds * 1000
+                                : primarySkillState?.cooldownRemainingMs && primarySkillState.skill
+                                  ? primarySkillState.skill.cooldownSeconds * 1000
+                                  : 1
+                            }
+                            variant="skill"
+                          />
+                        </View>
+                        <View style={styles.waveBattleStatsRow}>
+                          <View style={styles.liveBattleStatWrap}>
+                            <View style={styles.waveBattleStatChip}>
+                              <MaterialCommunityIcons name="sword-cross" size={13} color="#99dcff" />
+                              <Text style={styles.waveBattleStatText}>ATK {liveTowerBattle.playerStats.damage}</Text>
+                            </View>
+                            {livePlayerAttackBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{livePlayerAttackBonus}</Text> : null}
+                          </View>
+                          <View style={styles.liveBattleStatWrap}>
+                            <View style={styles.waveBattleStatChip}>
+                              <MaterialCommunityIcons name="creation" size={13} color="#ffd58f" />
+                              <Text style={styles.waveBattleStatText}>CRIT {liveTowerBattle.playerStats.critChance}%</Text>
+                            </View>
+                            {livePlayerCritBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{livePlayerCritBonus}%</Text> : null}
+                          </View>
+                          <View style={styles.liveBattleStatWrap}>
+                            <View style={styles.waveBattleStatChip}>
+                              <MaterialCommunityIcons name="run-fast" size={13} color="#9effc4" />
+                              <Text style={styles.waveBattleStatText}>SPD {liveTowerBattle.playerStats.speed}</Text>
+                            </View>
+                            {livePlayerSpeedBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{livePlayerSpeedBonus}</Text> : null}
+                          </View>
+                        </View>
+                        {playerEffectIcons.length ? (
+                          <View style={styles.liveBattleStatusFxRow}>
+                            {playerEffectIcons.map((effect) => (
+                              (() => {
+                                const accentAbilityId =
+                                  "abilityId" in effect && typeof effect.abilityId === "string" ? effect.abilityId : null;
+                                const statusArtSource = getAbilityArtSource(accentAbilityId);
+                                return (
+                                  <Pressable
+                                    key={effect.key}
+                                    onHoverIn={() => setBattleStatusHint(effect.detail)}
+                                    onHoverOut={() => setBattleStatusHint((currentHint) => (currentHint === effect.detail ? null : currentHint))}
+                                    onPress={() => setBattleStatusHint(effect.detail)}
+                                    style={[
+                                      styles.towerStatusIconBadge,
+                                      accentAbilityId
+                                        ? {
+                                            borderColor: getAbilityAccent(accentAbilityId).border,
+                                            backgroundColor: getAbilityAccent(accentAbilityId).background,
+                                          }
+                                        : getStatusToneBadgeStyle(effect.tone),
+                                    ]}
+                                  >
+                                    {effect.kind === "item" && effect.itemId ? (
+                                      <GameItemIcon itemId={effect.itemId} size={16} />
+                                    ) : accentAbilityId && statusArtSource ? (
+                                      <Image
+                                        fadeDuration={0}
+                                        source={statusArtSource}
+                                        style={styles.liveBattleStatusArt}
+                                        resizeMode="contain"
+                                      />
+                                    ) : (
+                                      <MaterialCommunityIcons
+                                        name={"icon" in effect ? effect.icon : "star-four-points-circle-outline"}
+                                        size={13}
+                                        color={accentAbilityId ? getAbilityAccent(accentAbilityId).icon : "#ffe6bf"}
+                                      />
+                                    )}
+                                  </Pressable>
+                                );
+                              })()
+                            ))}
+                          </View>
+                        ) : null}
+                        {battleStatusHint ? (
+                          <Text style={styles.effectHintText}>{battleStatusHint}</Text>
+                        ) : null}
+                      </View>
+                      <View style={styles.liveBattleLogCard}>
+                        <Text style={styles.reqTitle}>Battle Log</Text>
+                        <ScrollView style={styles.liveBattleLogScroll} contentContainerStyle={styles.liveBattleLogList} showsVerticalScrollIndicator={false}>
+                          {liveTowerBattle.turnLog.map((line, index) => (
+                            <View key={`live-log-${index}-${line}`} style={styles.liveBattleLogEntry}>
+                              <View style={styles.liveBattleLogEntryDot} />
+                              <Text style={styles.liveBattleLogEntryText}>{line}</Text>
+                            </View>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    </ScrollView>
+                    {awaitingNextEnemy ? (
+                      <Pressable onPress={advanceLiveBattleEnemy} style={styles.actionWrap}>
+                        <View style={styles.claimButton}>
+                          <Text style={styles.claimText}>Advance To Next Enemy</Text>
+                        </View>
+                      </Pressable>
+                    ) : isPlayerTurn ? (
+                      <Pressable onPress={resolveLiveTowerBattle} style={styles.actionWrap} disabled={!battleFinished}>
+                        <View style={[styles.claimButton, !battleFinished ? styles.actionDisabled : null]}>
+                          <Text style={styles.claimText}>{battleFinished ? (battleWon ? "Claim Victory" : "Accept Defeat") : "Battle In Progress"}</Text>
+                        </View>
+                      </Pressable>
+                    ) : (
+                      <Pressable onPress={playEnemyTurn} style={styles.actionWrap} disabled={enemyTurnAnimating}>
+                        <View style={[styles.claimButton, enemyTurnAnimating ? styles.actionDisabled : null]}>
+                          <Text style={styles.claimText}>{enemyTurnAnimating ? "Enemy Acting..." : "Resolve Enemy Turn"}</Text>
+                        </View>
+                      </Pressable>
+                    )}
+                    {!isPlayerTurn ? (
+                      <View style={styles.liveBattleEnemyTurnMeterCard}>
+                        <View style={styles.meterLabelRow}>
+                          <Text style={styles.meterLabel}>Enemy Turn</Text>
+                          <Text style={styles.meterLabel}>{enemyTurnAnimating ? `${enemyTurnMeter}%` : "Ready"}</Text>
+                        </View>
+                        <ProgressBar value={enemyTurnMeter} max={100} variant="time" />
+                      </View>
+                    ) : null}
+                  </>
+                );
+              })()}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       {waveResolveModal ? (
         <Modal visible transparent animationType="fade" onRequestClose={() => setWaveResolveModal(null)}>
           <View style={styles.resultOverlay}>
             <View style={styles.resultModal}>
               {(() => {
-                const totalReplaySteps = (waveResolveModal.enemyBattles ?? []).reduce((sum, battle) => sum + 1 + battle.events.length, 0);
-                const replayPercent =
-                  totalReplaySteps <= 0 ? 100 : Math.round((Math.min(waveResolveRevealStepCount, totalReplaySteps) / totalReplaySteps) * 100);
+                const resolveFloor = towerFloors.find((floor) => floor.floorNumber === waveResolveModal.floorNumber);
+                const resolveWaveRoster = resolveFloor?.enemyRoster
+                  ? waveResolveModal.wave === "normal"
+                    ? resolveFloor.enemyRoster.normal
+                    : waveResolveModal.wave === "subBoss"
+                      ? resolveFloor.enemyRoster.subBoss
+                      : resolveFloor.enemyRoster.boss
+                  : [];
+                const battledEnemyIds = new Set((waveResolveModal.enemyBattles ?? []).map((battle) => battle.enemyId).filter(Boolean));
+                const untouchedEnemies = resolveWaveRoster.filter((enemy) => !battledEnemyIds.has(enemy.id));
                 return (
                   <>
               <View style={styles.encounterHead}>
@@ -5150,15 +8441,6 @@ export const QuestsScreen = ({
                 </View>
               </View>
               <ScrollView style={styles.waveResolveScroll} contentContainerStyle={styles.waveResolveScrollContent} showsVerticalScrollIndicator={false}>
-                <View style={styles.waveReplayMeterBlock}>
-                  <View style={styles.meterLabelRow}>
-                    <Text style={styles.meterLabel}>Battle Replay</Text>
-                    <Text style={styles.meterLabel}>
-                      {Math.min(waveResolveRevealStepCount, totalReplaySteps)}/{Math.max(1, totalReplaySteps)}
-                    </Text>
-                  </View>
-                  <ProgressBar value={replayPercent} max={100} variant="time" />
-                </View>
                 <View style={styles.waveResolveMeterWrap}>
                   <HealthMeter current={character.health} max={character.healthCap} compact />
                 </View>
@@ -5175,19 +8457,7 @@ export const QuestsScreen = ({
                 {waveResolveModal.enemyBattles?.length ? (
                   <View style={styles.waveResolveBattleList}>
                     {(() => {
-                      let revealCursor = 0;
-                      return waveResolveModal.enemyBattles.map((battle, battleIndex) => {
-                        const battleRevealStart = revealCursor;
-                        const battleVisible = waveResolveRevealStepCount > battleRevealStart;
-                        revealCursor += 1;
-                        const revealedEventCount = Math.max(
-                          0,
-                          Math.min(battle.events.length, waveResolveRevealStepCount - revealCursor),
-                        );
-                        revealCursor += battle.events.length;
-                        if (!battleVisible) {
-                          return null;
-                        }
+                      const battleCards = waveResolveModal.enemyBattles.map((battle, battleIndex) => {
                       const battleArt = battle.enemyId
                         ? getTowerEnemyArt({
                             id: battle.enemyId,
@@ -5229,13 +8499,21 @@ export const QuestsScreen = ({
                             <View style={styles.waveBattleHpHead}>
                               <Text style={styles.waveBattleHpLabel}>Enemy HP</Text>
                               <Text style={styles.waveBattleHpValue}>
-                                0/{battle.enemyHealth}
+                                {battle.enemyHealthRemaining}/{battle.enemyHealth}
                               </Text>
                             </View>
                             <View style={styles.waveBattleHpTrack}>
-                              <View style={[styles.waveBattleHpFill, styles.waveBattleHpFillDefeated]} />
-                              <View style={styles.waveBattleHpDefeatedPill}>
-                                <Text style={styles.waveBattleHpDefeatedText}>Defeated</Text>
+                              <View
+                                style={[
+                                  styles.waveBattleHpFill,
+                                  battle.defeated ? styles.waveBattleHpFillDefeated : null,
+                                  !battle.defeated
+                                    ? { width: `${Math.max(6, Math.round((battle.enemyHealthRemaining / battle.enemyHealth) * 100))}%` }
+                                    : null,
+                                ]}
+                              />
+                              <View style={battle.defeated ? styles.waveBattleHpDefeatedPill : styles.waveBattleHpStandingPill}>
+                                <Text style={styles.waveBattleHpDefeatedText}>{battle.defeated ? "Defeated" : "Still Standing"}</Text>
                               </View>
                             </View>
                           </View>
@@ -5258,17 +8536,12 @@ export const QuestsScreen = ({
                             </View>
                           </View>
                           <View style={styles.waveBattleTimeline}>
-                            {battle.events.slice(0, revealedEventCount).map((event, eventIndex) => (
+                            {battle.events.map((event, eventIndex) => (
                               <View
                                 key={`wave-battle-event-${battle.enemyName}-${event.mechanic}-${eventIndex}`}
                                 style={[
                                   styles.waveBattleEventCard,
                                   event.positive ? styles.waveBattleEventCardGood : styles.waveBattleEventCardBad,
-                                  eventIndex === revealedEventCount - 1
-                                    ? event.positive
-                                      ? styles.waveBattleEventCardFreshGood
-                                      : styles.waveBattleEventCardFreshBad
-                                    : null,
                                 ]}
                               >
                                 <View style={styles.waveBattleEventHead}>
@@ -5297,6 +8570,50 @@ export const QuestsScreen = ({
                         </View>
                       );
                       });
+                      const untouchedCards = untouchedEnemies.map((enemy, index) => (
+                        <View key={`wave-battle-untouched-${enemy.id}-${index}`} style={[styles.waveBattleCard, styles.waveBattleCardUnengaged]}>
+                          <View style={styles.waveBattleHead}>
+                            <View style={styles.waveBattleEnemyWrap}>
+                              {getTowerEnemyArt(enemy) ? (
+                                <Image source={getTowerEnemyArt(enemy)} style={styles.waveBattlePortrait} resizeMode="cover" />
+                              ) : (
+                                <View style={styles.waveBattlePortraitFallback}>
+                                  <MaterialCommunityIcons
+                                    name={enemy.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                                    size={18}
+                                    color="#ffd58f"
+                                  />
+                                </View>
+                              )}
+                              <View style={styles.waveBattleEnemyText}>
+                                <Text style={styles.waveBattleEnemyName}>{enemy.name}</Text>
+                                <Text style={styles.waveBattleEnemyMeta}>
+                                  Lv {enemy.level} • Unengaged
+                                </Text>
+                              </View>
+                            </View>
+                            <View style={styles.waveBattleIndexPill}>
+                              <Text style={styles.waveBattleIndexText}>Enemy {(waveResolveModal.enemyBattles?.length ?? 0) + index + 1}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.waveBattleHpWrap}>
+                            <View style={styles.waveBattleHpHead}>
+                              <Text style={styles.waveBattleHpLabel}>Enemy HP</Text>
+                              <Text style={styles.waveBattleHpValue}>
+                                {(enemy.health ?? 1)}/{enemy.health ?? 1}
+                              </Text>
+                            </View>
+                            <View style={styles.waveBattleHpTrack}>
+                              <View style={[styles.waveBattleHpFill, styles.waveBattleHpFillFull]} />
+                              <View style={styles.waveBattleHpStandingPill}>
+                                <Text style={styles.waveBattleHpDefeatedText}>Unengaged</Text>
+                              </View>
+                            </View>
+                          </View>
+                          <Text style={styles.waveBattleUnengagedText}>The lane never broke far enough to reach this enemy.</Text>
+                        </View>
+                      ));
+                      return [...battleCards, ...untouchedCards];
                     })()}
                   </View>
                 ) : (
@@ -5314,14 +8631,49 @@ export const QuestsScreen = ({
                   </View>
                 )}
               </ScrollView>
-              <Pressable onPress={() => setWaveResolveModal(null)} style={styles.actionWrap}>
+              <Pressable
+                onPress={() => {
+                  const collapseMessage = waveResolveModal.collapsed ? waveResolveModal.collapseMessage : null;
+                  setWaveResolveModal(null);
+                  if (collapseMessage) {
+                    setTowerCollapseAftermath({
+                      title: "The Tower Casts You Out",
+                      message: collapseMessage,
+                    });
+                  }
+                }}
+                style={styles.actionWrap}
+              >
                 <View style={styles.claimButton}>
-                  <Text style={styles.claimText}>Continue</Text>
+                  <Text style={styles.claimText}>{waveResolveModal.collapsed ? "Ready" : "Continue"}</Text>
                 </View>
               </Pressable>
                   </>
                 );
               })()}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {towerCollapseAftermath ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setTowerCollapseAftermath(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <View style={styles.encounterHead}>
+                <View style={styles.encounterHeadLeft}>
+                  <MaterialCommunityIcons name="alert-octagon-outline" size={20} color="#ffb1b1" />
+                  <Text style={[styles.resultTitle, styles.fail]}>{towerCollapseAftermath.title}</Text>
+                </View>
+                <View style={[styles.encounterStatusPill, styles.towerPhaseResultFail]}>
+                  <Text style={styles.encounterStatusText}>FRACTURED</Text>
+                </View>
+              </View>
+              <Text style={styles.outcomeText}>{towerCollapseAftermath.message}</Text>
+              <Pressable onPress={() => setTowerCollapseAftermath(null)} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>Hold Steady</Text>
+                </View>
+              </Pressable>
             </View>
           </View>
         </Modal>
@@ -5366,12 +8718,14 @@ export const QuestsScreen = ({
           const enemyKnown = (character.knownTowerEnemyIds ?? []).includes(selectedTowerEnemy.id);
           const enemyFloorNumber = getTowerEnemyFloorNumber(selectedTowerEnemy.id);
           const enemyIntelUnlocked = enemyFloorNumber ? hasFloorIntel(enemyFloorNumber) || character.towerProgress.highestFloorCleared >= enemyFloorNumber : enemyKnown;
+          const enemyHpVisible = enemyKnown && character.progression.level >= selectedTowerEnemy.level;
           const enemyRoleLabel =
             selectedTowerEnemy.role === "boss"
               ? "Main Boss"
               : selectedTowerEnemy.role === "subBoss"
                 ? "Sub-Boss"
                 : "Normal Enemy";
+          const enemyCombatIntelUnlocked = enemyKnown || enemyIntelUnlocked;
           const usesTightCreaturePortrait = ["f1-ash-rat", "f1-dust-crawler"].includes(selectedTowerEnemy.id);
           const usesRatPortrait = selectedTowerEnemy.id === "f1-ash-rat";
           return (
@@ -5383,6 +8737,11 @@ export const QuestsScreen = ({
         >
           <View style={styles.resultOverlay}>
             <View style={[styles.resultModal, styles.enemyDossierModal]}>
+              <ScrollView
+                style={styles.enemyDossierScroll}
+                contentContainerStyle={styles.enemyDossierScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
               {Platform.OS !== "web" && towerEnemyArtExpanded && getTowerEnemyArt(selectedTowerEnemy) ? (
                 <Pressable style={styles.enemyArtOverlayInline} onPress={() => setTowerEnemyArtExpanded(false)}>
                   <View style={styles.enemyArtLightbox}>
@@ -5440,7 +8799,7 @@ export const QuestsScreen = ({
                 </View>
                 <View style={styles.enemyMetaChip}>
                   <MaterialCommunityIcons name="heart-pulse" size={14} color="#ff9aa5" />
-                  <Text style={styles.enemyMetaText}>{enemyKnown ? `HP ${selectedTowerEnemy.health}` : "HP ???"}</Text>
+                  <Text style={styles.enemyMetaText}>{enemyHpVisible ? `HP ${selectedTowerEnemy.health}` : "HP ???/???"}</Text>
                 </View>
                 <View style={styles.enemyMetaChip}>
                   <MaterialCommunityIcons name="information-outline" size={14} color="#8ec8ff" />
@@ -5481,7 +8840,7 @@ export const QuestsScreen = ({
                   ) : null}
                 </View>
               ) : null}
-              {enemyKnown ? (
+              {enemyCombatIntelUnlocked ? (
                 selectedTowerEnemy.mechanics && selectedTowerEnemy.mechanics.length > 0 ? (
                   <View style={[styles.requirementsBlock, styles.enemyDossierMechanicsBlock]}>
                     <Text style={styles.reqTitle}>Mechanics</Text>
@@ -5506,6 +8865,7 @@ export const QuestsScreen = ({
                   <Text style={styles.claimText}>Close</Text>
                 </View>
               </Pressable>
+              </ScrollView>
             </View>
           </View>
         </Modal>
@@ -5538,23 +8898,37 @@ export const QuestsScreen = ({
         <Modal visible transparent animationType="fade" onRequestClose={() => setRescueDialogOpen(false)}>
           <View style={styles.resultOverlay}>
             <View style={styles.resultModal}>
-              <Text style={styles.resultTitle}>Aldric Vale</Text>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(214, 160, 81, 0.14)", "rgba(96, 64, 154, 0.1)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile(RESCUE_REQUEST_NPC_PROFILE.id)?.avatarOverride ??
+                    getAvatarSprite(RESCUE_REQUEST_NPC_PROFILE.avatarId, RESCUE_REQUEST_NPC_PROFILE.classId)
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Aldric Vale</Text>
+              </View>
               <Text style={styles.outcomeText}>
                 {rescueNpcStatus === "refused_once"
-                  ? "\"Please... I beg you one last time. My daughter is still alive. Help me bring her home.\""
+                  ? "\"Please... one last time. If you walk away again, I go alone. My daughter is still alive. Help me bring her home.\""
                   : "\"Bandits took my daughter at dusk near Watchtrail. I need a capable adventurer right now.\""}
               </Text>
               <View style={styles.dualActionRow}>
-                <Pressable onPress={() => handleRescueNpcChoice(false)} style={styles.dualActionButton}>
-                  <View style={[styles.dialogChoiceButton, styles.dialogChoiceRefuseButton]}>
-                    <Text style={styles.dialogChoiceText}>Refuse</Text>
-                  </View>
-                </Pressable>
-                <Pressable onPress={() => handleRescueNpcChoice(true)} style={styles.dualActionButton}>
-                  <View style={[styles.dialogChoiceButton, styles.dialogChoiceAcceptButton]}>
-                    <Text style={styles.dialogChoiceText}>Accept Request</Text>
-                  </View>
-                </Pressable>
+                {aldricChoices.map((choice) => (
+                  <Pressable key={choice.label} onPress={() => handleRescueNpcChoice(choice.accept)} style={styles.dualActionButton}>
+                    <View style={[styles.dialogChoiceButton, choice.accept ? styles.dialogChoiceAcceptButton : styles.dialogChoiceRefuseButton]}>
+                      <Text style={styles.dialogChoiceText}>{choice.label}</Text>
+                    </View>
+                  </Pressable>
+                ))}
               </View>
             </View>
           </View>
@@ -5571,16 +8945,13 @@ export const QuestsScreen = ({
                 end={{ x: 1, y: 1 }}
                 style={styles.cardGradient}
               />
-              <View style={styles.npcDialogHeader}>
+              <View style={styles.npcDialogHero}>
                 <Image
                   source={branProfile?.avatarOverride ?? getAvatarSprite("ranger-3", "ranger")}
-                  style={styles.npcDialogAvatar}
+                  style={styles.npcDialogHeroAvatar}
                   resizeMode="cover"
                 />
-                <View style={styles.npcDialogTextWrap}>
-                  <Text style={styles.resultTitle}>Quartermaster Bran</Text>
-                  <Text style={styles.resultChance}>Guild Supply Desk</Text>
-                </View>
+                <Text style={styles.npcDialogHeroName}>Quartermaster Bran</Text>
               </View>
               <Text style={styles.outcomeText}>{`"${branDialogLine}"`}</Text>
               <View style={styles.dualActionRow}>
@@ -5610,16 +8981,13 @@ export const QuestsScreen = ({
                 end={{ x: 1, y: 1 }}
                 style={styles.cardGradient}
               />
-              <View style={styles.npcDialogHeader}>
+              <View style={styles.npcDialogHero}>
                 <Image
                   source={rankExaminerProfile.avatarOverride ?? getAvatarSprite(rankExaminerProfile.avatarId, rankExaminerProfile.classId)}
-                  style={styles.npcDialogAvatar}
+                  style={styles.npcDialogHeroAvatar}
                   resizeMode="cover"
                 />
-                <View style={styles.npcDialogTextWrap}>
-                  <Text style={styles.resultTitle}>Examiner {rankExaminerProfile.name}</Text>
-                  <Text style={styles.resultChance}>Guild Rank Office</Text>
-                </View>
+                <Text style={styles.npcDialogHeroName}>Examiner {rankExaminerProfile.name}</Text>
               </View>
               <Text style={styles.outcomeText}>{`"${examinerDialogLine}"`}</Text>
               {rankTrial && !examinerReadyForTrial ? (
@@ -5653,6 +9021,291 @@ export const QuestsScreen = ({
           </View>
         </Modal>
       ) : null}
+      {guildDialog === "tamsin-floor2" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(125, 186, 119, 0.12)", "rgba(84, 117, 171, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile("npc-tamsin-vale")?.avatarOverride ??
+                    getAvatarSprite("ranger-2", "ranger")
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Tamsin Vale</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                "Thorn Corridor is where clean plans start catching.
+              </Text>
+              <View style={styles.dialogInlineRequestWrap}>
+                <Text style={styles.outcomeText}>I need a snapped </Text>
+                <View style={styles.dialogInlineIconToken}>
+                  <MaterialCommunityIcons name="hook" size={15} color="#f1dfbb" />
+                  <Text style={styles.dialogInlineIconText}>snagline</Text>
+                </View>
+                <Text style={styles.outcomeText}> and the </Text>
+                <View style={styles.dialogInlineIconToken}>
+                  <MaterialCommunityIcons name="bag-personal-outline" size={15} color="#f1dfbb" />
+                  <Text style={styles.dialogInlineIconText}>satchel</Text>
+                </View>
+                <Text style={styles.outcomeText}> tied to it brought back from the briar lanes.</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                If you take my contract, tell me what kind of runner I'm sending in."
+              </Text>
+              <View style={styles.dialogChoiceStack}>
+                {tamsinChoices.map((choice) => (
+                  <Pressable key={choice.id} onPress={() => handleTamsinDialogChoice(choice.id)} style={styles.actionWrap}>
+                    <View style={[styles.dialogChoiceButton, choice.id === "steady" ? styles.dialogChoiceAcceptButton : styles.dialogChoiceRefuseButton]}>
+                      <Text style={styles.dialogChoiceTitle}>{choice.label}</Text>
+                      <Text style={styles.dialogChoiceBody}>
+                        {choice.id === "steady"
+                          ? "Treat the lane like route work first. Tamsin will read you as steady and professional."
+                          : "Take the contract, but show her coin is the first thing on your mind. She will remember it."}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {guildDialog === "tamsin-followup" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(125, 186, 119, 0.12)", "rgba(84, 117, 171, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile("npc-tamsin-vale")?.avatarOverride ??
+                    getAvatarSprite("ranger-2", "ranger")
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Tamsin Vale</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                "You brought back the lane record instead of feeding it to the thorns."
+              </Text>
+              <View style={styles.dialogInlineRequestWrap}>
+                <Text style={styles.outcomeText}>The snapped </Text>
+                <View style={styles.dialogInlineIconToken}>
+                  <MaterialCommunityIcons name="hook" size={15} color="#f1dfbb" />
+                  <Text style={styles.dialogInlineIconText}>snagline</Text>
+                </View>
+                <Text style={styles.outcomeText}> told me where the pull started, and the recovered </Text>
+                <View style={styles.dialogInlineIconToken}>
+                  <MaterialCommunityIcons name="bag-personal-outline" size={15} color="#f1dfbb" />
+                  <Text style={styles.dialogInlineIconText}>satchel</Text>
+                </View>
+                <Text style={styles.outcomeText}> told me what the lane tried to keep."</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                {storyState.thornRunnerIntroductionChoice === "mercenary"
+                  ? "\"You earned the pay. I'll give you the useful notes too, but don't mistake that for trust.\""
+                  : "\"That kind of recovery keeps corridor work alive. Take the notes. Thorn Corridor punishes people who walk in blind.\""}
+              </Text>
+              <Pressable onPress={handleTamsinFollowup} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>Record Tamsin's Notes</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {aldricBattleOpen && activeQuest?.questId === SPECIAL_RESCUE_QUEST_ID ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => {}}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(179, 77, 62, 0.15)", "rgba(91, 50, 123, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <Text style={[styles.resultTitle, styles.ok]}>Watchtrail Rescue Operation</Text>
+              <Text style={styles.resultChance}>Hold the line through both bandit waves to reach Aldric's daughter in time.</Text>
+              <View style={styles.questCriticalTimerHero}>
+                <Text style={styles.questCriticalTimerLabel}>Encounter Timer</Text>
+                <Text style={styles.questCriticalTimerValue}>{formatRemainingDetailed(remainingMs)}</Text>
+              </View>
+              <View style={styles.questMeterBlock}>
+                <View style={styles.meterLabelRow}>
+                  <Text style={styles.meterLabel}>Battle Flow</Text>
+                  <Text style={styles.meterLabel}>{Math.round(aldricBattleFlowRatio * 100)}%</Text>
+                </View>
+                <ProgressBar value={aldricBattleFlowRatio * 100} max={100} variant="chance" />
+              </View>
+              <View style={styles.waveResolveLog}>
+                <View style={styles.meterLabelRow}>
+                  <Text style={styles.meterLabel}>Field Report</Text>
+                  <Text style={styles.meterLabel}>
+                    {isQuestReadyToClaim
+                      ? "Finalized"
+                      : aldricBattleRevealCount <= 0
+                        ? "Ingress"
+                        : aldricBattleRevealCount === 1
+                          ? "Wave 1"
+                          : "Wave 2"}
+                  </Text>
+                </View>
+                <Text style={styles.questMeta}>{aldricBattleStatusText}</Text>
+              </View>
+              <View style={styles.waveResolveBattleList}>
+                {(() => {
+                  let revealCursor = 0;
+                  return ALDRIC_SPECIAL_BATTLES.map((battle, battleIndex) => {
+                    const battleRevealStart = revealCursor;
+                    const battleVisible = aldricBattleRevealStepCount > battleRevealStart;
+                    revealCursor += 1;
+                    const revealedEventCount = Math.max(
+                      0,
+                      Math.min(battle.events.length, aldricBattleRevealStepCount - revealCursor),
+                    );
+                    revealCursor += battle.events.length;
+                    if (!battleVisible) {
+                      return null;
+                    }
+                    const battleProgress = Math.max(
+                      0,
+                      Math.min(1, (aldricBattleRevealStepCount - battleRevealStart) / (battle.events.length + 1)),
+                    );
+                    const battleCleared = battleProgress >= 1 || isQuestReadyToClaim;
+                    const enemyCurrentHp = battleCleared
+                      ? 0
+                      : Math.max(1, Math.round(battle.enemyHealth * (1 - battleProgress)));
+                    return (
+                      <View key={`aldric-battle-${battle.enemyId}-${battleIndex}`} style={styles.waveBattleCard}>
+                        <View style={styles.waveBattleHead}>
+                          <View style={styles.waveBattleEnemyWrap}>
+                            <Image
+                              source={getAvatarSprite(battle.avatarId, battle.classId)}
+                              style={styles.waveBattlePortrait}
+                              resizeMode="cover"
+                            />
+                            <View style={styles.waveBattleEnemyText}>
+                              <Text style={styles.waveBattleEnemyName}>{battle.enemyName}</Text>
+                              <Text style={styles.waveBattleEnemyMeta}>
+                                {battle.waveLabel} • Lv {battle.enemyLevel} • {battle.enemyRole === "boss" ? "Bandit Leader" : "Lackey"}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.waveBattleIndexPill}>
+                            <Text style={styles.waveBattleIndexText}>Enemy {battleIndex + 1}</Text>
+                          </View>
+                        </View>
+                        <View style={styles.waveBattleHpWrap}>
+                          <View style={styles.waveBattleHpHead}>
+                            <Text style={styles.waveBattleHpLabel}>Enemy HP</Text>
+                            <Text style={styles.waveBattleHpValue}>
+                              {enemyCurrentHp}/{battle.enemyHealth}
+                            </Text>
+                          </View>
+                          <View style={styles.waveBattleHpTrack}>
+                            <View
+                              style={[
+                                styles.waveBattleHpFill,
+                                battleCleared ? styles.waveBattleHpFillDefeated : null,
+                                { width: `${battleCleared ? 100 : Math.max(6, battleProgress * 100)}%` },
+                              ]}
+                            />
+                            {battleCleared ? (
+                              <View style={styles.waveBattleHpDefeatedPill}>
+                                <Text style={styles.waveBattleHpDefeatedText}>Defeated</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={styles.waveBattleStatsRow}>
+                          <View style={styles.waveBattleStatChip}>
+                            <MaterialCommunityIcons name="heart-pulse" size={13} color="#ffadb7" />
+                            <Text style={styles.waveBattleStatText}>HP {battle.enemyHealth}</Text>
+                          </View>
+                          <View style={styles.waveBattleStatChip}>
+                            <MaterialCommunityIcons name="timeline-clock-outline" size={13} color="#ffd58f" />
+                            <Text style={styles.waveBattleStatText}>{battle.turnsToDefeat} turns</Text>
+                          </View>
+                          <View style={styles.waveBattleStatChip}>
+                            <MaterialCommunityIcons name="sword-cross" size={13} color="#99dcff" />
+                            <Text style={styles.waveBattleStatText}>{battle.playerDamagePerTurn}/turn</Text>
+                          </View>
+                          <View style={styles.waveBattleStatChip}>
+                            <MaterialCommunityIcons name="heart-minus" size={13} color="#ffb1b1" />
+                            <Text style={styles.waveBattleStatText}>-{battle.damageTaken} HP</Text>
+                          </View>
+                        </View>
+                        <View style={styles.waveBattleTimeline}>
+                          {battle.events.slice(0, revealedEventCount).map((event, eventIndex) => (
+                            <View
+                              key={`aldric-battle-event-${battle.enemyId}-${event.mechanic}-${eventIndex}`}
+                              style={[
+                                styles.waveBattleEventCard,
+                                event.positive ? styles.waveBattleEventCardGood : styles.waveBattleEventCardBad,
+                                eventIndex === revealedEventCount - 1
+                                  ? event.positive
+                                    ? styles.waveBattleEventCardFreshGood
+                                    : styles.waveBattleEventCardFreshBad
+                                  : null,
+                              ]}
+                            >
+                              <View style={styles.waveBattleEventHead}>
+                                <View style={[styles.effectStepBadge, event.positive ? styles.effectStepBadgeGood : styles.effectStepBadgeBad]}>
+                                  <Text style={styles.effectStepBadgeText}>{eventIndex + 1}</Text>
+                                </View>
+                                <MaterialCommunityIcons
+                                  name={event.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                                  size={14}
+                                  color={event.positive ? "#9effc4" : "#ffb1b1"}
+                                />
+                                <Text style={styles.waveBattleEventTitle}>{event.mechanic}</Text>
+                                <View
+                                  style={[
+                                    styles.effectResultPill,
+                                    event.positive ? styles.effectResultPillCountered : styles.effectResultPillTriggered,
+                                  ]}
+                                >
+                                  <Text style={styles.effectResultText}>{event.positive ? "ADVANTAGE" : "IMPACT"}</Text>
+                                </View>
+                              </View>
+                              <Text style={styles.waveBattleEventBody}>{event.resultText}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    );
+                  });
+                })()}
+              </View>
+              <View style={styles.questUrgencyBanner}>
+                <MaterialCommunityIcons name="shield-alert-outline" size={16} color="#ffd6a2" />
+                <Text style={styles.questUrgencyText}>
+                  This is a special rescue encounter. Results will be filed through the quest report when the final wave settles.
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       {lastQuestOutcome ? (
         <Modal visible={questResultOpen} transparent animationType="fade" onRequestClose={() => setQuestResultOpen(false)}>
           <View style={styles.resultOverlay}>
@@ -5681,6 +9334,35 @@ export const QuestsScreen = ({
                 </View>
               ) : null}
               <Text style={styles.outcomeText}>{lastQuestOutcome.summary}</Text>
+              {lastQuestOutcome.questId === SPECIAL_RESCUE_QUEST_ID ? (
+                <View style={styles.requirementsBlock}>
+                  <Text style={styles.reqTitle}>{lastQuestOutcome.success ? "Bandit Engagement Report" : "Rescue Failure Report"}</Text>
+                  <View style={styles.specialQuestWaveList}>
+                    <View style={styles.specialQuestWaveCardCompact}>
+                      <Text style={styles.specialQuestWaveLabel}>Wave 1</Text>
+                      <Text style={styles.specialQuestWaveTitle}>Bandit Lackeys</Text>
+                      <Text style={styles.questMeta}>
+                        {lastQuestOutcome.success
+                          ? "The outer lackeys collapsed under the rescue push before they could fully close the lane."
+                          : lastQuestOutcome.successChance < 35
+                            ? "The first bandit line bled your momentum early. You reached Watchtrail underprepared and never fully controlled the route."
+                            : "The outer line slowed the rescue enough to force a weaker push into the camp."}
+                      </Text>
+                    </View>
+                    <View style={styles.specialQuestWaveCardCompact}>
+                      <Text style={styles.specialQuestWaveLabel}>Wave 2</Text>
+                      <Text style={styles.specialQuestWaveTitle}>Watchtrail Butcher</Text>
+                      <Text style={styles.questMeta}>
+                        {lastQuestOutcome.success
+                          ? "The bandit leader broke under pressure before the rescue window closed."
+                          : lastQuestOutcome.successChance < 35
+                            ? "The Butcher held the inner camp while your weakened rescue push stalled. By the time you forced the lane, the rescue had already failed."
+                            : "The Butcher bought just enough time through the inner lane for the rescue window to collapse before you could finish him."}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              ) : null}
 
               {lastQuestOutcome.rewards ? (
                 <View style={styles.resultRewardsWrap}>
@@ -5736,39 +9418,19 @@ export const QuestsScreen = ({
                       </Text>
                     </View>
                   </View>
-                  <Pressable onPress={() => handleResolveLyraQuestChoice("returned")} style={styles.lyraChoiceAction}>
-                    <LinearGradient
-                      colors={["rgba(82, 125, 94, 0.95)", "rgba(41, 73, 50, 0.95)"]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.lyraChoiceActionBg}
-                    >
-                      <Text style={styles.lyraChoiceTitle}>Return It Unopened</Text>
-                      <Text style={styles.lyraChoiceText}>Show restraint and trust Lyra with the satchel intact.</Text>
-                    </LinearGradient>
-                  </Pressable>
-                  <Pressable onPress={() => handleResolveLyraQuestChoice("kept")} style={styles.lyraChoiceAction}>
-                    <LinearGradient
-                      colors={["rgba(68, 74, 120, 0.95)", "rgba(39, 44, 82, 0.95)"]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.lyraChoiceActionBg}
-                    >
-                      <Text style={styles.lyraChoiceTitle}>Study It In Secret</Text>
-                      <Text style={styles.lyraChoiceText}>Keep what you learned to yourself and test Lyra's reaction.</Text>
-                    </LinearGradient>
-                  </Pressable>
-                  <Pressable onPress={() => handleResolveLyraQuestChoice("reported")} style={styles.lyraChoiceAction}>
-                    <LinearGradient
-                      colors={["rgba(129, 63, 63, 0.95)", "rgba(87, 36, 36, 0.95)"]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.lyraChoiceActionBg}
-                    >
-                      <Text style={styles.lyraChoiceTitle}>Report It To Guild Command</Text>
-                      <Text style={styles.lyraChoiceText}>Choose institutional protection and let the guild see the ember routes.</Text>
-                    </LinearGradient>
-                  </Pressable>
+                  {lyraChoices.map((choice) => (
+                    <Pressable key={choice.id} onPress={() => handleResolveLyraQuestChoice(choice.id)} style={styles.lyraChoiceAction}>
+                      <LinearGradient
+                        colors={[...choice.colors]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.lyraChoiceActionBg}
+                      >
+                        <Text style={styles.lyraChoiceTitle}>{choice.title}</Text>
+                        <Text style={styles.lyraChoiceText}>{choice.text}</Text>
+                      </LinearGradient>
+                    </Pressable>
+                  ))}
                 </View>
               ) : null}
 
@@ -5801,24 +9463,14 @@ export const QuestsScreen = ({
                 The satchel is yours, but the branch is not finished until you decide what kind of person Lyra just dealt with.
               </Text>
               <View style={styles.lyraChoiceCard}>
-                <Pressable onPress={() => handleResolveLyraQuestChoice("returned")} style={styles.lyraChoiceAction}>
-                  <LinearGradient colors={["rgba(82, 125, 94, 0.95)", "rgba(41, 73, 50, 0.95)"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lyraChoiceActionBg}>
-                    <Text style={styles.lyraChoiceTitle}>Return It Unopened</Text>
-                    <Text style={styles.lyraChoiceText}>Give Lyra the satchel intact and let restraint speak for you.</Text>
-                  </LinearGradient>
-                </Pressable>
-                <Pressable onPress={() => handleResolveLyraQuestChoice("kept")} style={styles.lyraChoiceAction}>
-                  <LinearGradient colors={["rgba(68, 74, 120, 0.95)", "rgba(39, 44, 82, 0.95)"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lyraChoiceActionBg}>
-                    <Text style={styles.lyraChoiceTitle}>Study It In Secret</Text>
-                    <Text style={styles.lyraChoiceText}>Learn from the ember routes first, then decide what to reveal.</Text>
-                  </LinearGradient>
-                </Pressable>
-                <Pressable onPress={() => handleResolveLyraQuestChoice("reported")} style={styles.lyraChoiceAction}>
-                  <LinearGradient colors={["rgba(129, 63, 63, 0.95)", "rgba(87, 36, 36, 0.95)"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lyraChoiceActionBg}>
-                    <Text style={styles.lyraChoiceTitle}>Report It To Guild Command</Text>
-                    <Text style={styles.lyraChoiceText}>Put the satchel in official hands and accept what that will mean.</Text>
-                  </LinearGradient>
-                </Pressable>
+                {lyraChoices.map((choice) => (
+                  <Pressable key={choice.id} onPress={() => handleResolveLyraQuestChoice(choice.id)} style={styles.lyraChoiceAction}>
+                    <LinearGradient colors={[...choice.colors]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lyraChoiceActionBg}>
+                      <Text style={styles.lyraChoiceTitle}>{choice.title}</Text>
+                      <Text style={styles.lyraChoiceText}>{choice.text}</Text>
+                    </LinearGradient>
+                  </Pressable>
+                ))}
               </View>
             </View>
           </View>
@@ -6054,6 +9706,78 @@ const styles = StyleSheet.create({
   boardFilterTextActive: {
     color: "#ffe7bb",
   },
+  boardSectionCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#8f7243",
+    backgroundColor: "rgba(37, 28, 49, 0.95)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+    width: "100%",
+    maxWidth: 1180,
+    alignSelf: "center",
+  },
+  boardSectionCardUrgent: {
+    borderColor: "rgba(211, 101, 113, 0.72)",
+    backgroundColor: "rgba(54, 26, 40, 0.95)",
+  },
+  boardSectionCardStory: {
+    borderColor: "rgba(104, 166, 214, 0.7)",
+    backgroundColor: "rgba(31, 34, 55, 0.95)",
+  },
+  boardSectionCardSpecial: {
+    borderColor: "rgba(164, 122, 225, 0.72)",
+    backgroundColor: "rgba(40, 29, 62, 0.95)",
+  },
+  boardSectionCardHunt: {
+    borderColor: "rgba(86, 168, 153, 0.74)",
+    backgroundColor: "rgba(22, 42, 41, 0.96)",
+  },
+  boardSectionCardWanted: {
+    borderColor: "rgba(184, 92, 88, 0.74)",
+    backgroundColor: "rgba(42, 24, 31, 0.96)",
+  },
+  boardSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  boardSectionTitleWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  boardSectionTitle: {
+    color: "#fff0cf",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  boardSectionMeta: {
+    color: "#d8c4a1",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  boardSectionCountPill: {
+    minWidth: 28,
+    height: 24,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(238, 211, 165, 0.45)",
+    backgroundColor: "rgba(75, 56, 31, 0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  boardSectionCountText: {
+    color: "#fff0cf",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  boardSectionList: {
+    gap: 10,
+  },
   healthLockCard: {
     borderRadius: 12,
     borderWidth: 1,
@@ -6219,6 +9943,10 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 8,
   },
+  npcTopRightWrap: {
+    alignItems: "flex-end",
+    gap: 5,
+  },
   licenseTopKicker: {
     color: "#e2c485",
     fontSize: 10,
@@ -6250,6 +9978,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 18,
     fontWeight: "900",
+  },
+  npcAttentionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#ffd8a7",
+    backgroundColor: "rgba(116, 72, 25, 0.95)",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  npcAttentionPillText: {
+    color: "#fff2d3",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.3,
   },
   npcBody: {
     flexDirection: "row",
@@ -6553,28 +10298,47 @@ const styles = StyleSheet.create({
     letterSpacing: 0.35,
     textTransform: "uppercase",
   },
-  npcDialogHeader: {
-    flexDirection: "row",
+  npcDialogHero: {
     alignItems: "center",
-    gap: 9,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#8d6f40",
-    backgroundColor: "rgba(52, 38, 23, 0.92)",
-    paddingHorizontal: 9,
-    paddingVertical: 7,
+    gap: 10,
+    marginBottom: 4,
   },
-  npcDialogAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+  npcDialogHeroAvatar: {
+    width: 104,
+    height: 104,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: "#b68f53",
     backgroundColor: "rgba(29, 21, 13, 0.9)",
   },
-  npcDialogTextWrap: {
-    flex: 1,
-    gap: 1,
+  npcDialogHeroName: {
+    color: "#fff0ce",
+    fontSize: 26,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  dialogInlineRequestWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  dialogInlineIconToken: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(193, 160, 101, 0.62)",
+    backgroundColor: "rgba(55, 39, 22, 0.9)",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  dialogInlineIconText: {
+    color: "#f4e3bf",
+    fontSize: 12,
+    fontWeight: "800",
   },
   dualActionRow: {
     flexDirection: "row",
@@ -6603,6 +10367,21 @@ const styles = StyleSheet.create({
     color: "#fff0ce",
     fontSize: 13,
     fontWeight: "900",
+  },
+  dialogChoiceStack: {
+    gap: 10,
+  },
+  dialogChoiceTitle: {
+    color: "#fff0ce",
+    fontSize: 14,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  dialogChoiceBody: {
+    color: "#e8d3af",
+    fontSize: 11,
+    lineHeight: 15,
+    textAlign: "center",
   },
   activeCard: {
     backgroundColor: "rgba(32, 24, 44, 0.96)",
@@ -6639,6 +10418,10 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 1180,
     alignSelf: "center",
+  },
+  npcQuestCard: {
+    borderColor: "#6ea7d1",
+    backgroundColor: "rgba(29, 27, 48, 0.98)",
   },
   specialQuestCard: {
     borderColor: "#df7882",
@@ -6732,6 +10515,61 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.4,
   },
+  npcQuestBadge: {
+    marginLeft: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#9fd8ff",
+    backgroundColor: "rgba(32, 83, 120, 0.92)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  npcQuestBadgeText: {
+    color: "#eef8ff",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+  huntQuestBadge: {
+    marginLeft: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#8fe7dc",
+    backgroundColor: "rgba(24, 89, 78, 0.94)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  huntQuestBadgeText: {
+    color: "#ecfffb",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+  wantedPlaceholderCard: {
+    borderColor: "rgba(184, 92, 88, 0.75)",
+    backgroundColor: "rgba(38, 22, 29, 0.98)",
+  },
+  wantedQuestBadge: {
+    marginLeft: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#ffb8a8",
+    backgroundColor: "rgba(122, 36, 41, 0.92)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  wantedQuestBadgeText: {
+    color: "#fff2ef",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
   questTitle: {
     color: colors.textPrimary,
     fontSize: 15,
@@ -6766,6 +10604,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     flexShrink: 1,
+  },
+  wantedDetailsList: {
+    gap: 4,
+  },
+  wantedDetailText: {
+    color: colors.textSecondary,
+    fontSize: 12,
   },
   titleRewardCard: {
     marginTop: 6,
@@ -7039,15 +10884,6 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingBottom: 4,
   },
-  waveReplayMeterBlock: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(182, 144, 84, 0.58)",
-    backgroundColor: "rgba(39, 28, 48, 0.84)",
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    gap: 4,
-  },
   waveResolveLog: {
     borderRadius: 10,
     borderWidth: 1,
@@ -7060,6 +10896,534 @@ const styles = StyleSheet.create({
   waveResolveBattleList: {
     gap: 8,
   },
+  liveBattleStatusGrid: {
+    gap: 10,
+  },
+  liveBattlePlayerCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(140, 194, 255, 0.42)",
+    backgroundColor: "rgba(26, 37, 56, 0.86)",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  liveBattleCombatHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  liveBattlePlayerAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(159, 201, 255, 0.5)",
+  },
+  liveBattleCombatText: {
+    flex: 1,
+    gap: 2,
+  },
+  liveBattleCombatLabel: {
+    color: "#9ecfff",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+    textTransform: "uppercase",
+  },
+  liveBattleCombatName: {
+    color: "#fff0cf",
+    fontSize: 19,
+    fontWeight: "900",
+  },
+  liveBattleCombatMeta: {
+    color: "#dbe9ff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  liveBattleEnemyCardWrap: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(189, 149, 86, 0.42)",
+    backgroundColor: "rgba(49, 34, 25, 0.84)",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  liveBattleEnemyCard: {
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 2,
+  },
+  liveBattleEnemyArtWrap: {
+    width: 180,
+    height: 120,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveBattleEnemyArt: {
+    width: 180,
+    height: 120,
+  },
+  liveBattleEnemyArtDowned: {
+    opacity: 0.42,
+  },
+  liveBattleEnemyDownedMark: {
+    position: "absolute",
+    inset: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveBattleEnemyName: {
+    color: "#fff0cf",
+    fontSize: 20,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  liveBattleEnemyMeta: {
+    color: "#d9c39f",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  liveBattleEnemyMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  liveBattleEnemyHpText: {
+    color: "#ffe9cd",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  liveBattleEnemyHpStatLine: {
+    color: "#ffe9cd",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  liveBattleDamageMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  liveBattleCritText: {
+    color: "#ffd58f",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+    textTransform: "uppercase",
+  },
+  liveBattleCallout: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(227, 151, 92, 0.55)",
+    backgroundColor: "rgba(74, 37, 28, 0.82)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  liveBattleCalloutLabel: {
+    color: "#ffd8a1",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  liveBattleCalloutTitle: {
+    color: "#fff0cf",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  liveBattleCalloutBody: {
+    color: "#efdcc0",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  liveBattleInitiativeCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(134, 173, 220, 0.38)",
+    backgroundColor: "rgba(31, 36, 58, 0.82)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  liveBattleInitiativeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "nowrap",
+    overflow: "hidden",
+  },
+  liveBattleInitiativeToken: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    borderWidth: 1,
+  },
+  liveBattleInitiativeTokenActive: {
+    transform: [{ scale: 1.08 }],
+    shadowColor: "#ffe6bf",
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+  },
+  liveBattleInitiativeTokenResolved: {
+    opacity: 0.45,
+  },
+  liveBattleInitiativeTokenPlayer: {
+    borderColor: "rgba(159, 201, 255, 0.72)",
+    backgroundColor: "rgba(30, 55, 83, 0.88)",
+  },
+  liveBattleInitiativeTokenEnemy: {
+    borderColor: "rgba(227, 151, 92, 0.62)",
+    backgroundColor: "rgba(82, 44, 28, 0.88)",
+  },
+  liveBattleInitiativeAvatar: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 999,
+  },
+  liveBattleInitiativeResolvedMark: {
+    position: "absolute",
+    right: -2,
+    top: -2,
+    width: 14,
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: "#ff9ea9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveBattleSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  liveBattleSequenceHint: {
+    color: "#cdb793",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "700",
+    marginTop: 6,
+  },
+  liveBattleActionSection: {
+    gap: 8,
+  },
+  liveBattleSkillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
+  },
+  liveBattleActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  liveBattleActionButton: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(180, 144, 85, 0.58)",
+    backgroundColor: "rgba(39, 29, 50, 0.82)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  liveBattleActionButtonAttack: {
+    borderColor: "rgba(210, 128, 92, 0.58)",
+    backgroundColor: "rgba(74, 36, 28, 0.84)",
+  },
+  liveBattleActionButtonMove: {
+    borderColor: "rgba(122, 190, 255, 0.42)",
+    backgroundColor: "rgba(24, 45, 68, 0.82)",
+  },
+  liveBattleActionButtonGuard: {
+    borderColor: "rgba(134, 214, 179, 0.46)",
+    backgroundColor: "rgba(24, 58, 45, 0.82)",
+  },
+  liveBattleActionButtonSkillDefense: {
+    borderColor: "rgba(214, 192, 118, 0.48)",
+    backgroundColor: "rgba(72, 58, 28, 0.84)",
+  },
+  liveBattleActionButtonSkillTempo: {
+    borderColor: "rgba(122, 190, 255, 0.42)",
+    backgroundColor: "rgba(33, 49, 73, 0.84)",
+  },
+  liveBattleActionButtonSkillOffense: {
+    borderColor: "rgba(223, 116, 123, 0.42)",
+    backgroundColor: "rgba(79, 31, 43, 0.84)",
+  },
+  liveBattleActionButtonSkillArcane: {
+    borderColor: "rgba(174, 147, 255, 0.44)",
+    backgroundColor: "rgba(58, 37, 87, 0.84)",
+  },
+  liveBattleActionButtonInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  liveBattleSkillPillIconWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 22,
+    height: 22,
+    overflow: "hidden",
+  },
+  liveBattleSkillPillIconWrapArt: {
+    width: 22,
+    height: 22,
+    backgroundColor: "transparent",
+    overflow: "hidden",
+  },
+  liveBattleSkillArt: {
+    width: 22,
+    height: 22,
+  },
+  liveBattleStatusArt: {
+    width: 14,
+    height: 14,
+  },
+  liveBattleSkillActiveDot: {
+    position: "absolute",
+    right: -2,
+    top: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#8de9a8",
+    borderWidth: 1,
+    borderColor: "#142018",
+  },
+  liveBattleActionButtonActive: {
+    borderColor: "rgba(140, 225, 182, 0.84)",
+    backgroundColor: "rgba(24, 72, 52, 0.88)",
+  },
+  liveBattleActionText: {
+    color: "#fff0cf",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  liveBattleItemRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  liveBattleItemButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(180, 144, 85, 0.52)",
+    backgroundColor: "rgba(49, 36, 25, 0.84)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  liveBattleItemTextWrap: {
+    gap: 2,
+  },
+  liveBattleItemText: {
+    color: "#ffedcb",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  liveBattleItemSubtext: {
+    color: "#cdb793",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
+  liveBattleSkillState: {
+    color: "#9ecfff",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  liveBattleSkillInlineState: {
+    color: "#9ecfff",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  liveBattleCommandHint: {
+    color: "#d9e8ff",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+    paddingHorizontal: 2,
+    minHeight: 18,
+  },
+  liveBattleSkillInfoText: {
+    color: "#cfdff9",
+    fontSize: 11,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  liveBattleWeaponRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  liveBattleWeaponArtFrame: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(214, 178, 112, 0.46)",
+    backgroundColor: "rgba(45, 33, 25, 0.62)",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  liveBattleWeaponArt: {
+    width: 82,
+    height: 82,
+  },
+  liveBattleWeaponTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  liveBattleWeaponLabel: {
+    color: "#9ecfff",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+    textTransform: "uppercase",
+  },
+  liveBattleWeaponName: {
+    color: "#fff0cf",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  liveBattleWeaponGrade: {
+    color: "#d9c39f",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  liveBattleCooldownCardSlim: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(122, 190, 255, 0.28)",
+    backgroundColor: "rgba(24, 31, 54, 0.52)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  liveBattleCooldownCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(122, 190, 255, 0.34)",
+    backgroundColor: "rgba(24, 31, 54, 0.78)",
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 6,
+  },
+  liveBattleCooldownHint: {
+    color: "#cfe1ff",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "700",
+  },
+  liveBattleLogCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(189, 149, 86, 0.38)",
+    backgroundColor: "rgba(36, 27, 46, 0.86)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  liveBattleLogList: {
+    gap: 6,
+    paddingRight: 4,
+  },
+  liveBattleLogScroll: {
+    maxHeight: 132,
+  },
+  liveBattleLogEntry: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(189, 149, 86, 0.22)",
+    backgroundColor: "rgba(28, 21, 38, 0.78)",
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  liveBattleLogEntryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "#ffd58f",
+    marginTop: 5,
+  },
+  liveBattleLogEntryText: {
+    flex: 1,
+    color: "#ecdcbc",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
+  liveBattleStatusFxRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  liveBattleStatWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  liveBattleStatBonus: {
+    color: "#86efb0",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  liveBattleNoEffectsText: {
+    color: "#d0c1a5",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  liveBattleStatusFxChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  liveBattleStatusFxChipGood: {
+    borderColor: "rgba(124, 226, 170, 0.62)",
+    backgroundColor: "rgba(26, 71, 52, 0.84)",
+  },
+  liveBattleStatusFxChipBad: {
+    borderColor: "rgba(244, 135, 149, 0.62)",
+    backgroundColor: "rgba(86, 31, 43, 0.84)",
+  },
+  liveBattleStatusFxChipNeutral: {
+    borderColor: "rgba(180, 144, 85, 0.52)",
+    backgroundColor: "rgba(58, 42, 26, 0.82)",
+  },
+  liveBattleStatusFxText: {
+    color: "#ffe9cd",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  liveBattleEnemyTurnMeterCard: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(201, 134, 92, 0.42)",
+    backgroundColor: "rgba(66, 35, 28, 0.84)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
+  },
   waveBattleCard: {
     borderRadius: 12,
     borderWidth: 1,
@@ -7068,6 +11432,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 8,
     gap: 8,
+  },
+  waveBattleCardUnengaged: {
+    opacity: 0.9,
+    borderColor: "rgba(122, 132, 156, 0.42)",
+    backgroundColor: "rgba(34, 35, 48, 0.88)",
   },
   waveBattleHead: {
     flexDirection: "row",
@@ -7169,6 +11538,9 @@ const styles = StyleSheet.create({
   waveBattleHpFillDefeated: {
     width: "0%",
   },
+  waveBattleHpFillFull: {
+    backgroundColor: "#6bb880",
+  },
   waveBattleHpDefeatedPill: {
     position: "absolute",
     right: 4,
@@ -7181,12 +11553,29 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 6,
   },
+  waveBattleHpStandingPill: {
+    position: "absolute",
+    right: 4,
+    top: 1,
+    bottom: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(180, 231, 197, 0.72)",
+    backgroundColor: "rgba(19, 62, 45, 0.9)",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
   waveBattleHpDefeatedText: {
     color: "#ffebc1",
     fontSize: 8,
     fontWeight: "900",
     letterSpacing: 0.35,
     textTransform: "uppercase",
+  },
+  waveBattleUnengagedText: {
+    color: "#c8d2df",
+    fontSize: 11,
+    lineHeight: 16,
   },
   waveBattleStatChip: {
     flexDirection: "row",
@@ -7662,6 +12051,7 @@ const styles = StyleSheet.create({
     gap: 5,
     borderWidth: 0,
     backgroundColor: "transparent",
+    position: "relative",
   },
   enemyCardScoutWide: {
     flex: 1,
@@ -7701,6 +12091,60 @@ const styles = StyleSheet.create({
   },
   enemyScoutCaptionWide: {
     maxWidth: 280,
+  },
+  enemyCardScoutDefeated: {
+    opacity: 0.72,
+  },
+  enemyPortraitDefeated: {
+    opacity: 0.46,
+  },
+  enemyDefeatedOverlay: {
+    position: "absolute",
+    top: "26%",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 4,
+    pointerEvents: "none",
+  },
+  enemyScoutHpWrap: {
+    width: "100%",
+    maxWidth: 280,
+    gap: 4,
+    marginTop: 2,
+  },
+  enemyScoutHpHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  enemyScoutHpLabel: {
+    color: "#e6cfa5",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  enemyScoutHpValue: {
+    color: "#f3dfbf",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  enemyScoutHpTrack: {
+    height: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(191, 145, 87, 0.54)",
+    backgroundColor: "rgba(43, 27, 34, 0.82)",
+    overflow: "hidden",
+  },
+  enemyScoutHpFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#d96574",
+  },
+  enemyScoutHpFillEmpty: {
+    backgroundColor: "rgba(140, 120, 120, 0.4)",
   },
   enemyName: {
     color: "#f7e5c1",
@@ -7815,10 +12259,19 @@ const styles = StyleSheet.create({
   },
   enemyDossierModal: {
     maxWidth: 500,
+    maxHeight: "92%",
     borderColor: "#c8a96a",
     backgroundColor: "rgba(25, 18, 36, 0.985)",
     paddingTop: 12,
     gap: 10,
+  },
+  enemyDossierScroll: {
+    width: "100%",
+    flexGrow: 0,
+  },
+  enemyDossierScrollContent: {
+    gap: 10,
+    paddingBottom: 14,
   },
   enemyDossierOrnamentTop: {
     flexDirection: "row",
@@ -8053,6 +12506,7 @@ const styles = StyleSheet.create({
   resultModal: {
     width: "100%",
     maxWidth: 460,
+    maxHeight: "92%",
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#9a7a45",
@@ -8815,6 +13269,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  towerScoutCardHeadRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   towerScoutCardTitleWrap: {
     flexDirection: "row",
     alignItems: "center",
@@ -9030,14 +13489,18 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   infoItemIconWrap: {
-    width: 88,
-    height: 88,
+    width: 188,
+    height: 188,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: "#ba9258",
     backgroundColor: "rgba(21, 16, 34, 0.9)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  infoItemArt: {
+    width: "92%",
+    height: "92%",
   },
   infoItemDescriptionCard: {
     width: "100%",
@@ -9095,6 +13558,50 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     lineHeight: 16,
+  },
+  expandedArtOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(7, 8, 17, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+  },
+  expandedArtCard: {
+    width: "100%",
+    maxWidth: 760,
+    alignItems: "center",
+    gap: 12,
+  },
+  expandedArtTitle: {
+    color: "#fff0ca",
+    fontSize: 18,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  expandedArtRarityPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: "rgba(14, 18, 34, 0.72)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  expandedArtRarityText: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  expandedArtImage: {
+    width: "100%",
+    height: 420,
+  },
+  expandedArtHint: {
+    color: "#d6c29d",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  legendaryTextGlow: {
+    textShadowColor: "rgba(255, 204, 116, 0.7)",
+    textShadowRadius: 6,
   },
   buffTowerCard: {
     minWidth: 132,
@@ -9338,23 +13845,33 @@ const styles = StyleSheet.create({
     borderColor: "#a4814c",
     backgroundColor: "rgba(31, 23, 41, 0.94)",
   },
+  offerInspectArea: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
   offerVisualWrap: {
     borderRadius: 12,
-    overflow: "visible",
-    borderWidth: 1,
-    borderColor: "#8f7040",
-    padding: 2,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 100,
+  },
+  offerWeaponArt: {
+    width: 108,
+    height: 108,
+  },
+  offerWeaponArtHero: {
+    width: 132,
+    height: 132,
   },
   legendaryGlow: {
     shadowColor: "#ffd67a",
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
-    backgroundColor: "rgba(255, 214, 122, 0.28)",
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 1 },
     borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "rgba(255, 231, 170, 0.98)",
-    padding: 3,
   },
   offerIcon: {
     width: 36,
@@ -9499,6 +14016,8 @@ const styles = StyleSheet.create({
   offerAction: {
     alignItems: "flex-end",
     gap: 6,
+    alignSelf: "stretch",
+    justifyContent: "center",
   },
   purchasedBadge: {
     borderRadius: 999,
@@ -9614,6 +14133,55 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  towerEntryButton: {
+    alignSelf: "stretch",
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#76d5ff",
+    backgroundColor: "rgba(20, 88, 122, 0.98)",
+    minHeight: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: "#66d4ff",
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  towerWaveActionButton: {
+    alignSelf: "stretch",
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#ffcf84",
+    backgroundColor: "rgba(165, 85, 20, 0.98)",
+    minHeight: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: "#ffb25f",
+    shadowOpacity: 0.26,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  towerWaveActionButtonDisabled: {
+    borderColor: "rgba(193, 124, 84, 0.55)",
+    backgroundColor: "rgba(72, 46, 31, 0.98)",
+    shadowOpacity: 0,
+  },
+  towerPrimaryActionInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  towerPrimaryActionText: {
+    color: "#fff7e8",
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
   sellButton: {
     minWidth: 54,
     borderRadius: 9,
@@ -9656,6 +14224,188 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 12,
     fontWeight: "700",
+  },
+  questUrgencyBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#c88466",
+    backgroundColor: "rgba(92, 45, 31, 0.82)",
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  questUrgencyText: {
+    flex: 1,
+    color: "#ffe4c1",
+    fontSize: 11,
+    fontWeight: "800",
+    lineHeight: 16,
+  },
+  questCriticalTimerHero: {
+    alignSelf: "center",
+    minWidth: 250,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#d89d72",
+    backgroundColor: "rgba(76, 31, 28, 0.9)",
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+  },
+  questCriticalTimerLabel: {
+    color: "#ffdcb0",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  questCriticalTimerValue: {
+    color: "#fff1dc",
+    fontSize: 26,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  questCriticalTimerMini: {
+    alignSelf: "center",
+    minWidth: 180,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(216, 157, 114, 0.8)",
+    backgroundColor: "rgba(72, 31, 30, 0.84)",
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 1,
+  },
+  questCriticalTimerMiniLabel: {
+    color: "#ffd6aa",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  questCriticalTimerMiniValue: {
+    color: "#fff0dd",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+  },
+  specialQuestWaveList: {
+    gap: 10,
+  },
+  specialQuestWaveCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(197, 142, 85, 0.62)",
+    backgroundColor: "rgba(44, 28, 52, 0.88)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  specialQuestWaveCardCompact: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(182, 136, 82, 0.48)",
+    backgroundColor: "rgba(36, 24, 47, 0.82)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  specialQuestWaveHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  specialQuestWaveLabel: {
+    color: "#f6cfa4",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  specialQuestWaveTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  specialQuestWaveStatePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  specialQuestWaveStatePillClear: {
+    borderColor: "#90e2b1",
+    backgroundColor: "rgba(28, 73, 47, 0.86)",
+  },
+  specialQuestWaveStatePillActive: {
+    borderColor: "#ffcc8a",
+    backgroundColor: "rgba(104, 63, 29, 0.86)",
+  },
+  specialQuestWaveStatePillLocked: {
+    borderColor: "rgba(176, 141, 90, 0.5)",
+    backgroundColor: "rgba(44, 33, 22, 0.7)",
+  },
+  specialQuestWaveStateText: {
+    color: "#fff0d2",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  specialQuestEnemyGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  specialQuestEnemyCard: {
+    minWidth: 150,
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(187, 145, 87, 0.52)",
+    backgroundColor: "rgba(32, 22, 41, 0.88)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    alignItems: "center",
+    gap: 4,
+  },
+  specialQuestEnemyPortraitWrap: {
+    width: "100%",
+    height: 128,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "rgba(53, 31, 22, 0.72)",
+  },
+  specialQuestEnemyPortrait: {
+    width: "100%",
+    height: "100%",
+  },
+  specialQuestEnemyName: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  specialQuestEnemyRole: {
+    color: "#d9bd93",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  specialQuestEnemyHpRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  specialQuestEnemyHp: {
+    color: "#ffd9d9",
+    fontSize: 12,
+    fontWeight: "800",
   },
   skillPrimeCard: {
     borderRadius: 14,

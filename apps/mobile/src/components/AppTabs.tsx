@@ -17,7 +17,7 @@ interface TabItem {
 
 const TAB_ITEMS: TabItem[] = [
   { id: "home", label: "Camp", icon: QUEST_TYPE_SPRITE.adventure },
-  { id: "story", label: "Main Quest", materialIcon: "book-open-page-variant-outline" },
+  { id: "story", label: "Quest", materialIcon: "book-open-page-variant-outline" },
   {
     id: "inventory",
     label: "Inventory",

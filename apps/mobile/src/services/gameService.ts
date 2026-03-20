@@ -23,6 +23,8 @@ import {
   QuestType,
   RankUpOutcome,
   RankUpTrialDefinition,
+  TowerLiveBattleDirective,
+  TowerBattlePosition,
   TowerFloorDefinition,
   TowerOutcome,
   TowerWaveKey,
@@ -99,6 +101,8 @@ export interface GameService {
     dailies: DailyTask[];
     quest: QuestDefinition | undefined;
     nowMs: number;
+    forcedSuccess?: boolean;
+    summaryOverride?: string;
   }) => ClaimQuestResult;
   buyGuildItem: (input: {
     character: CharacterState | null;
@@ -132,6 +136,7 @@ export interface GameService {
     floor: TowerFloorDefinition | undefined;
     wave: TowerWaveKey;
     committedItems?: Record<ItemId, number>;
+    liveBattle?: TowerLiveBattleDirective;
   }) => ResolveTowerWaveResult;
   finalizeTowerFloor: (input: {
     character: CharacterState | null;
@@ -480,6 +485,47 @@ const getMechanicStatusProfile = (
     return { badName: "Shocked", goodName: "Field Warded", icon: "flash-outline" };
   }
   return { badName: mechanic.split(":")[0].trim(), goodName: "Countered", icon: "alert-circle" };
+};
+
+const getLiveBattlePositionModifier = (position: TowerBattlePosition, mechanic: string): { damageDelta: number; bonusCounter: boolean } => {
+  const keyword = mechanic.toLowerCase();
+  if (position === "rear") {
+    if (keyword.includes("poison bite") || keyword.includes("pack rush") || keyword.includes("burrow")) {
+      return { damageDelta: -1, bonusCounter: keyword.includes("burrow") };
+    }
+  }
+  if (position === "mid") {
+    if (keyword.includes("spark field") || keyword.includes("arc overcharge")) {
+      return { damageDelta: -1, bonusCounter: false };
+    }
+  }
+  if (position === "front") {
+    if (keyword.includes("bulwark") || keyword.includes("crushing sweep") || keyword.includes("pack rush")) {
+      return { damageDelta: -1, bonusCounter: false };
+    }
+  }
+  return { damageDelta: 0, bonusCounter: false };
+};
+
+const liveSkillCountersMechanic = (skillId: string | null | undefined, mechanic: string): boolean => {
+  if (!skillId) {
+    return false;
+  }
+  const skill = ABILITY_BY_ID[skillId];
+  const keyword = mechanic.toLowerCase();
+  if (!skill) {
+    return false;
+  }
+  if (skill.classId === "warrior") {
+    return keyword.includes("rush") || keyword.includes("sweep") || keyword.includes("bulwark");
+  }
+  if (skill.classId === "ranger") {
+    return keyword.includes("burrow") || keyword.includes("pack rush") || keyword.includes("poison bite");
+  }
+  if (skill.classId === "mage") {
+    return keyword.includes("overcharge") || keyword.includes("spark field") || keyword.includes("bulwark");
+  }
+  return false;
 };
 
 const buildTowerEncounterLog = (
@@ -1028,12 +1074,12 @@ export const mockGameService: GameService = {
     };
   },
 
-  claimQuest: ({ character, activeQuest, dailies, quest, nowMs }) => {
+  claimQuest: ({ character, activeQuest, dailies, quest, nowMs, forcedSuccess, summaryOverride }) => {
     if (!character || !activeQuest) {
       return { ok: false, reason: "No quest is ready to claim." };
     }
 
-    if (nowMs < activeQuest.endsAtMs) {
+    if (forcedSuccess === undefined && nowMs < activeQuest.endsAtMs) {
       return { ok: false, reason: "Quest is still in progress." };
     }
 
@@ -1044,7 +1090,7 @@ export const mockGameService: GameService = {
     const successChance = activeQuest.successChanceAtStart;
     const chanceBreakdown =
       activeQuest.chanceBreakdownSnapshot ?? calculateQuestChanceBreakdown(character, quest);
-    const success = Math.random() * 100 <= successChance;
+    const success = typeof forcedSuccess === "boolean" ? forcedSuccess : Math.random() * 100 <= successChance;
 
     const baseCharacter = {
       ...character,
@@ -1087,7 +1133,8 @@ export const mockGameService: GameService = {
           successChance,
           healthDelta,
           chanceBreakdown,
-          summary: `Quest failed (${successChance}%). You recovered ${consolationGold}g and gained minor experience.`,
+          summary:
+            summaryOverride ?? `Quest failed (${successChance}%). You recovered ${consolationGold}g and gained minor experience.`,
           rewards: {
             gold: consolationGold,
             xp: consolationXp,
@@ -1151,7 +1198,7 @@ export const mockGameService: GameService = {
         successChance,
         healthDelta,
         chanceBreakdown,
-        summary: summaryParts.join(" "),
+        summary: summaryOverride ?? summaryParts.join(" "),
         rewards: {
           gold: quest.reward.gold,
           xp: quest.reward.xp,
@@ -1339,7 +1386,7 @@ export const mockGameService: GameService = {
       },
     };
   },
-  resolveTowerWave: ({ character, floor, wave, committedItems }) => {
+  resolveTowerWave: ({ character, floor, wave, committedItems, liveBattle }) => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
@@ -1379,7 +1426,11 @@ export const mockGameService: GameService = {
     const enemyDamageMultiplier = hasOverlevelAdvantage ? 0.5 : 1;
     const combatStats = getCharacterCombatStats(character);
     const abilityBonuses = getPendingAbilityBonuses(character);
-    const playerDamagePerTurn = Math.max(1, Math.round((combatStats.damage + abilityBonuses.damageFlat) * playerDamageMultiplier));
+    const liveDamageBonus = liveBattle?.skillId ? 2 : 0;
+    const playerDamagePerTurn = Math.max(
+      1,
+      Math.round((combatStats.damage + abilityBonuses.damageFlat + liveDamageBonus) * playerDamageMultiplier),
+    );
     let runningHealth = character.health;
     let countered = 0;
     let triggered = 0;
@@ -1393,6 +1444,7 @@ export const mockGameService: GameService = {
       if (runningHealth <= 0) {
         break;
       }
+      const startingHealthForUnit = runningHealth;
       const enemyHealth = Math.max(
         1,
         unit.health ??
@@ -1411,13 +1463,38 @@ export const mockGameService: GameService = {
       const triggeredMechanicsForUnit: Array<{ id: string; name: string; icon: string; valuePerTurn: number }> = [];
       for (const mechanic of unit.mechanics ?? []) {
         const counterItemId = getCounterItemFromMechanic(mechanic);
-        const hasCounter = counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false;
+        const manualResponse = liveBattle?.responses?.find(
+          (entry) => entry.enemyId === unit.id && entry.mechanic === mechanic && entry.success,
+        );
+        const positionModifier = getLiveBattlePositionModifier(liveBattle?.position ?? "mid", mechanic);
+        const skillCountered = liveSkillCountersMechanic(liveBattle?.skillId, mechanic);
+        const braceCountered = !!liveBattle?.braceUsed && (mechanic.toLowerCase().includes("sweep") || mechanic.toLowerCase().includes("rush"));
+        const hasCounter =
+          (counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false) ||
+          !!manualResponse ||
+          skillCountered ||
+          braceCountered ||
+          positionModifier.bonusCounter;
         const mechanicName = mechanic.split(":")[0].trim();
         const { icon, severity } = getMechanicEventMeta(mechanic);
         const statusProfile = getMechanicStatusProfile(mechanic);
         if (hasCounter) {
           countered += 1;
-          lines.push(`${unit.name}: ${ITEM_BY_ID[counterItemId!]?.name ?? counterItemId} neutralized ${mechanic.split(":")[0]}.`);
+          const counterLabel =
+            manualResponse?.responseType === "move"
+              ? `${String(manualResponse.responseId ?? liveBattle?.position ?? "mid")} positioning`
+              : manualResponse?.responseType === "brace"
+                ? "Brace"
+                : manualResponse?.responseType === "skill"
+                  ? ABILITY_BY_ID[String(manualResponse.responseId ?? liveBattle?.skillId)]?.name ?? "class skill"
+                  : counterItemId
+                    ? ITEM_BY_ID[counterItemId]?.name ?? counterItemId
+                    : skillCountered
+                      ? ABILITY_BY_ID[liveBattle?.skillId ?? "ability-warrior-iron-will"]?.name ?? "class skill"
+                      : braceCountered
+                        ? "Brace"
+                        : `${liveBattle?.position ?? "mid"} positioning`;
+          lines.push(`${unit.name}: ${counterLabel} neutralized ${mechanic.split(":")[0]}.`);
           const key = `counter:${statusProfile.goodName}`;
           statusEffectMap[key] = {
             name: statusProfile.goodName,
@@ -1427,7 +1504,10 @@ export const mockGameService: GameService = {
           };
         } else {
           triggered += 1;
-          const valuePerTurn = severity === "high" ? 3 : severity === "medium" ? 2 : 1;
+          const valuePerTurn = Math.max(
+            0,
+            (severity === "high" ? 3 : severity === "medium" ? 2 : 1) + positionModifier.damageDelta - (liveBattle?.braceUsed ? 1 : 0),
+          );
           mechanicDamagePerTurn += valuePerTurn;
           lines.push(`${unit.name}: ${mechanicName} connected.`);
           triggeredMechanicsForUnit.push({
@@ -1438,8 +1518,16 @@ export const mockGameService: GameService = {
           });
         }
       }
-      const damageTaken = turnsToDefeat * (baseEnemyDamagePerTurn + mechanicDamagePerTurn);
+      const incomingPerTurn = baseEnemyDamagePerTurn + mechanicDamagePerTurn;
+      const damageTaken = turnsToDefeat * incomingPerTurn;
       runningHealth = Math.max(0, runningHealth - damageTaken);
+      const collapsedDuringBattle = runningHealth <= 0;
+      const survivedTurns = collapsedDuringBattle
+        ? Math.max(0, Math.floor((startingHealthForUnit - 1) / Math.max(1, incomingPerTurn)))
+        : turnsToDefeat;
+      const enemyHealthRemaining = collapsedDuringBattle
+        ? Math.max(1, enemyHealth - survivedTurns * playerDamagePerTurn)
+        : 0;
       for (const entry of triggeredMechanicsForUnit) {
         const key = `trigger:${entry.id}`;
         statusEffectMap[key] = {
@@ -1449,7 +1537,13 @@ export const mockGameService: GameService = {
           value: (statusEffectMap[key]?.value ?? 0) + entry.valuePerTurn * turnsToDefeat,
         };
       }
-      lines.push(`${unit.name}: defeated in ${turnsToDefeat} turns. Damage taken ${damageTaken}.`);
+      if (collapsedDuringBattle) {
+        lines.push(
+          `${unit.name}: the clash broke your line before the kill. ${enemyHealthRemaining} HP remained when the Tower seized you.`,
+        );
+      } else {
+        lines.push(`${unit.name}: defeated in ${turnsToDefeat} turns. Damage taken ${damageTaken}.`);
+      }
       enemyBattles.push({
         enemyId: unit.id,
         enemyName: unit.name,
@@ -1457,6 +1551,8 @@ export const mockGameService: GameService = {
         enemyRole: unit.role,
         enemyLevel: unit.level,
         enemyHealth,
+        enemyHealthRemaining,
+        defeated: !collapsedDuringBattle,
         turnsToDefeat,
         playerDamagePerTurn,
         damageTaken,
@@ -1465,7 +1561,9 @@ export const mockGameService: GameService = {
             mechanic: "Direct Clash",
             countered: false,
             positive: true,
-            resultText: `Enemy HP ${enemyHealth}. Defeated in ${turnsToDefeat} turns.`,
+            resultText: collapsedDuringBattle
+              ? `You were forced out mid-clash. Enemy HP remained at ${enemyHealthRemaining}.`
+              : `Enemy HP ${enemyHealth}. Defeated in ${turnsToDefeat} turns.`,
             icon: "sword-cross",
           },
           ...((unit.mechanics ?? []).length > 0
@@ -1473,7 +1571,19 @@ export const mockGameService: GameService = {
                 const battleEvents: NonNullable<TowerWaveOutcome["enemyBattles"]>[number]["events"] = [];
                 for (const mechanic of unit.mechanics ?? []) {
                   const counterItemId = getCounterItemFromMechanic(mechanic);
-                  const hasCounter = counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false;
+                  const manualResponse = liveBattle?.responses?.find(
+                    (entry) => entry.enemyId === unit.id && entry.mechanic === mechanic && entry.success,
+                  );
+                  const positionModifier = getLiveBattlePositionModifier(liveBattle?.position ?? "mid", mechanic);
+                  const skillCountered = liveSkillCountersMechanic(liveBattle?.skillId, mechanic);
+                  const braceCountered =
+                    !!liveBattle?.braceUsed && (mechanic.toLowerCase().includes("sweep") || mechanic.toLowerCase().includes("rush"));
+                  const hasCounter =
+                    (counterItemId ? (selectedItems[counterItemId] ?? 0) > 0 : false) ||
+                    !!manualResponse ||
+                    skillCountered ||
+                    braceCountered ||
+                    positionModifier.bonusCounter;
                   const mechanicName = mechanic.split(":")[0].trim();
                   const { icon } = getMechanicEventMeta(mechanic);
                   if (hasCounter) {
@@ -1482,7 +1592,17 @@ export const mockGameService: GameService = {
                       counterItemId,
                       countered: true,
                       positive: true,
-                      resultText: `${ITEM_BY_ID[counterItemId!]?.name ?? counterItemId} countered this mechanic.`,
+                      resultText: manualResponse
+                        ? `${
+                            manualResponse.responseType === "skill"
+                              ? ABILITY_BY_ID[String(manualResponse.responseId ?? liveBattle?.skillId)]?.name ?? "Skill"
+                              : manualResponse.responseType === "move"
+                                ? `${String(manualResponse.responseId ?? liveBattle?.position ?? "mid")} positioning`
+                                : manualResponse.responseType === "brace"
+                                  ? "Brace"
+                                  : ITEM_BY_ID[String(manualResponse.responseId ?? counterItemId)]?.name ?? counterItemId
+                          } countered this mechanic.`
+                        : `${ITEM_BY_ID[counterItemId!]?.name ?? counterItemId ?? "Live response"} countered this mechanic.`,
                       icon,
                     });
                   } else {
@@ -1523,6 +1643,8 @@ export const mockGameService: GameService = {
         new Set([...(character.knownTowerEnemyIds ?? []), ...waveUnits.map((unit) => unit.id)]),
       ),
     };
+    const collapseMessage =
+      "A hush of ancient mercy closes around you. The Tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again.";
     return {
       ok: true,
       character: nextCharacter,
@@ -1530,6 +1652,9 @@ export const mockGameService: GameService = {
         floorNumber: floor.floorNumber,
         wave,
         success,
+        collapsed: !success && runningHealth <= 0,
+        collapseMessage: !success && runningHealth <= 0 ? collapseMessage : undefined,
+        battlePosition: liveBattle?.position ?? "mid",
         healthDelta,
         countered,
         triggered,

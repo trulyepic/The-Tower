@@ -28,6 +28,12 @@ Guild Quest Board and Store remain active and are part of tower prep.
   - [x] Conquering a wave now records a per-wave mechanic result report (countered vs triggered)
   - [x] Conquering a wave now applies immediate HP + stamina + committed-item consumption changes
   - [x] Enemy cards + drops shown in wave stage, not immediately on first view
+  - [x] Floor 1 now supports a first live-response battle layer:
+    - [x] telegraphed mechanics
+    - [x] position choice
+    - [x] brace response
+    - [x] committed item timing
+    - [x] class-skill response hook
 
 - [x] Phase 3-4 runtime change
   - [x] Floor rewards/progression now occur on explicit floor finalization after all wave sections are cleared
@@ -50,6 +56,9 @@ Guild Quest Board and Store remain active and are part of tower prep.
 
 - [ ] Multiple main bosses on a single floor
 - [ ] Boss mechanics by class/weapon type
+- [ ] Extend the live-response battle layer beyond Floor 1
+- [ ] Add seal-driven live combat reactions
+- [ ] Add engraving-driven live combat modifiers
 - [ ] Floor modifiers (hazards, buffs, curses)
 - [ ] Consumable loadout selection before run
 - [ ] Team mode (optional far-future direction)
@@ -156,6 +165,7 @@ Goal: make the second floor teach restraint, anti-attrition preparation, and cor
 
 Reference:
 - [FLOOR_2_THORN_CORRIDOR.md](/Users/kin/web-rpg/docs/FLOOR_2_THORN_CORRIDOR.md)
+- [LIVE_BATTLE_SYSTEM.md](/Users/kin/web-rpg/docs/LIVE_BATTLE_SYSTEM.md)
 
 ## Quest <-> Tower Coupling (Current Rules)
 

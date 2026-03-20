@@ -100,6 +100,7 @@ export const InventoryScreen = ({
     hideRarity?: boolean;
     lines: string[];
   } | null>(null);
+  const [itemArtExpanded, setItemArtExpanded] = useState(false);
 
   useEffect(() => {
     if (!notice) {
@@ -415,7 +416,11 @@ export const InventoryScreen = ({
           {equippedWeapon ? (
             <View style={styles.equippedCard}>
               <View style={styles.equippedIconWrap}>
-                <GameItemIcon itemId={equippedWeapon.id} size={26} />
+                {equippedWeapon.image ? (
+                  <Image source={equippedWeapon.image} style={styles.equippedWeaponImage} resizeMode="contain" />
+                ) : (
+                  <GameItemIcon itemId={equippedWeapon.id} size={42} />
+                )}
               </View>
               <View style={styles.equippedMeta}>
                 <Text style={styles.equippedName}>{equippedWeapon.name}</Text>
@@ -519,7 +524,9 @@ export const InventoryScreen = ({
                     <Text style={styles.weaponName}>{item.name}</Text>
                     <View style={styles.badgesRow}>
                       <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
-                        <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{item.rarity.toUpperCase()}</Text>
+                        <Text style={[styles.rarityText, { color: rarityTheme.text }, item.rarity === "legendary" ? styles.legendaryTextGlow : null]}>
+                          {item.rarity.toUpperCase()}
+                        </Text>
                       </View>
                       {item.classRestriction ? (
                         <View style={styles.classPill}>
@@ -590,7 +597,9 @@ export const InventoryScreen = ({
                     <Text style={styles.weaponName}>{item.name}</Text>
                     <View style={styles.badgesRow}>
                       <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
-                        <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{item.rarity.toUpperCase()}</Text>
+                        <Text style={[styles.rarityText, { color: rarityTheme.text }, item.rarity === "legendary" ? styles.legendaryTextGlow : null]}>
+                          {item.rarity.toUpperCase()}
+                        </Text>
                       </View>
                     </View>
                     <Text style={styles.weaponOwned}>Owned x{amount} • Tap icon for details</Text>
@@ -783,7 +792,15 @@ export const InventoryScreen = ({
 
       </ScrollView>
       {itemInfoPanel ? (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setItemInfoPanel(null)}>
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setItemArtExpanded(false);
+            setItemInfoPanel(null);
+          }}
+        >
           <View style={styles.infoOverlay}>
             <View style={styles.infoModal}>
               <LinearGradient
@@ -794,9 +811,20 @@ export const InventoryScreen = ({
                 style={styles.cardGradient}
               />
               <View style={styles.infoHead}>
-                <View style={[styles.infoIconFrame, { borderColor: rarityThemeMap[itemInfoPanel.rarity].border }]}>
-                  <GameItemIcon itemId={itemInfoPanel.itemId} size={54} />
-                </View>
+                <Pressable
+                  onPress={() => {
+                    if (ITEM_BY_ID[itemInfoPanel.itemId]?.image) {
+                      setItemArtExpanded(true);
+                    }
+                  }}
+                  style={[styles.infoIconFrame, { borderColor: rarityThemeMap[itemInfoPanel.rarity].border }]}
+                >
+                  {ITEM_BY_ID[itemInfoPanel.itemId]?.image ? (
+                    <Image source={ITEM_BY_ID[itemInfoPanel.itemId]?.image} style={styles.infoArt} resizeMode="contain" />
+                  ) : (
+                    <GameItemIcon itemId={itemInfoPanel.itemId} size={82} />
+                  )}
+                </Pressable>
                 <View style={styles.infoHeadText}>
                   <Text style={styles.infoTitle}>{itemInfoPanel.title}</Text>
                   {!itemInfoPanel.hideRarity ? (
@@ -823,13 +851,49 @@ export const InventoryScreen = ({
                   </Text>
                 ))}
               </View>
-              <Pressable onPress={() => setItemInfoPanel(null)} style={styles.infoCloseWrap}>
+              <Pressable
+                onPress={() => {
+                  setItemArtExpanded(false);
+                  setItemInfoPanel(null);
+                }}
+                style={styles.infoCloseWrap}
+              >
                 <View style={styles.infoCloseButton}>
                   <Text style={styles.infoCloseText}>Close</Text>
                 </View>
               </Pressable>
             </View>
           </View>
+        </Modal>
+      ) : null}
+      {itemArtExpanded && itemInfoPanel && ITEM_BY_ID[itemInfoPanel.itemId]?.image ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setItemArtExpanded(false)}>
+          <Pressable style={styles.expandedArtOverlay} onPress={() => setItemArtExpanded(false)}>
+            <View style={styles.expandedArtCard}>
+              <Text style={styles.expandedArtTitle}>{itemInfoPanel.title}</Text>
+              <View
+                style={[
+                  styles.expandedArtRarityPill,
+                  {
+                    borderColor: rarityThemeMap[itemInfoPanel.rarity].border,
+                    backgroundColor: rarityThemeMap[itemInfoPanel.rarity].bg,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.expandedArtRarityText,
+                    { color: rarityThemeMap[itemInfoPanel.rarity].text },
+                    itemInfoPanel.rarity === "legendary" ? styles.legendaryTextGlow : null,
+                  ]}
+                >
+                  {itemInfoPanel.rarity.toUpperCase()}
+                </Text>
+              </View>
+              <Image source={ITEM_BY_ID[itemInfoPanel.itemId]?.image} style={styles.expandedArtImage} resizeMode="contain" />
+              <Text style={styles.expandedArtHint}>Tap anywhere to close</Text>
+            </View>
+          </Pressable>
         </Modal>
       ) : null}
       {consumableToast ? (
@@ -1026,14 +1090,19 @@ const styles = StyleSheet.create({
     gap: 9,
   },
   equippedIconWrap: {
-    width: 56,
-    height: 56,
+    width: 106,
+    height: 106,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#9f7f4b",
     backgroundColor: "rgba(26, 20, 36, 0.95)",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  equippedWeaponImage: {
+    width: "98%",
+    height: "98%",
   },
   equippedMeta: {
     flex: 1,
@@ -1131,6 +1200,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "800",
     letterSpacing: 0.4,
+  },
+  legendaryTextGlow: {
+    textShadowColor: "rgba(255, 204, 116, 0.7)",
+    textShadowRadius: 6,
   },
   classPill: {
     borderRadius: 999,
@@ -1368,13 +1441,17 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   infoIconFrame: {
-    width: 76,
-    height: 76,
+    width: 172,
+    height: 172,
     borderRadius: 13,
     borderWidth: 1,
     backgroundColor: "rgba(11, 18, 36, 0.84)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  infoArt: {
+    width: "92%",
+    height: "92%",
   },
   infoHeadText: {
     flex: 1,
@@ -1432,5 +1509,44 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 12,
     fontWeight: "800",
+  },
+  expandedArtOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(7, 8, 17, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+  },
+  expandedArtCard: {
+    width: "100%",
+    maxWidth: 760,
+    alignItems: "center",
+    gap: 12,
+  },
+  expandedArtTitle: {
+    color: "#fff0ca",
+    fontSize: 18,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  expandedArtRarityPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  expandedArtRarityText: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  expandedArtImage: {
+    width: "100%",
+    height: 420,
+  },
+  expandedArtHint: {
+    color: "#d6c29d",
+    fontSize: 11,
+    fontWeight: "700",
   },
 });

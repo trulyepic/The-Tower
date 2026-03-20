@@ -3,7 +3,7 @@ import { StyleSheet, View } from "react-native";
 interface ProgressBarProps {
   value: number;
   max: number;
-  variant?: "xp" | "mastery" | "chance" | "time";
+  variant?: "xp" | "mastery" | "chance" | "time" | "skill";
 }
 
 export const ProgressBar = ({ value, max, variant = "chance" }: ProgressBarProps) => {
@@ -25,6 +25,8 @@ export const ProgressBar = ({ value, max, variant = "chance" }: ProgressBarProps
         ? styles.variantMastery
         : variant === "time"
           ? styles.variantTime
+          : variant === "skill"
+            ? styles.variantSkill
           : chanceStyle.track;
   const fillStyle =
     variant === "xp"
@@ -33,6 +35,8 @@ export const ProgressBar = ({ value, max, variant = "chance" }: ProgressBarProps
         ? styles.fillMastery
         : variant === "time"
           ? styles.fillTime
+          : variant === "skill"
+            ? styles.fillSkill
           : chanceStyle.fill;
 
   return (
@@ -81,6 +85,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(116, 228, 173, 0.34)",
     backgroundColor: "rgba(13, 35, 24, 0.82)",
   },
+  variantSkill: {
+    borderColor: "rgba(149, 156, 255, 0.34)",
+    backgroundColor: "rgba(25, 23, 56, 0.82)",
+  },
   fill: {
     height: "100%",
     borderRadius: 999,
@@ -108,5 +116,8 @@ const styles = StyleSheet.create({
   },
   fillTime: {
     backgroundColor: "#62d99a",
+  },
+  fillSkill: {
+    backgroundColor: "#8f98ff",
   },
 });

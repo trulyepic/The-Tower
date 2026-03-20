@@ -44,3 +44,9 @@ After updating an asset:
 See:
 - [docs/ASSET_WORKFLOW.md](/Users/kin/web-rpg/docs/ASSET_WORKFLOW.md)
 
+## UI Guardrails
+
+Before changing an already-reviewed UI flow, check:
+- `docs/UI_GUARDRAILS.md`
+
+If a UI behavior has already been resolved with the user, preserve it unless the user explicitly asks to redesign it.

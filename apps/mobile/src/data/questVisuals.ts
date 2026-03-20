@@ -38,4 +38,19 @@ export const QUEST_BACKGROUND_ART: Record<string, QuestVisualTheme> = {
     sceneLabel: "Ancient Relay Core",
     overlay: ["rgba(23, 39, 68, 0.58)", "rgba(28, 26, 50, 0.74)", "rgba(10, 14, 26, 0.88)"],
   },
+  "quest-cinder-vulture-cull": {
+    backdrop: s3AssetWithFallback("game/quests/raid-bandit-hideout.png", require("../../assets/game/quests/raid-bandit-hideout.png")),
+    sceneLabel: "Cinder Gully Broodgrounds",
+    overlay: ["rgba(61, 28, 21, 0.58)", "rgba(35, 27, 45, 0.72)", "rgba(14, 12, 23, 0.86)"],
+  },
+  "quest-lamp-reliquary-descent": {
+    backdrop: s3AssetWithFallback("game/quests/seal-the-crypt.png", require("../../assets/game/quests/seal-the-crypt.png")),
+    sceneLabel: "Hollow Lamp Reliquary",
+    overlay: ["rgba(53, 36, 19, 0.54)", "rgba(28, 27, 48, 0.76)", "rgba(12, 11, 22, 0.88)"],
+  },
+  "hunt-leviathor-coiling-deep": {
+    backdrop: s3AssetWithFallback("game/quests/retrieve-ancient-relay-core.png", require("../../assets/game/quests/retrieve-ancient-relay-core.png")),
+    sceneLabel: "The Coiling Deep",
+    overlay: ["rgba(16, 39, 70, 0.52)", "rgba(28, 23, 48, 0.76)", "rgba(8, 12, 24, 0.9)"],
+  },
 };

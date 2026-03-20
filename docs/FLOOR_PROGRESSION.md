@@ -78,6 +78,8 @@ If a floor does not clearly advance those six things, it is not ready.
   - `Briar Resin`
   - `Thorn Salve`
   - low-cost early E-rank guild intel
+  - `Tamsin Vale` as the first floor-specific guild-side story contact
+  - first Tamsin branch that changes how she reads the player before the board contract fully settles
 - Reward step:
   - first stronger class weapon chase
   - `Embershard Sigil`
@@ -104,6 +106,9 @@ Before we call Floor 2 complete, we need these in order:
      - weaknesses
      - optional drops
      - hidden support aids
+   - side-story progression should stay staged:
+     - Tamsin Phase I complete for now
+     - Aldric v1.1 next: urgency presentation + first dark-path breadcrumb
 
 3. `Tower identity`
    - roster, mechanics, and rewards should all reinforce:

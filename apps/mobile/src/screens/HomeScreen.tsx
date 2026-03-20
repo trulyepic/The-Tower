@@ -17,12 +17,14 @@ import { TITLE_BY_ID } from "../data/titles";
 import { TITLE_ICON_ART } from "../data/titleVisuals";
 import { CURRENCY_SPRITES, QUEST_TYPE_SPRITE, getAvatarSprite } from "../data/uiSprites";
 import { getBuffAccent } from "../lib/itemVisuals";
+import { getAbilityAccent, getAbilityArtSource, getAbilityKindAccent } from "../lib/abilityVisuals";
 import {
   getPendingAbilityBonuses,
   getPendingMatchedSkillCombos,
   SkillPairCombo,
   getAbilityCooldownRemainingSeconds,
   getClassAbility,
+  getLiveBattleSkillProfile,
   getSkillResourceLabel,
   getUnlockedActiveSkills,
   getUnlockedPassiveAbilities,
@@ -57,76 +59,6 @@ const titleRarityThemeMap = {
   legendary: { border: "#cb8e44", bg: "rgba(126, 76, 28, 0.42)", text: "#ffd08c" },
 } as const;
 
-const SKILL_THEME_BY_ID: Record<
-  string,
-  {
-    border: string;
-    bg: string;
-    activeBorder: string;
-    activeBg: string;
-    icon: string;
-    label: string;
-    iconBorder: string;
-    iconBg: string;
-    iconActiveBorder: string;
-    iconActiveBg: string;
-    state: string;
-  }
-> = {
-  "ability-warrior-iron-will": {
-    border: "#e3b36d",
-    bg: "rgba(104, 67, 28, 0.93)",
-    activeBorder: "#ffd07d",
-    activeBg: "rgba(129, 84, 31, 0.95)",
-    icon: "#ffd78b",
-    label: "#ffd6a2",
-    iconBorder: "#d8a15e",
-    iconBg: "rgba(106, 67, 28, 0.9)",
-    iconActiveBorder: "#ffd07d",
-    iconActiveBg: "rgba(137, 88, 33, 0.96)",
-    state: "#ffdca5",
-  },
-  "ability-warrior-bulwark-oath": {
-    border: "#79d4ff",
-    bg: "rgba(26, 61, 98, 0.93)",
-    activeBorder: "#a7e7ff",
-    activeBg: "rgba(27, 84, 133, 0.95)",
-    icon: "#9fe4ff",
-    label: "#aedfff",
-    iconBorder: "#63bce8",
-    iconBg: "rgba(30, 74, 116, 0.9)",
-    iconActiveBorder: "#9fe4ff",
-    iconActiveBg: "rgba(33, 98, 151, 0.96)",
-    state: "#a9e8ff",
-  },
-  "ability-warrior-bloodrush": {
-    border: "#ff8f93",
-    bg: "rgba(102, 32, 44, 0.92)",
-    activeBorder: "#ffb2b5",
-    activeBg: "rgba(130, 38, 53, 0.95)",
-    icon: "#ffb5b8",
-    label: "#ffc4c7",
-    iconBorder: "#ef8088",
-    iconBg: "rgba(111, 34, 48, 0.9)",
-    iconActiveBorder: "#ffb4b8",
-    iconActiveBg: "rgba(143, 42, 60, 0.96)",
-    state: "#ffc0c4",
-  },
-  "ability-warrior-steel-rhythm": {
-    border: "#b9a4ff",
-    bg: "rgba(60, 42, 108, 0.92)",
-    activeBorder: "#d0c2ff",
-    activeBg: "rgba(81, 56, 139, 0.95)",
-    icon: "#d6c9ff",
-    label: "#dcccff",
-    iconBorder: "#a78de7",
-    iconBg: "rgba(74, 53, 126, 0.9)",
-    iconActiveBorder: "#d0c2ff",
-    iconActiveBg: "rgba(92, 64, 156, 0.96)",
-    state: "#dccfff",
-  },
-};
-
 const getAffinityTitle = (affinity: number): string => {
   if (affinity >= 35) return "Aetherbound Grace";
   if (affinity <= -35) return "Abyssworn Oath";
@@ -141,6 +73,41 @@ const getAffinityTheme = (affinity: number): { accent: string; glow: string; lab
     return { accent: "#ff8f98", glow: "rgba(255, 143, 152, 0.34)", label: "#ffb4bb" };
   }
   return { accent: "#e8c77a", glow: "rgba(232, 199, 122, 0.28)", label: "#f2dca8" };
+};
+
+const getPassiveCategoryLabel = (pathGroup?: string | null): string => {
+  if (pathGroup === "knight") {
+    return "Knight Passive";
+  }
+  if (pathGroup === "berserker") {
+    return "Berserker Passive";
+  }
+  return "Shared Passive";
+};
+
+const AbilityIconGlyph = ({
+  abilityId,
+  iconName,
+  size,
+  color,
+  imageStyle,
+}: {
+  abilityId: string;
+  iconName: keyof typeof MaterialCommunityIcons.glyphMap;
+  size: number;
+  color: string;
+  imageStyle?: object;
+}) => {
+  const artSource = getAbilityArtSource(abilityId);
+  return artSource ? (
+    <Image
+      source={artSource}
+      style={[{ width: Math.round(size * 1.38), height: Math.round(size * 1.38) }, imageStyle]}
+      resizeMode="contain"
+    />
+  ) : (
+    <MaterialCommunityIcons name={iconName} size={size} color={color} />
+  );
 };
 
 export const HomeScreen = ({
@@ -167,6 +134,7 @@ export const HomeScreen = ({
   const [comboInfoPanel, setComboInfoPanel] = useState<SkillPairCombo | null>(null);
   const [levelDetailsOpen, setLevelDetailsOpen] = useState(false);
   const [weaponDetailsOpen, setWeaponDetailsOpen] = useState(false);
+  const [weaponArtExpanded, setWeaponArtExpanded] = useState(false);
   const activeClass = classes.find((classDef) => classDef.id === character.classId) ?? null;
   const stats = getScaledCoreAttributes(character);
   const equippedWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : undefined;
@@ -223,7 +191,8 @@ export const HomeScreen = ({
   const affinityScore = Math.max(-100, Math.min(100, character.affinity ?? 0));
   const affinityTitle = getAffinityTitle(affinityScore);
   const affinityTheme = getAffinityTheme(affinityScore);
-  const affinityMarkerLeft = `${((affinityScore + 100) / 200) * 100}%` as `${number}%`;
+  const affinityMarkerPercent = Math.max(3, Math.min(97, ((affinityScore + 100) / 200) * 100));
+  const affinityMarkerLeft = `${affinityMarkerPercent}%` as `${number}%`;
   const levelXpPercent = Math.round(
     (character.progression.xpInLevel / Math.max(1, character.progression.xpToNextLevel)) * 100,
   );
@@ -390,7 +359,15 @@ export const HomeScreen = ({
                   style={[styles.mainWeaponCard, styles.licenseWeaponCard]}
                 >
                   <View style={styles.mainWeaponIconWrap}>
-                    {equippedWeapon ? <GameItemIcon itemId={equippedWeapon.id} size={42} /> : <View style={styles.emptyWeaponSlotLarge} />}
+                    {equippedWeapon ? (
+                      equippedWeapon.image ? (
+                        <Image source={equippedWeapon.image} style={styles.mainWeaponImage} resizeMode="contain" />
+                      ) : (
+                        <GameItemIcon itemId={equippedWeapon.id} size={54} />
+                      )
+                    ) : (
+                      <View style={styles.emptyWeaponSlotLarge} />
+                    )}
                   </View>
                   <View style={styles.mainWeaponText}>
                     <Text
@@ -636,7 +613,9 @@ export const HomeScreen = ({
                       backgroundColor: affinityTheme.glow,
                     },
                   ]}
-                />
+                >
+                  <View style={[styles.affinityMarkerCore, { backgroundColor: affinityTheme.accent }]} />
+                </View>
               </View>
               <View style={styles.affinityScoreRow}>
                 <Text style={styles.affinityScoreText}>Affinity Score: {affinityScore > 0 ? `+${affinityScore}` : affinityScore}</Text>
@@ -655,23 +634,24 @@ export const HomeScreen = ({
                 ]}
               >
                 <View style={styles.skillMiniLeft}>
-                  <View
-                    style={[
-                      styles.abilityIconWrap,
-                      styles.licenseSkillIconWrap,
-                      {
-                        borderColor: "transparent",
-                        backgroundColor: "transparent",
-                      },
-                      skillActive ? styles.abilityIconWrapActive : null,
-                    ]}
-                  >
-                    <MaterialCommunityIcons
-                      name={classAbility.icon as keyof typeof MaterialCommunityIcons.glyphMap}
-                      size={22}
-                      color={SKILL_THEME_BY_ID[classAbility.id]?.icon ?? "#83e9ff"}
-                    />
-                  </View>
+                      <View
+                        style={[
+                          styles.abilityIconWrap,
+                          styles.licenseSkillIconWrap,
+                          {
+                            borderColor: getAbilityAccent(classAbility.id).border,
+                            backgroundColor: getAbilityAccent(classAbility.id).background,
+                          },
+                          skillActive ? styles.abilityIconWrapActive : null,
+                        ]}
+                      >
+                        <AbilityIconGlyph
+                          abilityId={classAbility.id}
+                          iconName={classAbility.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                          size={25}
+                          color={getAbilityAccent(classAbility.id).icon}
+                        />
+                      </View>
                   <View>
                     <Text style={styles.skillMiniName}>{classAbility.name}</Text>
                   </View>
@@ -699,16 +679,17 @@ export const HomeScreen = ({
                           styles.abilityIconWrap,
                           styles.licenseSkillIconWrap,
                           {
-                            borderColor: "transparent",
-                            backgroundColor: "transparent",
+                            borderColor: getAbilityAccent(ability.id).border,
+                            backgroundColor: getAbilityAccent(ability.id).background,
                           },
                           abilityActive ? styles.abilityIconWrapActive : null,
                         ]}
                       >
-                        <MaterialCommunityIcons
-                          name={ability.icon as keyof typeof MaterialCommunityIcons.glyphMap}
-                          size={20}
-                          color={SKILL_THEME_BY_ID[ability.id]?.icon ?? "#9edbff"}
+                        <AbilityIconGlyph
+                          abilityId={ability.id}
+                          iconName={ability.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                          size={24}
+                          color={getAbilityAccent(ability.id).icon}
                         />
                       </View>
                       <View>
@@ -748,23 +729,38 @@ export const HomeScreen = ({
                 <Pressable
                   key={`passive-slot-${ability.id}`}
                   onPress={() => openPassivePanel(ability.id)}
-                  style={[styles.skillMiniBadge, styles.skillMiniBadgeGridItem, equipped ? styles.passiveMiniBadgeActive : null]}
+                  style={[
+                    styles.skillMiniBadge,
+                    styles.skillMiniBadgeGridItem,
+                    styles.licenseSkillMiniBadge,
+                    equipped ? styles.passiveMiniBadgeActive : null,
+                  ]}
                 >
                   <View style={styles.skillMiniLeft}>
-                    <View style={[styles.abilityIconWrap, equipped ? styles.passiveIconWrapActive : null]}>
-                      <MaterialCommunityIcons
-                        name={ability.icon as keyof typeof MaterialCommunityIcons.glyphMap}
-                        size={20}
-                        color={equipped ? "#d3ffd0" : "#a8c8f7"}
+                    <View
+                      style={[
+                        styles.abilityIconWrap,
+                        styles.licenseSkillIconWrap,
+                        {
+                          borderColor: getAbilityKindAccent(ability).border,
+                          backgroundColor: getAbilityKindAccent(ability).background,
+                        },
+                        equipped ? styles.passiveIconWrapActive : null,
+                      ]}
+                    >
+                      <AbilityIconGlyph
+                        abilityId={ability.id}
+                        iconName={ability.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                        size={24}
+                        color={getAbilityKindAccent(ability).icon}
                       />
                     </View>
                     <View>
-                      <Text style={styles.skillMiniLabel}>Passive Ability</Text>
+                      <Text style={[styles.skillMiniLabel, { color: getAbilityKindAccent(ability).label }]}>
+                        {getPassiveCategoryLabel(ability.pathGroup)}
+                      </Text>
                       <Text style={styles.skillMiniName}>{ability.name}</Text>
                     </View>
-                  </View>
-                  <View style={styles.skillMiniRight}>
-                    <Text style={styles.skillMiniMeta}>{equipped ? "EQUIPPED" : "NOT EQUIPPED"}</Text>
                   </View>
                 </Pressable>
               );
@@ -1089,7 +1085,10 @@ export const HomeScreen = ({
         visible={weaponDetailsOpen}
         animationType="fade"
         transparent
-        onRequestClose={() => setWeaponDetailsOpen(false)}
+        onRequestClose={() => {
+          setWeaponArtExpanded(false);
+          setWeaponDetailsOpen(false);
+        }}
       >
         <View style={styles.skillModalBackdrop}>
           <View style={styles.skillModalCard}>
@@ -1107,7 +1106,12 @@ export const HomeScreen = ({
                     <MaterialCommunityIcons name="sword-cross" size={14} color="#ffe0a4" />
                     <Text style={styles.abilityBannerText}>Weapon Record</Text>
                   </View>
-                  <Pressable onPress={() => setWeaponDetailsOpen(false)}>
+                  <Pressable
+                    onPress={() => {
+                      setWeaponArtExpanded(false);
+                      setWeaponDetailsOpen(false);
+                    }}
+                  >
                     <MaterialCommunityIcons name="close-circle" size={20} color="#f1d8a8" />
                   </Pressable>
                 </View>
@@ -1118,13 +1122,20 @@ export const HomeScreen = ({
                   </View>
                 </View>
                 <View style={styles.weaponDialogHero}>
-                  <View style={styles.weaponDialogArtFrame}>
+                  <Pressable
+                    style={styles.weaponDialogArtFrame}
+                    onPress={() => {
+                      if (equippedWeapon.image) {
+                        setWeaponArtExpanded(true);
+                      }
+                    }}
+                  >
                     {equippedWeapon.image ? (
                       <Image source={equippedWeapon.image} style={styles.weaponDialogArt} resizeMode="contain" />
                     ) : (
                       <GameItemIcon itemId={equippedWeapon.id} size={72} />
                     )}
-                  </View>
+                  </Pressable>
                   <View style={styles.weaponDialogMetaCol}>
                     <Text style={styles.weaponDialogMeta}>Required Level {equippedWeapon.requiredLevel ?? 1}</Text>
                     <Text style={styles.weaponDialogMeta}>Proficiency {combat.weaponProficiencyPercent}%</Text>
@@ -1161,6 +1172,22 @@ export const HomeScreen = ({
           </View>
         </View>
       </Modal>
+      {weaponArtExpanded && equippedWeapon?.image ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setWeaponArtExpanded(false)}>
+          <Pressable style={styles.expandedArtOverlay} onPress={() => setWeaponArtExpanded(false)}>
+            <View style={styles.expandedArtCard}>
+              <Text style={styles.expandedArtTitle}>{equippedWeapon.name}</Text>
+              <View style={styles.expandedArtRarityPill}>
+                <Text style={[styles.expandedArtRarityText, equippedWeapon.rarity === "legendary" ? styles.legendaryTextGlow : null]}>
+                  {equippedWeapon.rarity.toUpperCase()}
+                </Text>
+              </View>
+              <Image source={equippedWeapon.image} style={styles.expandedArtImage} resizeMode="contain" />
+              <Text style={styles.expandedArtHint}>Tap anywhere to close</Text>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
       <Modal
         visible={skillPanelOpen || Boolean(abilityPanelState)}
         animationType="fade"
@@ -1188,8 +1215,9 @@ export const HomeScreen = ({
             <View style={styles.abilityHead}>
               <View style={styles.abilityHeadLeft}>
                 <View style={[styles.abilityIconWrap, panelKind === "skill" && panelIsCurrentSkill && skillActive ? styles.abilityIconWrapActive : null]}>
-                  <MaterialCommunityIcons
-                    name={panelAbility.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                  <AbilityIconGlyph
+                    abilityId={panelAbility.id}
+                    iconName={panelAbility.icon as keyof typeof MaterialCommunityIcons.glyphMap}
                     size={24}
                     color="#ffd895"
                   />
@@ -1198,11 +1226,22 @@ export const HomeScreen = ({
               </View>
             </View>
             <Text style={styles.abilityDesc}>{panelAbility.description}</Text>
+            {(() => {
+              const liveProfile = getLiveBattleSkillProfile(panelAbility.id);
+              return liveProfile ? <Text style={styles.abilityStatusText}>{liveProfile.effectDetail}</Text> : null;
+            })()}
             <View style={styles.abilityInfoRow}>
               <Text style={[styles.abilityInfoText, styles.abilityInfoCost]}>⚡ {skillResourceLabel} Cost {panelAbility.focusCost}</Text>
               <Text style={[styles.abilityInfoText, styles.abilityInfoCooldown]}>⏱ CD {panelAbility.cooldownSeconds}s</Text>
               <Text style={[styles.abilityInfoText, styles.abilityInfoBoost]}>
-                🎯 +{panelAbility.bonuses.questSuccessFlat ?? 0}% Quest / 🗼 +{panelAbility.bonuses.towerSuccessFlat ?? 0}% Tower
+                {(() => {
+                  const liveProfile = getLiveBattleSkillProfile(panelAbility.id);
+                  return (panelAbility.kind ?? "skill") === "passive"
+                    ? `ATK +${panelAbility.bonuses.damageFlat ?? 0} • CRIT +${panelAbility.bonuses.critFlat ?? 0}% • SPD +${panelAbility.bonuses.speedFlat ?? 0}`
+                    : liveProfile
+                      ? `Live Battle • ${liveProfile.effectLabel}`
+                      : "Live Battle Utility";
+                })()}
               </Text>
             </View>
             {panelKind === "passive" ? (
@@ -1951,17 +1990,24 @@ const styles = StyleSheet.create({
   },
   affinityMarker: {
     position: "absolute",
-    top: 1,
-    marginLeft: -8,
-    width: 14,
-    height: 14,
+    top: -1,
+    marginLeft: -10,
+    width: 18,
+    height: 18,
     borderRadius: 999,
-    borderWidth: 2,
+    borderWidth: 3,
     shadowColor: "#f4d9a8",
-    shadowOpacity: 0.45,
-    shadowRadius: 5,
+    shadowOpacity: 0.75,
+    shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
-    elevation: 5,
+    elevation: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  affinityMarkerCore: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
   },
   affinityScoreRow: {
     flexDirection: "row",
@@ -2012,14 +2058,19 @@ const styles = StyleSheet.create({
     minHeight: 84,
   },
   mainWeaponIconWrap: {
-    width: 58,
-    height: 58,
+    width: 106,
+    height: 106,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#aa8650",
     backgroundColor: "rgba(28, 20, 39, 0.88)",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  mainWeaponImage: {
+    width: "98%",
+    height: "98%",
   },
   mainWeaponText: {
     flex: 1,
@@ -2421,6 +2472,52 @@ const styles = StyleSheet.create({
     width: 86,
     height: 86,
   },
+  expandedArtOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(7, 8, 17, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+  },
+  expandedArtCard: {
+    width: "100%",
+    maxWidth: 760,
+    alignItems: "center",
+    gap: 12,
+  },
+  expandedArtTitle: {
+    color: "#fff0ca",
+    fontSize: 18,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  expandedArtRarityPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d48d43",
+    backgroundColor: "rgba(35, 23, 13, 0.78)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  expandedArtRarityText: {
+    color: "#ffd89a",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  expandedArtImage: {
+    width: "100%",
+    height: 420,
+  },
+  expandedArtHint: {
+    color: "#d6c29d",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  legendaryTextGlow: {
+    textShadowColor: "rgba(255, 204, 116, 0.7)",
+    textShadowRadius: 6,
+  },
   weaponDialogMetaCol: {
     flex: 1,
     gap: 4,
@@ -2529,16 +2626,18 @@ const styles = StyleSheet.create({
     minHeight: 62,
   },
   licenseSkillMiniBadge: {
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    paddingHorizontal: 2,
+    width: "auto",
+    minHeight: 44,
+    paddingHorizontal: 4,
     paddingVertical: 4,
-    minHeight: 40,
+    gap: 6,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
   },
   licenseSkillIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 0,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
   },
   skillMiniBadgeActive: {
     shadowColor: "#f4ce8f",
@@ -2585,7 +2684,7 @@ const styles = StyleSheet.create({
   abilityMiniGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: 4,
   },
   skillMiniLeft: {
     flexDirection: "row",

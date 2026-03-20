@@ -143,6 +143,45 @@ Floor 2 is supported by early E-rank board work.
   - danger-focused support quest
   - teaches the player that Floor 2 prep itself is already more demanding than Floor 1 prep
 
+### Floor 2 Story Contact
+
+#### Tamsin Vale
+- title:
+  - `Thorn Runner`
+- role:
+  - corridor salvage scout
+  - recovers snagged satchels, cut route-lines, and abandoned climb records from thorn lanes
+- first function:
+  - becomes available through the guild once the player is truly Floor 2-ready
+  - posts a special Quest Board contract instead of interrupting the climb directly
+  - first guild interaction asks what kind of runner you are before she fully trusts you with thorn-lane work
+- tone:
+  - practical
+  - tired
+  - unimpressed by bravado
+  - respects preparation over speeches
+
+#### First Tamsin Branch
+- `I'll bring it back clean`
+  - Tamsin reads the player as steady and professional
+  - improves disposition
+  - points back to the Quest Board as proper corridor work
+- `Just mark the pay`
+  - Tamsin still offers the contract
+  - lowers disposition
+  - establishes a colder read without hard-locking the thread
+
+#### First Tamsin Quest
+- `Tamsin's Snagline Recovery`
+- purpose:
+  - make Floor 2 feel connected to the living guild world
+  - reinforce rope / torch / thorn-salve preparation
+  - offer an alternate `Floor 2` intel unlock path through board work
+- follow-up:
+  - after the board clear, the player returns to Tamsin once in the NPC Hall
+  - Tamsin reviews what the recovered satchel and broken snagline revealed about the lane
+  - this closes the thread cleanly instead of leaving the NPC state inert
+
 ## Item Family
 
 ### Briar Resin

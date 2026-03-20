@@ -8,6 +8,7 @@ interface HealthMeterProps {
   meta?: string;
   compact?: boolean;
   bare?: boolean;
+  hideValues?: boolean;
   containerStyle?: ViewStyle;
 }
 
@@ -71,6 +72,7 @@ export const HealthMeter = ({
   meta,
   compact = false,
   bare = false,
+  hideValues = false,
   containerStyle,
 }: HealthMeterProps) => {
   const percent = Math.max(0, Math.min(100, Math.round((current / Math.max(1, max)) * 100)));
@@ -92,9 +94,7 @@ export const HealthMeter = ({
         <View style={[styles.statePill, state.pill]}>
           <Text style={styles.stateText}>{state.label}</Text>
         </View>
-        <Text style={[styles.value, state.value, compact ? styles.valueCompact : null]}>
-          {current}/{max}
-        </Text>
+        <Text style={[styles.value, state.value, compact ? styles.valueCompact : null]}>{hideValues ? "???/???" : `${current}/${max}`}</Text>
       </View>
       <View style={[styles.track, state.track, compact ? styles.trackCompact : null, bare ? styles.trackBare : null]}>
         <View style={[styles.fill, state.fill, { width: `${percent}%` }]} />

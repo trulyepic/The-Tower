@@ -35,7 +35,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "Guild ledgers say the Ash Rats were once ordinary vermin that nested around the first gate. After years of breathing ember soot and feeding on failed climbers' refuse, they turned lean, feverish, and cruel. New adventurers learn quickly that the Tower's smallest mouths are often the first to taste blood.",
           mechanics: [
-            "Poison Bite: applies poison drain each wave. Counter supply: Antitoxin Vial.",
+            "Poison Bite: applies poison drain each wave. Counter with Antitoxin Vial.",
             "Pack Rush: swarm pressure lowers stability if your speed is low.",
           ],
         },
@@ -52,7 +52,7 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "Dust Crawlers move beneath the ash like living splinters of the floor itself. Old porters claim they were born from the Tower's discarded shell and taught to strike the feet of anyone rash enough to run without a torch.",
           mechanics: [
-            "Burrow Ambush: opening strike spikes damage. Counter supply: Torch.",
+            "Burrow Ambush: opening strike spikes damage. Counter with Torch.",
           ],
         },
       ],
@@ -70,8 +70,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "The Gate Sentinel stands where the first vows of every climber are tested. Some guild masters teach that it is less a machine than a remnant oath given form, a ward left behind to judge whether a novice can force a path through fear.",
           mechanics: [
-            "Fortress Bulwark: suppresses your damage phase. Counter supply: Lockpick.",
-            "Crushing Sweep: heavy control hit. Counter supply: Guard Tonic.",
+            "Fortress Bulwark: suppresses your damage phase. Counter with Lockpick.",
+            "Crushing Sweep: heavy control hit. Counter with Guard Tonic.",
           ],
         },
       ],
@@ -89,8 +89,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "The Warden of Sparks is remembered in campfire rumor as the first true sign that the Tower is awake. It gathers ash, light, and static into a burning will, and many climbers believe its crackling halo marks the point where Floor 1 stops being a trial and becomes a sentence.",
           mechanics: [
-            "Arc Overcharge: burst arcs can collapse your wave chance. Counter supply: Grounding Tonic.",
-            "Spark Field: continuous shock attrition between phases. Counter supply: Ward Charm.",
+            "Arc Overcharge: burst arcs can collapse your wave chance. Counter with Grounding Tonic.",
+            "Spark Field: continuous shock attrition between phases. Counter with Ward Charm.",
           ],
         },
       ],
@@ -149,8 +149,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "By the second floor, the Tower stops testing courage and starts testing restraint. Thorn Vipers are said to have grown from roots watered by old blood, their bodies weaving through the corridor walls as if the brambles themselves wished to hunt.",
           mechanics: [
-            "Venom Thorn: layered thorn poison and bleed. Counter supply: Thorn Salve.",
-            "Coil Snare: binds movement and drags longer fights. Counter supply: Rope.",
+            "Venom Thorn: layered thorn poison and bleed. Counter with Thorn Salve.",
+            "Coil Snare: binds movement and drags longer fights. Counter with Rope.",
           ],
         },
         {
@@ -166,8 +166,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "Needle Imps are not born so much as peeled from the bramble canopy. They chatter in half-heard voices and delight in driving climbers into wasteful panic, making the corridor feel narrower than it truly is.",
           mechanics: [
-            "Needle Volley: repeated chip barrage that worsens attrition. Counter supply: Guard Tonic.",
-            "Flash Skitter: darts through bramble shade and punishes blind swings. Counter supply: Torch.",
+            "Needle Volley: repeated chip barrage that worsens attrition. Counter with Guard Tonic.",
+            "Flash Skitter: darts through bramble shade and punishes blind swings. Counter with Torch.",
           ],
         },
       ],
@@ -185,8 +185,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "The Briar Butcher is feared among low-rank survivors because it behaves like a jailer that remembers its trade. Hooks, roots, and dragged bodies all feature in the stories told by those who fled the corridor before it closed around them.",
           mechanics: [
-            "Hook Rend: opens deep bleeding wounds. Counter supply: Thorn Salve.",
-            "Bramble Lariat: drags prey into hazard lanes. Counter supply: Rope.",
+            "Hook Rend: opens deep bleeding wounds. Counter with Thorn Salve.",
+            "Bramble Lariat: drags prey into hazard lanes. Counter with Rope.",
           ],
         },
       ],
@@ -204,8 +204,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           lore:
             "Some archivists insist the Spine Matron was once a living altar, turned feral when the Tower's lower veins split open. Whether that tale is true or not, every vine on the floor seems to answer her breathing, and every wound she opens tries to bloom wider.",
           mechanics: [
-            "Thorn Cage: binds the arena and turns every opening into bleed pressure. Counter supply: Thorn Salve.",
-            "Heartseed Pulse: corridor pain suppresses recovery and feeds the floor. Counter supply: Ward Charm.",
+            "Thorn Cage: binds the arena and turns every opening into bleed pressure. Counter with Thorn Salve.",
+            "Heartseed Pulse: corridor pain suppresses recovery and feeds the floor. Counter with Ward Charm.",
           ],
         },
       ],

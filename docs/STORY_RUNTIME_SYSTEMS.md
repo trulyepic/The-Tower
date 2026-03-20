@@ -3,6 +3,18 @@
 ## Purpose
 This document defines the first implementation slice of dynamic story runtime features tied to tower climbing.
 
+## Affinity Runtime Rule
+
+- Affinity runs from `-100` to `100`.
+- `-100` to `-90` is treated as extreme evil / `Abyssworn`.
+- `90` to `100` is treated as extreme good / `Aetherbound`.
+- When a narrative choice is tagged as `good` or `evil`, the opposite extreme should not be shown to the player.
+- Neutral choices remain visible unless a later questline defines a stricter lock.
+- Current live choice-lock coverage:
+  - Aldric plea
+  - Lyra satchel resolution
+  - Tamsin's first branch
+
 ## 1) Floor Event Encounters
 
 ### Goal
@@ -172,6 +184,8 @@ Make the world feel active by showing that other adventurers are also climbing.
     - [x] `Restore Shrine Wards` -> Floor 1 intel
     - [x] `Harvest Briar Resin` -> Floor 2 intel
     - [x] Lyra favor route -> Floor 1 intel
+    - [x] `Tamsin's Snagline Recovery` -> Floor 2 intel
+  - [x] early Floor 2 NPC branch baseline through Tamsin's first guild interaction
   - [ ] add higher-floor pricing bands while keeping Floors 1-5 inexpensive
 - [ ] Rival NPC direct encounters inside tower floors.
 - [ ] Rival sabotage/help events tied to affinity and choices.

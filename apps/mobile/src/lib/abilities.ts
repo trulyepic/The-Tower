@@ -23,7 +23,7 @@ const isAbilityUnlocked = (character: CharacterState, ability: ClassAbilityDefin
   if (character.warriorPathChoice) {
     return character.warriorPathChoice === ability.pathGroup;
   }
-  return character.progression.level >= 8;
+  return false;
 };
 
 export const getUnlockedClassAbilities = (character: CharacterState): ClassAbilityDefinition[] =>
@@ -108,6 +108,310 @@ export const getAbilityComboProfile = (character: CharacterState) => {
 
 export const getSkillResourceLabel = (classId: BaseClassId): string =>
   "Focus";
+
+export type LiveBattleSkillProfile = {
+  target: "self";
+  effectId: string;
+  effectLabel: string;
+  effectDetail: string;
+  effectIcon: string;
+  effectTone: "good" | "neutral";
+  cooldownSeconds: number;
+  focusCost: number;
+  initiativeBonus: number;
+  attackBonus: number;
+  critBonus: number;
+  mitigationFlat: number;
+  speedBonus: number;
+  durationSeconds: number;
+  guardBonusFlat: number;
+  statusSeverityReductionFlat: number;
+  counterBonusDamageFlat: number;
+  woundedTargetDamageFlat: number;
+  defensePenaltyFlat: number;
+};
+
+export type PassiveBattleProfile = {
+  id: string;
+  label: string;
+  detail: string;
+  guardBonusFlat: number;
+  attackConsistencyFlat: number;
+  pressureResistFlat: number;
+  statusSeverityReductionFlat: number;
+  counterBonusDamageFlat: number;
+  woundedTargetDamageFlat: number;
+  postCritTempoFlat: number;
+  postKillTempoFlat: number;
+  frenzyAttackBonusFlat: number;
+  frenzyCritBonusFlat: number;
+  frenzyDurationSeconds: number;
+};
+
+export const getPassiveBattleProfile = (abilityId?: string | null): PassiveBattleProfile | null => {
+  if (!abilityId) {
+    return null;
+  }
+  if (abilityId === "ability-warrior-combat-discipline") {
+    return {
+      id: abilityId,
+      label: "Combat Discipline",
+      detail: "Guard holds firmer, attack consistency improves, and pressure effects land softer.",
+      guardBonusFlat: 1,
+      attackConsistencyFlat: 2,
+      pressureResistFlat: 1,
+      statusSeverityReductionFlat: 1,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 0,
+      postCritTempoFlat: 0,
+      postKillTempoFlat: 0,
+      frenzyAttackBonusFlat: 0,
+      frenzyCritBonusFlat: 0,
+      frenzyDurationSeconds: 0,
+    };
+  }
+  if (abilityId === "ability-warrior-shield-doctrine") {
+    return {
+      id: abilityId,
+      label: "Shield Doctrine",
+      detail: "Guard mitigates more damage, counter strikes hit harder, and heavy mechanics lose bite.",
+      guardBonusFlat: 2,
+      attackConsistencyFlat: 0,
+      pressureResistFlat: 0,
+      statusSeverityReductionFlat: 1,
+      counterBonusDamageFlat: 6,
+      woundedTargetDamageFlat: 0,
+      postCritTempoFlat: 0,
+      postKillTempoFlat: 0,
+      frenzyAttackBonusFlat: 0,
+      frenzyCritBonusFlat: 0,
+      frenzyDurationSeconds: 0,
+    };
+  }
+  if (abilityId === "ability-warrior-frenzy-instinct") {
+    return {
+      id: abilityId,
+      label: "Frenzy Instinct",
+      detail: "Wounded targets take extra punishment, crits and kills feed tempo, and taking damage can trigger a short frenzy.",
+      guardBonusFlat: 0,
+      attackConsistencyFlat: 0,
+      pressureResistFlat: 0,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 5,
+      postCritTempoFlat: 1,
+      postKillTempoFlat: 2,
+      frenzyAttackBonusFlat: 4,
+      frenzyCritBonusFlat: 3,
+      frenzyDurationSeconds: 18,
+    };
+  }
+  return null;
+};
+
+export const getEquippedPassiveBattleBonuses = (character: CharacterState) =>
+  getEquippedPassives(character)
+    .map((passive) => getPassiveBattleProfile(passive.id))
+    .filter((profile): profile is PassiveBattleProfile => Boolean(profile))
+    .reduce(
+      (sum, profile) => ({
+        guardBonusFlat: sum.guardBonusFlat + profile.guardBonusFlat,
+        attackConsistencyFlat: sum.attackConsistencyFlat + profile.attackConsistencyFlat,
+        pressureResistFlat: sum.pressureResistFlat + profile.pressureResistFlat,
+        statusSeverityReductionFlat: sum.statusSeverityReductionFlat + profile.statusSeverityReductionFlat,
+        counterBonusDamageFlat: sum.counterBonusDamageFlat + profile.counterBonusDamageFlat,
+        woundedTargetDamageFlat: sum.woundedTargetDamageFlat + profile.woundedTargetDamageFlat,
+        postCritTempoFlat: sum.postCritTempoFlat + profile.postCritTempoFlat,
+        postKillTempoFlat: sum.postKillTempoFlat + profile.postKillTempoFlat,
+        frenzyAttackBonusFlat: sum.frenzyAttackBonusFlat + profile.frenzyAttackBonusFlat,
+        frenzyCritBonusFlat: sum.frenzyCritBonusFlat + profile.frenzyCritBonusFlat,
+        frenzyDurationSeconds: Math.max(sum.frenzyDurationSeconds, profile.frenzyDurationSeconds),
+        labels: [...sum.labels, profile.label],
+      }),
+      {
+        guardBonusFlat: 0,
+        attackConsistencyFlat: 0,
+        pressureResistFlat: 0,
+        statusSeverityReductionFlat: 0,
+        counterBonusDamageFlat: 0,
+        woundedTargetDamageFlat: 0,
+        postCritTempoFlat: 0,
+        postKillTempoFlat: 0,
+        frenzyAttackBonusFlat: 0,
+        frenzyCritBonusFlat: 0,
+        frenzyDurationSeconds: 0,
+        labels: [] as string[],
+      },
+    );
+
+export const getLiveBattleSkillProfile = (abilityId?: string | null): LiveBattleSkillProfile | null => {
+  if (!abilityId) {
+    return null;
+  }
+  const ability = ABILITY_BY_ID[abilityId];
+  if (!ability || (ability.kind ?? "skill") !== "skill") {
+    return null;
+  }
+  if (abilityId === "ability-warrior-iron-will") {
+    return {
+      target: "self",
+      effectId: "iron-will",
+      effectLabel: "Iron Will",
+      effectDetail: "Guard raised. Incoming damage is reduced and your turn control steadies.",
+      effectIcon: "shield-check-outline",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 1,
+      attackBonus: 0,
+      critBonus: 0,
+      mitigationFlat: 6,
+      speedBonus: 1,
+      durationSeconds: 42,
+      guardBonusFlat: 1,
+      statusSeverityReductionFlat: 1,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+    };
+  }
+  if (abilityId === "ability-warrior-steel-rhythm") {
+    return {
+      target: "self",
+      effectId: "steel-rhythm",
+      effectLabel: "Steel Rhythm",
+      effectDetail: "You settle into tempo. Initiative improves, counter follow-ups hit harder, and guard turns flow into cleaner offense.",
+      effectIcon: "sword-cross",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 3,
+      attackBonus: 3,
+      critBonus: 2,
+      mitigationFlat: 1,
+      speedBonus: 3,
+      durationSeconds: 28,
+      guardBonusFlat: 1,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 4,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+    };
+  }
+  if (abilityId === "ability-warrior-bulwark-oath") {
+    return {
+      target: "self",
+      effectId: "bulwark-oath",
+      effectLabel: "Bulwark Oath",
+      effectDetail: "You anchor the lane. Heavy mechanics hit softer, guard turns harden, and enemies that crash into you leave a counter window.",
+      effectIcon: "shield-sword-outline",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 1,
+      attackBonus: 0,
+      critBonus: 0,
+      mitigationFlat: 10,
+      speedBonus: 0,
+      durationSeconds: 32,
+      guardBonusFlat: 2,
+      statusSeverityReductionFlat: 2,
+      counterBonusDamageFlat: 8,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+    };
+  }
+  if (abilityId === "ability-warrior-bloodrush") {
+    return {
+      target: "self",
+      effectId: "bloodrush",
+      effectLabel: "Bloodrush",
+      effectDetail: "You push the pace recklessly. Damage, crit pressure, and turn gain rise, but you become easier to punish while it lasts.",
+      effectIcon: "axe-battle",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 3,
+      attackBonus: 10,
+      critBonus: 8,
+      mitigationFlat: 0,
+      speedBonus: 3,
+      durationSeconds: 24,
+      guardBonusFlat: 0,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 4,
+      defensePenaltyFlat: 3,
+    };
+  }
+  if (abilityId === "ability-ranger-scout-path") {
+    return {
+      target: "self",
+      effectId: "scout-path",
+      effectLabel: "Scout Path",
+      effectDetail: "Footwork sharpened. You slip pressure more easily and gain extra turn priority.",
+      effectIcon: "map-search-outline",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 4,
+      attackBonus: 2,
+      critBonus: 2,
+      mitigationFlat: 2,
+      speedBonus: 4,
+      durationSeconds: 45,
+      guardBonusFlat: 0,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+    };
+  }
+  if (abilityId === "ability-mage-arcane-surge") {
+    return {
+      target: "self",
+      effectId: "arcane-surge",
+      effectLabel: "Arcane Surge",
+      effectDetail: "Arcane current overcharged. Your next attacks strike harder and crit more often.",
+      effectIcon: "magic-staff",
+      effectTone: "good",
+      cooldownSeconds: ability.cooldownSeconds,
+      focusCost: ability.focusCost,
+      initiativeBonus: 1,
+      attackBonus: 9,
+      critBonus: 6,
+      mitigationFlat: 0,
+      speedBonus: 1,
+      durationSeconds: 55,
+      guardBonusFlat: 0,
+      statusSeverityReductionFlat: 0,
+      counterBonusDamageFlat: 0,
+      woundedTargetDamageFlat: 0,
+      defensePenaltyFlat: 0,
+    };
+  }
+  return {
+    target: "self",
+    effectId: ability.id,
+    effectLabel: ability.name,
+    effectDetail: "Skill active.",
+    effectIcon: ability.icon,
+    effectTone: "good",
+    cooldownSeconds: ability.cooldownSeconds,
+    focusCost: ability.focusCost,
+    initiativeBonus: 1,
+    attackBonus: 2,
+    critBonus: 0,
+    mitigationFlat: 0,
+    speedBonus: 1,
+    durationSeconds: ability.cooldownSeconds,
+    guardBonusFlat: 0,
+    statusSeverityReductionFlat: 0,
+    counterBonusDamageFlat: 0,
+    woundedTargetDamageFlat: 0,
+    defensePenaltyFlat: 0,
+  };
+};
 
 export const isAbilityReady = (character: CharacterState, abilityId: string, nowMs = Date.now()): boolean =>
   (character.abilityCooldownsUntilMs?.[abilityId] ?? 0) <= nowMs;

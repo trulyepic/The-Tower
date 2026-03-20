@@ -4,7 +4,7 @@
 
 Build a path-locked Warrior progression where players:
 - see the full Knight/Berserker roadmap before committing,
-- train both path lanes first, then choose one branch at Level 15,
+- train through shared Warrior progression first, then choose one branch at Level 15,
 - equip active skill + passive loadout,
 - gain major power when chosen passives synergize with the active skill.
 
@@ -16,7 +16,7 @@ Build a path-locked Warrior progression where players:
 ## Branch Rules
 
 - Level 1-7: Shared Warrior progression only.
-- Level 8-14: Knight Path and Berserker Path are training lanes (not final specialization).
+- Level 8-14: branch skills are visible in the tree as future specialization rewards, but remain locked.
 - Level 15: player receives an NPC guidance notice and then chooses one branch:
   - Knight
   - Berserker
@@ -83,7 +83,7 @@ This keeps build quality meaningful: random passive choices are weaker than inte
 ### Level 15 Specialization UX
 
 - At Level 15, show NPC-guidance notification for final specialization.
-- Before Level 15, show both lanes as training progression.
+- Before Level 15, show both lanes as future branch progression.
 - After specialization, lock and mark opposite lane as unavailable.
 
 ### Loadout UX

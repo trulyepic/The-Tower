@@ -8,6 +8,9 @@ When there is a conflict between future lore scaffolding and current playable sc
 Related system reference:
 - `docs/MONSTER_REMNANTS_SYSTEM.md`
 - `docs/FLOOR_PROGRESSION.md`
+- `docs/QUEST_SYSTEM_REWORK.md`
+- `docs/QUEST_BATTLE_REWORK.md`
+- `docs/QUEST_PLACEHOLDER_COMBAT_CONTRACTS.md`
 
 ## Core Rule
 
@@ -168,10 +171,35 @@ Goal: make the first complete game loop feel polished and intentional.
     - [x] stronger respect contact if the player counters Floor 1 cleanly
     - [x] rescue path now leaves a lighter future trust penalty (`ash debt`)
 
+### Questline Docs
+- [x] Create dedicated recurring NPC questline docs
+- [x] Track active questlines in [NPC_QUESTLINE_TRACKER.md](/Users/kin/web-rpg/docs/NPC_QUESTLINE_TRACKER.md)
+- [x] Mark Tamsin as complete for now until her next phase starts
+- [x] Lock Aldric's full branch canon in a dedicated doc
+
 ### Side-story
 - [ ] Finish Aldric early-state flow
-  - [ ] make his acceptance/refusal consequences clearer
+  - [x] make his acceptance/refusal consequences clearer
+  - [x] add first branch persistence for:
+    - refused
+    - too late
+    - saved
+  - [ ] add stronger urgency presentation to the board/journal UI
+  - [ ] add first post-quest breadcrumb for dark-path recurrence
   - [ ] keep Floor 10 payoff documented, but do not build it yet beyond placeholders
+
+### Quest System
+- [ ] Start quest-system rework from `docs/QUEST_SYSTEM_REWORK.md`
+  - [ ] Slice 1: Quest Board structure cleanup
+  - [ ] Slice 2: shared quest state cleanup
+  - [ ] Slice 3: journal rewrite
+  - [ ] Slice 4: reusable time-sensitive runtime
+- [ ] Start quest battle rework from `docs/QUEST_BATTLE_REWORK.md`
+  - [ ] keep `gather` quests on the light resolve model
+  - [ ] move combat `adventure` quests onto live turn-based combat
+  - [ ] move `dungeon` quests onto multi-step live combat later
+  - [ ] define first real `hunt` combat contract
+  - [ ] define first real `wanted` combat contract
 
 ### General board quests
 - [x] Audit current board quests for Floor 1 farming relevance
@@ -360,3 +388,5 @@ Whenever we complete or change something:
 - update this file first,
 - then update `ROADMAP.md` only if the change affects broader project planning,
 - and update `TOWER_BATTLE_PHASES.md` only if the change affects tower combat flow.
+- live tower combat changes should also update:
+  - [LIVE_BATTLE_SYSTEM.md](/Users/kin/web-rpg/docs/LIVE_BATTLE_SYSTEM.md)

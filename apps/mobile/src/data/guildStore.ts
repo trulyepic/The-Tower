@@ -182,6 +182,14 @@ export const GUILD_STORE_ITEMS: GuildStoreEntry[] = [
     classRestriction: "mage",
   },
   {
+    id: "store-dev-hidden-steward-edict",
+    itemId: "weapon-hidden-steward-edict",
+    label: "Edictblade of the Hidden Steward",
+    unitPrice: 0,
+    sellText: "Legendary dev blade. Massive attack, impossible tempo, and built for rapid content testing.",
+    featured: true,
+  },
+  {
     id: "store-buff-embershard",
     itemId: "buff-embershard-charm",
     label: "Embershard Sigil",

@@ -17,6 +17,7 @@ import { s3AssetWithFallback } from "../lib/assetSource";
 import { applyLevelLoss } from "../lib/progression";
 import { getXpToNextLevel } from "../lib/progression";
 import { getBuffSlotLimit, pruneExpiredBuffs } from "../lib/buffs";
+import { clampAffinity, getChoiceLockedReason } from "../lib/affinity";
 import { TITLE_BY_ID } from "../data/titles";
 import { getTitleSlotLimit, isTitleUnlocked } from "../lib/titles";
 import { getDerivedHealthCap, getDerivedSkillResourceCap, getScaledCoreAttributes } from "../lib/combat";
@@ -54,6 +55,7 @@ import {
   RankUpOutcome,
   RankUpTrialDefinition,
   RescueNpcStatus,
+  ThornRunnerIntroductionChoice,
   ClimberEntry,
   FloorEncounterEventDefinition,
   StoryCheckpointTrigger,
@@ -61,6 +63,7 @@ import {
   StoryNotification,
   StoryState,
   TowerWaveKey,
+  TowerLiveBattleDirective,
   TowerWaveOutcome,
   TowerFloorDefinition,
   TowerOutcome,
@@ -71,9 +74,13 @@ const STAMINA_REGEN_TICK_MS = 30 * 1000;
 const NOVICE_EMERGENCY_REVIVE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const RESCUE_QUEST_ID = "quest-aldric-child-rescue";
 const LYRA_QUEST_ID = "quest-lyra-ember-maps";
+const TAMSIN_QUEST_ID = "quest-tamsin-snagline-recovery";
+const TAMSIN_NPC_ID = "npc-tamsin-vale";
+const ALDRIC_RESCUE_DURATION_MS = 6 * 60 * 1000;
 const FLOOR_INTEL_QUEST_UNLOCKS: Partial<Record<string, number>> = {
   "gather-shrine-wards": 1,
   "gather-briar-resin": 2,
+  [TAMSIN_QUEST_ID]: 2,
 };
 const FLOOR_INTEL_NPC_UNLOCKS: Partial<Record<string, number>> = {
   [LYRA_QUEST_ID]: 1,
@@ -126,8 +133,17 @@ const clearTowerStatusesForConsumable = (
 };
 
 const DEFAULT_STORY_STATE: StoryState = {
+  questBoardPreviewEnabled: false,
   rescueNpcStatus: "locked",
   rescueNpcUnreadCount: 0,
+  aldricRescueDeadlineAtMs: undefined,
+  aldricQuestPath: "none",
+  aldricDarkPathStarted: false,
+  aldricOccasionalAidUnlocked: false,
+  aldricFloor30Pending: false,
+  thornRunnerQuestStatus: "locked",
+  thornRunnerIntroductionChoice: undefined,
+  thornRunnerFollowupReviewed: undefined,
   npcDispositionById: {},
   npcInteractionCountById: {},
   lyraMet: false,
@@ -203,6 +219,21 @@ const ALDRIC_PROFILE_BASE = {
   authBody: "Adventurers Guild • Petitioning Member",
   signature: "A. Vale",
   summary: "A father asking the guild for help after his daughter was taken by bandits beyond the safe roads.",
+};
+
+const TAMSIN_PROFILE_BASE = {
+  id: TAMSIN_NPC_ID,
+  name: "Tamsin Vale",
+  title: "Thorn Runner",
+  role: "Corridor Salvage Scout",
+  level: 6,
+  floorReached: 2,
+  avatarId: "ranger-2" as const,
+  classId: "ranger" as const,
+  licenseLabel: "Field Runner License",
+  authBody: "Adventurers Guild • Thorn Corridor Survey Desk",
+  signature: "T. Vale",
+  summary: "A corridor runner who retrieves trapped satchels, snapped route-lines, and whatever panic leaves behind in thorn lanes.",
 };
 
 const getFloorAttemptNumber = (floorNumber: number, story: StoryState): number =>
@@ -434,7 +465,12 @@ const normalizeRankForLevel = (character: CharacterState): CharacterState => {
 
 const normalizeAffinity = (character: CharacterState): CharacterState => ({
   ...character,
-  affinity: Math.max(-100, Math.min(100, Math.round(character.affinity ?? 0))),
+  affinity: clampAffinity(character.affinity ?? 0),
+});
+
+const applyAffinityDelta = (character: CharacterState, delta: number): CharacterState => ({
+  ...character,
+  affinity: clampAffinity((character.affinity ?? 0) + delta),
 });
 
 const normalizeKnownTowerIntel = (character: CharacterState): CharacterState => ({
@@ -517,6 +553,11 @@ export interface GameState {
   devResetAppraisals: () => { ok: boolean; reason?: string };
   devTriggerLyraQuest: () => { ok: boolean; reason?: string };
   devTriggerAldricQuest: () => { ok: boolean; reason?: string };
+  devTriggerTamsinQuest: () => { ok: boolean; reason?: string };
+  devSetAldricOutcome: (path: "saved" | "too_late") => { ok: boolean; reason?: string };
+  devSetAffinity: (value: number) => { ok: boolean; reason?: string };
+  devSetupWarriorBattlePreset: (preset: "shared" | "knight" | "berserker") => { ok: boolean; reason?: string };
+  devPreviewQuestBoardContracts: () => { ok: boolean; reason?: string };
   getQuestSuccessChance: (questId: string, committedItems?: Record<ItemId, number>) => number;
   getQuestAccess: (questId: string) => { allowed: boolean; reason?: string };
   getTowerSuccessChance: (floorNumber: number, committedItems?: Record<ItemId, number>) => number;
@@ -549,13 +590,14 @@ export interface GameState {
   useHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useTowerConsumableItem: (itemId: ItemId) => { ok: boolean; reason?: string };
   startQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
-  claimQuest: () => { ok: boolean; reason?: string };
+  claimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
   resolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
   conquerTowerFloor: (floorNumber: number, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   resolveTowerWave: (
     floorNumber: number,
     wave: TowerWaveKey,
     committedItems?: Record<ItemId, number>,
+    liveBattle?: TowerLiveBattleDirective,
   ) => { ok: boolean; reason?: string; outcome?: TowerWaveOutcome };
   finalizeTowerFloor: (floorNumber: number) => { ok: boolean; reason?: string };
   attemptRankUp: (committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
@@ -566,6 +608,10 @@ export interface GameState {
   recordNpcInteraction: (npcId: string, dispositionDelta?: number, interactionDelta?: number) => void;
   markNpcTabOpened: () => void;
   respondRescueNpcRequest: (accept: boolean) => { ok: boolean; reason?: string; status?: RescueNpcStatus };
+  respondThornRunnerIntroduction: (
+    choice: ThornRunnerIntroductionChoice,
+  ) => { ok: boolean; reason?: string; choice?: ThornRunnerIntroductionChoice };
+  acknowledgeThornRunnerFollowup: () => { ok: boolean; reason?: string };
   respondFloorEncounter: (
     floorNumber: number,
     encounterId: string,
@@ -661,6 +707,7 @@ export const useGameState = (): GameState => {
     nextCharacter: CharacterState,
   ) => {
     let summary = "";
+    let shouldNotify = false;
     setStoryState((current) => {
       const nextRivals = updateRivalClimbersByTrigger(current.climberRivals, trigger);
       const leaderboard = [
@@ -690,10 +737,10 @@ export const useGameState = (): GameState => {
       const movedDown = nextRank > previousRank;
       if (movedUp) {
         summary = `Leaderboard updated: you climbed to #${nextRank}.`;
+        shouldNotify = true;
       } else if (movedDown) {
         summary = `Leaderboard updated: you slipped to #${nextRank}.`;
-      } else {
-        summary = `Leaderboard updated: holding position #${nextRank}.`;
+        shouldNotify = true;
       }
       return {
         ...current,
@@ -701,11 +748,13 @@ export const useGameState = (): GameState => {
         lastLeaderboardRank: nextRank,
       };
     });
-    setStoryNotification({
-      id: `climber-${trigger}-${Date.now()}`,
-      title: "Climber Board Update",
-      message: summary,
-    });
+    if (shouldNotify) {
+      setStoryNotification({
+        id: `climber-${trigger}-${Date.now()}`,
+        title: "Climber Board Update",
+        message: summary,
+      });
+    }
   };
 
   useEffect(() => {
@@ -800,6 +849,71 @@ export const useGameState = (): GameState => {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !character ||
+      storyState.rescueNpcStatus !== "accepted" ||
+      !storyState.aldricRescueDeadlineAtMs ||
+      activeQuest?.questId === RESCUE_QUEST_ID
+    ) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    const remainingMs = storyState.aldricRescueDeadlineAtMs - nowMs;
+
+    const expireAldricWindow = () => {
+      setStoryState((current) => {
+        if (
+          current.rescueNpcStatus !== "accepted" ||
+          !current.aldricRescueDeadlineAtMs ||
+          current.aldricRescueDeadlineAtMs > Date.now()
+        ) {
+          return current;
+        }
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...ALDRIC_PROFILE_BASE,
+          summary:
+            "Aldric accepted that you meant to help, but the delay still cost his daughter her life. Grief has started bending him toward darker answers.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          rescueNpcStatus: "gone",
+          rescueNpcUnreadCount: 0,
+          aldricRescueDeadlineAtMs: undefined,
+          aldricQuestPath: "too_late",
+          aldricDarkPathStarted: true,
+          aldricOccasionalAidUnlocked: true,
+          aldricFloor30Pending: true,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [ALDRIC_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) - 8)),
+          },
+          npcInteractionCountById: {
+            ...current.npcInteractionCountById,
+            [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+          },
+        };
+      });
+      setStoryNotification({
+        id: "aldric-too-late-deadline",
+        title: "Too Late For Watchtrail",
+        message:
+          "Aldric waited as long as he could. The rescue window closed, his daughter is dead, and grief has started dragging him toward darker company.",
+        variant: "guild",
+      });
+    };
+
+    if (remainingMs <= 0) {
+      expireAldricWindow();
+      return;
+    }
+
+    const timer = setTimeout(expireAldricWindow, remainingMs + 20);
+    return () => clearTimeout(timer);
+  }, [character, storyState.rescueNpcStatus, storyState.aldricRescueDeadlineAtMs, activeQuest?.questId]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -950,6 +1064,46 @@ export const useGameState = (): GameState => {
           },
     );
   }, [isHydrated, character, mainQuestTracker, storyState.mainQuestLog.length, storyState.mainQuestStageId]);
+
+  useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
+    if (storyState.thornRunnerQuestStatus !== "locked") {
+      return;
+    }
+    if (character.adventurerRank === "F" || character.progression.level < 5) {
+      return;
+    }
+
+    setStoryState((current) => {
+      if (current.thornRunnerQuestStatus !== "locked") {
+        return current;
+      }
+      const upserted = upsertEncounteredStoryNpc(current, TAMSIN_PROFILE_BASE);
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerQuestStatus: "available",
+        thornRunnerFollowupReviewed: undefined,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, current.npcDispositionById[TAMSIN_NPC_ID] ?? 52)),
+        },
+      };
+    });
+    setStoryNotification((current) =>
+      current?.id === "tamsin-thorn-runner"
+        ? current
+        : {
+            id: "tamsin-thorn-runner",
+            title: "Runner's Notice",
+            message:
+              "Tamsin Vale, a Thorn Runner, has posted a recovery contract to the quest board. She says Thorn Corridor punishes anyone who mistakes snare work for brute force.",
+            variant: "guild",
+          },
+    );
+  }, [isHydrated, character, storyState.thornRunnerQuestStatus]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -1129,6 +1283,20 @@ export const useGameState = (): GameState => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const leveledCharacter =
+      currentCharacter.progression.level >= 2
+        ? currentCharacter
+        : normalizeCharacterState({
+            ...currentCharacter,
+            progression: {
+              ...currentCharacter.progression,
+              level: 2,
+              xpInLevel: 0,
+              xpToNextLevel: getXpToNextLevel(2),
+            },
+          });
+    setCharacter(leveledCharacter);
     setStoryState((current) => {
       const npcState = upsertEncounteredStoryNpc(current, {
         ...ALDRIC_PROFILE_BASE,
@@ -1138,6 +1306,10 @@ export const useGameState = (): GameState => {
         ...npcState,
         rescueNpcStatus: current.rescueNpcStatus === "accepted" ? "accepted" : "available",
         rescueNpcUnreadCount: 1,
+        aldricQuestPath: current.rescueNpcStatus === "accepted" ? current.aldricQuestPath : "none",
+        aldricDarkPathStarted: current.rescueNpcStatus === "accepted" ? current.aldricDarkPathStarted : false,
+        aldricOccasionalAidUnlocked: current.rescueNpcStatus === "accepted" ? current.aldricOccasionalAidUnlocked : false,
+        aldricFloor30Pending: current.rescueNpcStatus === "accepted" ? current.aldricFloor30Pending : false,
         npcDispositionById: {
           ...current.npcDispositionById,
           [ALDRIC_NPC_ID]: Math.max(0, Math.min(100, current.npcDispositionById[ALDRIC_NPC_ID] ?? 42)),
@@ -1150,7 +1322,111 @@ export const useGameState = (): GameState => {
       message: "Aldric Vale is now waiting in the guild hall so his rescue quest can be tested.",
       variant: "guild",
     });
-    return { ok: true, reason: "Dev Aldric trigger applied. His guild petition is available." };
+    return { ok: true, reason: "Dev Aldric trigger applied. His guild petition is available and your character is now eligible to answer it." };
+  };
+
+  const devTriggerTamsinQuest = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const leveledCharacter =
+      currentCharacter.progression.level >= 5 && currentCharacter.adventurerRank !== "F"
+        ? currentCharacter
+        : normalizeCharacterState({
+            ...currentCharacter,
+            progression: {
+              ...currentCharacter.progression,
+              level: Math.max(5, currentCharacter.progression.level),
+              xpInLevel: 0,
+              xpToNextLevel: getXpToNextLevel(Math.max(5, currentCharacter.progression.level)),
+            },
+            adventurerRank: currentCharacter.adventurerRank === "F" ? "E" : currentCharacter.adventurerRank,
+          });
+    setCharacter(leveledCharacter);
+    setStoryState((current) => {
+      const npcState = upsertEncounteredStoryNpc(current, TAMSIN_PROFILE_BASE);
+      return {
+        ...current,
+        ...npcState,
+        thornRunnerQuestStatus: "available",
+        thornRunnerFollowupReviewed: undefined,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, current.npcDispositionById[TAMSIN_NPC_ID] ?? 52)),
+        },
+      };
+    });
+    setStoryNotification({
+      id: "tamsin-dev-trigger",
+      title: "Tamsin Posted A Recovery Run",
+      message: "Tamsin Vale has been added to the guild records and her Floor 2 board contract is now available for testing.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Tamsin trigger applied. Her Floor 2 quest is available." };
+  };
+
+  const devSetAldricOutcome = (path: "saved" | "too_late") => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+
+    if (path === "saved") {
+      const rewardWeaponId = RESCUE_REWARD_WEAPON_BY_CLASS[character.classId];
+      setCharacter(
+        normalizeCharacterState({
+          ...character,
+          inventory: {
+            ...character.inventory,
+            [rewardWeaponId]: (character.inventory[rewardWeaponId] ?? 0) + 1,
+          },
+          alliedNpcIds: Array.from(new Set([...(character.alliedNpcIds ?? []), ALDRIC_ALLY_ID])),
+        }),
+      );
+      setStoryState((current) => {
+        const npcState = upsertEncounteredStoryNpc(current, {
+          ...ALDRIC_PROFILE_BASE,
+          summary: "Aldric's daughter lives. He now stands behind your climb as one of the guild's most loyal allies.",
+        });
+        return {
+          ...current,
+          ...npcState,
+          rescueNpcStatus: "gone",
+          rescueNpcUnreadCount: 0,
+          aldricQuestPath: "saved",
+          aldricDarkPathStarted: false,
+          aldricOccasionalAidUnlocked: true,
+          aldricFloor30Pending: false,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [ALDRIC_NPC_ID]: 92,
+          },
+        };
+      });
+      return { ok: true, reason: "Dev Aldric route set to saved." };
+    }
+
+    setStoryState((current) => {
+      const npcState = upsertEncounteredStoryNpc(current, {
+        ...ALDRIC_PROFILE_BASE,
+        summary: "Aldric knows you accepted the plea, but you arrived too late. Grief has started bending him toward darker answers.",
+      });
+      return {
+        ...current,
+        ...npcState,
+        rescueNpcStatus: "gone",
+        rescueNpcUnreadCount: 0,
+        aldricQuestPath: "too_late",
+        aldricDarkPathStarted: true,
+        aldricOccasionalAidUnlocked: true,
+        aldricFloor30Pending: true,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [ALDRIC_NPC_ID]: 34,
+        },
+      };
+    });
+    return { ok: true, reason: "Dev Aldric route set to too late." };
   };
 
   const devResetAppraisals = () => {
@@ -1273,10 +1549,13 @@ export const useGameState = (): GameState => {
             if (quest.id === LYRA_QUEST_ID) {
               return storyState.lyraQuestStatus === "available";
             }
+            if (quest.id === TAMSIN_QUEST_ID) {
+              return storyState.thornRunnerQuestStatus === "available";
+            }
             return true;
           })
         : [],
-    [character, storyState.rescueNpcStatus, storyState.lyraQuestStatus],
+    [character, storyState.rescueNpcStatus, storyState.lyraQuestStatus, storyState.thornRunnerQuestStatus],
   );
 
   const startQuest = (questId: string, committedItems?: Record<ItemId, number>) => {
@@ -1303,13 +1582,19 @@ export const useGameState = (): GameState => {
     setCharacter(normalizeCharacterState(result.character));
     setDailies(result.dailies);
     setActiveQuest(result.activeQuest);
+    if (questId === RESCUE_QUEST_ID) {
+      setStoryState((current) => ({
+        ...current,
+        aldricRescueDeadlineAtMs: undefined,
+      }));
+    }
     setLastQuestOutcome(null);
     setLastTowerOutcome(null);
     setLastRankUpOutcome(null);
     return { ok: true, reason: result.reason };
   };
 
-  const claimQuest = () => {
+  const claimQuest = (forcedSuccess?: boolean, summaryOverride?: string) => {
     const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
     if (currentCharacter && currentCharacter !== character) {
       setCharacter(normalizeCharacterState(currentCharacter));
@@ -1321,6 +1606,8 @@ export const useGameState = (): GameState => {
       dailies,
       quest,
       nowMs: Date.now(),
+      forcedSuccess,
+      summaryOverride,
     });
 
     if (!result.ok || !result.character || !result.dailies) {
@@ -1355,6 +1642,85 @@ export const useGameState = (): GameState => {
         };
         claimReason = updatedSummary;
       }
+      setStoryState((current) => {
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...ALDRIC_PROFILE_BASE,
+          summary: "Aldric's daughter lives. He now stands behind your climb as one of the most loyal people in the guild willing to fight beside you.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          rescueNpcStatus: "gone",
+          rescueNpcUnreadCount: 0,
+          aldricRescueDeadlineAtMs: undefined,
+          aldricQuestPath: "saved",
+          aldricDarkPathStarted: false,
+          aldricOccasionalAidUnlocked: true,
+          aldricFloor30Pending: false,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [ALDRIC_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) + 28)),
+          },
+          npcInteractionCountById: {
+            ...current.npcInteractionCountById,
+            [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+          },
+        };
+      });
+      setStoryNotification({
+        id: "aldric-saved-route",
+        title: "Aldric's Oath Holds",
+        message: "You brought Aldric's daughter home alive. He now treats your climb as part of his own oath.",
+        variant: "guild",
+      });
+    }
+    if (result.outcome && !result.outcome.success && activeQuest?.questId === RESCUE_QUEST_ID) {
+      const failureSummary =
+        result.outcome.successChance < 35
+          ? "You pushed into Watchtrail underprepared. The bandits stripped your momentum, and by the time you forced the lane the rescue had already failed."
+          : result.outcome.successChance < 60
+            ? "The rescue push stalled under stronger resistance than you could break quickly. The lost time cost Aldric's daughter her life."
+            : "You forced your way into the camp, but the bandit leader bled just enough time out of the fight for the rescue to fail before the lane opened.";
+      claimReason =
+        "You reached the bandit trail too late. Aldric's daughter is dead, and what happened there breaks something in him that will not mend.";
+      nextOutcome = {
+        ...result.outcome,
+        success: false,
+        summary: failureSummary,
+      };
+      setStoryState((current) => {
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...ALDRIC_PROFILE_BASE,
+          summary:
+            "Aldric accepted that you tried, but his daughter is still gone. He has started walking a dark road toward vengeance, and his grief no longer points entirely away from you.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          rescueNpcStatus: "gone",
+          rescueNpcUnreadCount: 0,
+          aldricRescueDeadlineAtMs: undefined,
+          aldricQuestPath: "too_late",
+          aldricDarkPathStarted: true,
+          aldricOccasionalAidUnlocked: true,
+          aldricFloor30Pending: true,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [ALDRIC_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[ALDRIC_NPC_ID] ?? 42) - 8)),
+          },
+          npcInteractionCountById: {
+            ...current.npcInteractionCountById,
+            [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
+          },
+        };
+      });
+      setStoryNotification({
+        id: "aldric-too-late-route",
+        title: "Too Late For Watchtrail",
+        message:
+          "Aldric's daughter is dead. He does not turn fully against you, but grief and vengeance have started dragging him toward darker company.",
+        variant: "guild",
+      });
     }
     if (result.outcome?.success && activeQuest?.questId === LYRA_QUEST_ID) {
       setStoryState((current) => {
@@ -1367,6 +1733,28 @@ export const useGameState = (): GameState => {
           ...upserted,
           lyraQuestResolution: "unresolved",
           lyraQuestStatus: "completed",
+        };
+      });
+    }
+    if (result.outcome?.success && activeQuest?.questId === TAMSIN_QUEST_ID) {
+      setStoryState((current) => {
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...TAMSIN_PROFILE_BASE,
+          summary: "Tamsin now treats you as someone who can bring corridor work back alive instead of feeding it to the thorns.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          thornRunnerQuestStatus: "completed",
+          thornRunnerFollowupReviewed: false,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[TAMSIN_NPC_ID] ?? 52) + 14)),
+          },
+          npcInteractionCountById: {
+            ...current.npcInteractionCountById,
+            [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+          },
         };
       });
     }
@@ -1426,6 +1814,11 @@ export const useGameState = (): GameState => {
     let summary = "";
     let notificationTitle = "";
     let notificationBody = "";
+    const lockedReason = getChoiceLockedReason(character.affinity ?? 0, choice === "returned" ? "good" : choice === "reported" ? "evil" : "neutral");
+    if (lockedReason) {
+      return { ok: false, reason: lockedReason };
+    }
+
     let nextCharacter = character;
     const ashDebt = storyState.lyraAshDebt;
     let grantedFloorIntel: number | null = null;
@@ -1433,13 +1826,13 @@ export const useGameState = (): GameState => {
     if (choice === "returned") {
       dispositionDelta = ashDebt ? 12 : 16;
       trustDelta = ashDebt ? 1 : 2;
-      nextCharacter = normalizeCharacterState({
+      nextCharacter = normalizeCharacterState(applyAffinityDelta({
         ...character,
         inventory: {
           ...character.inventory,
           "ward-charm": (character.inventory["ward-charm"] ?? 0) + 1,
         },
-      });
+      }, 8));
       summary = ashDebt
         ? "You returned the satchel unopened. Lyra accepts the restraint, though the ash-debt between you only begins to cool rather than vanish."
         : "You returned the satchel unopened. Lyra accepts the restraint and leaves you a Warding Seal in silent thanks.";
@@ -1458,13 +1851,13 @@ export const useGameState = (): GameState => {
     } else if (choice === "kept") {
       dispositionDelta = ashDebt ? 5 : 8;
       trustDelta = ashDebt ? 0 : 1;
-      nextCharacter = normalizeCharacterState({
+      nextCharacter = normalizeCharacterState(applyAffinityDelta({
         ...character,
         inventory: {
           ...character.inventory,
           "grounding-tonic": (character.inventory["grounding-tonic"] ?? 0) + 1,
         },
-      });
+      }, 0));
       summary = ashDebt
         ? "You studied the satchel in secret. Lyra reads the caution, but the memory of dragging you out of a poisoned lane makes her slower to forgive."
         : "You studied the satchel in secret and kept what you learned to yourself. Lyra senses the caution, but not full obedience.";
@@ -1483,10 +1876,10 @@ export const useGameState = (): GameState => {
     } else {
       dispositionDelta = ashDebt ? -24 : -18;
       trustDelta = ashDebt ? -3 : -2;
-      nextCharacter = normalizeCharacterState({
+      nextCharacter = normalizeCharacterState(applyAffinityDelta({
         ...character,
         gold: character.gold + 18,
-      });
+      }, -10));
       summary = ashDebt
         ? "You reported the satchel to guild command. Lyra learns of it quickly, and the fact that she once had to pull you out of the ash only deepens the insult."
         : "You reported the satchel to guild command. Lyra learns of it quickly and her trust hardens into distance.";
@@ -1611,6 +2004,7 @@ export const useGameState = (): GameState => {
     floorNumber: number,
     wave: TowerWaveKey,
     committedItems?: Record<ItemId, number>,
+    liveBattle?: TowerLiveBattleDirective,
   ) => {
     const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
     if (currentCharacter && currentCharacter !== character) {
@@ -1626,35 +2020,58 @@ export const useGameState = (): GameState => {
       floor,
       wave,
       committedItems: mergedCommittedItems,
+      liveBattle,
     });
     if (!result.ok || !result.character || !result.outcome) {
       return { ok: false, reason: result.reason ?? "Unable to resolve wave." };
     }
     const collapsedInTower = result.character.health <= DOWNSTATE_HP;
+    const mergedCooldowns = Object.fromEntries(
+      Object.entries({
+        ...(result.character.abilityCooldownsUntilMs ?? {}),
+        ...(liveBattle?.abilityCooldownsUntilMs ?? {}),
+      }).filter(([, value]) => typeof value === "number"),
+    ) as Record<string, number>;
     const nextCharacter = collapsedInTower
       ? normalizeCharacterState({
           ...result.character,
+          focus: liveBattle?.focusAfterBattle ?? result.character.focus,
+          abilityCooldownsUntilMs: mergedCooldowns,
           health: DOWNSTATE_HP,
         })
       : normalizeCharacterState(result.character);
-    captureLevelDownEvent(currentCharacter, nextCharacter, "Tower wave collapse");
-    setCharacter(nextCharacter);
-    setLastTowerWaveOutcome(result.outcome);
+    const adjustedCharacter = normalizeCharacterState({
+      ...nextCharacter,
+      focus: liveBattle?.focusAfterBattle ?? nextCharacter.focus,
+      abilityCooldownsUntilMs: Object.fromEntries(
+        Object.entries({
+          ...(nextCharacter.abilityCooldownsUntilMs ?? {}),
+          ...(liveBattle?.abilityCooldownsUntilMs ?? {}),
+        }).filter(([, value]) => typeof value === "number"),
+      ) as Record<string, number>,
+    });
+    captureLevelDownEvent(currentCharacter, adjustedCharacter, "Tower wave collapse");
+    setCharacter(adjustedCharacter);
+    const outcome = {
+      ...result.outcome,
+      collapsed: collapsedInTower,
+      collapseMessage: collapsedInTower
+        ? "A hush of ancient mercy closes around you. The Tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again."
+        : result.outcome.collapseMessage,
+    };
+    setLastTowerWaveOutcome(outcome);
     if (collapsedInTower) {
-      setTowerStatusEffects([]);
+      setTowerStatusEffects(liveBattle?.persistentStatusEffects ?? []);
       setTowerPreparedItemIds([]);
-      setStoryNotification({
-        id: `tower-collapse-${floorNumber}-${wave}-${Date.now()}`,
-        title: "The Tower Casts You Out",
-        message:
-          "A hush of ancient mercy closes around you. The tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again.",
-        variant: "tower-collapse",
-      });
     } else {
-      setTowerStatusEffects((current) => mergeTowerStatusEffects(current, result.outcome?.statusEffects ?? []));
+      setTowerStatusEffects(
+        liveBattle?.persistentStatusEffects
+          ? mergeTowerStatusEffects(liveBattle.persistentStatusEffects, result.outcome?.statusEffects ?? [])
+          : mergeTowerStatusEffects([], result.outcome?.statusEffects ?? []),
+      );
       setTowerPreparedItemIds([]);
     }
-    return { ok: true, reason: result.outcome.summary, outcome: result.outcome };
+    return { ok: true, reason: result.outcome.summary, outcome };
   };
 
   const finalizeTowerFloor = (floorNumber: number) => {
@@ -1687,6 +2104,139 @@ export const useGameState = (): GameState => {
     () => Boolean(activeQuest && Date.now() >= activeQuest.endsAtMs),
     [activeQuest],
   );
+
+
+  const devSetAffinity = (value: number) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setCharacter(normalizeCharacterState({ ...character, affinity: clampAffinity(value) }));
+    return {
+      ok: true,
+      reason:
+        value >= 90
+          ? "Affinity set to extreme Aetherbound for choice-lock testing."
+          : value <= -90
+            ? "Affinity set to extreme Abyssworn for choice-lock testing."
+            : "Affinity set to an open middle state for choice testing.",
+    };
+  };
+
+  const devSetupWarriorBattlePreset = (preset: "shared" | "knight" | "berserker") => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (character.classId !== "warrior") {
+      return { ok: false, reason: "Warrior battle presets require a Warrior character." };
+    }
+
+    const baseLevel = preset === "shared" ? 12 : 15;
+    const nextPathChoice = preset === "shared" ? null : preset;
+    const nextActiveSkillId =
+      preset === "shared"
+        ? "ability-warrior-steel-rhythm"
+        : preset === "knight"
+          ? "ability-warrior-bulwark-oath"
+          : "ability-warrior-bloodrush";
+    const nextPassiveIds =
+      preset === "shared"
+        ? ["ability-warrior-combat-discipline"]
+        : preset === "knight"
+          ? ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"]
+          : ["ability-warrior-combat-discipline", "ability-warrior-frenzy-instinct"];
+
+    const nextLevel = Math.max(baseLevel, character.progression.level);
+    const nextCharacterDraft = {
+      ...character,
+      progression: {
+        ...character.progression,
+        level: nextLevel,
+        xpToNextLevel: getXpToNextLevel(nextLevel),
+        xpInLevel: Math.min(character.progression.xpInLevel, getXpToNextLevel(nextLevel) - 1),
+      },
+      warriorPathChoice: nextPathChoice,
+      activeClassSkillId: nextActiveSkillId,
+      equippedPassiveAbilityIds: nextPassiveIds,
+      abilityCooldownsUntilMs: {},
+      pendingAbilityId: null,
+      pendingAbilityIds: [],
+    };
+    const nextHealthCap = getDerivedHealthCap(nextCharacterDraft);
+    const nextFocusCap = getDerivedSkillResourceCap(nextCharacterDraft);
+
+    setCharacter(
+      normalizeCharacterState({
+        ...nextCharacterDraft,
+        healthCap: nextHealthCap,
+        health: nextHealthCap,
+        focusCap: nextFocusCap,
+        focus: nextFocusCap,
+      }),
+    );
+
+    return {
+      ok: true,
+      reason:
+        preset === "shared"
+          ? "Shared Warrior preset ready: Level 12, Steel Rhythm active, Combat Discipline equipped."
+          : preset === "knight"
+            ? "Knight preset ready: Level 15, Bulwark Oath active, Combat Discipline + Shield Doctrine equipped."
+            : "Berserker preset ready: Level 15, Bloodrush active, Combat Discipline + Frenzy Instinct equipped.",
+    };
+  };
+
+  const devPreviewQuestBoardContracts = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+
+    const currentCharacter = applyTimedState(character, Date.now());
+    const previewLevel = Math.max(60, currentCharacter.progression.level);
+    const previewRank =
+      getRankOrderIndex(currentCharacter.adventurerRank) >= getRankOrderIndex("S")
+        ? currentCharacter.adventurerRank
+        : "S";
+
+    const nextCharacterDraft = {
+      ...currentCharacter,
+      progression: {
+        ...currentCharacter.progression,
+        level: previewLevel,
+        xpToNextLevel: getXpToNextLevel(previewLevel),
+        xpInLevel: Math.min(currentCharacter.progression.xpInLevel, getXpToNextLevel(previewLevel) - 1),
+      },
+      adventurerRank: previewRank,
+    };
+    const nextHealthCap = getDerivedHealthCap(nextCharacterDraft);
+    const nextFocusCap = getDerivedSkillResourceCap(nextCharacterDraft);
+
+    setCharacter(
+      normalizeCharacterState({
+        ...nextCharacterDraft,
+        healthCap: nextHealthCap,
+        health: nextHealthCap,
+        focusCap: nextFocusCap,
+        focus: nextFocusCap,
+        stamina: nextCharacterDraft.staminaCap,
+      }),
+    );
+    setStoryState((current) => ({
+      ...current,
+      questBoardPreviewEnabled: true,
+    }));
+
+    setStoryNotification({
+      id: `story-dev-quest-preview-${Date.now()}`,
+      title: "Quest Board Preview Ready",
+      message: "Your character was raised to Level 60 and S-rank so placeholder adventure, dungeon, and hunt contracts can be reviewed on the Guild board.",
+      variant: "guild",
+    });
+
+    return {
+      ok: true,
+      reason: "Quest board preview preset ready: Level 60, S-rank, full resources.",
+    };
+  };
 
   const getQuestSuccessChance = (questId: string, committedItems?: Record<ItemId, number>): number => {
     const quest = availableQuests.find((item) => item.id === questId);
@@ -2383,14 +2933,18 @@ export const useGameState = (): GameState => {
   };
 
   const markNpcTabOpened = () => {
-    setStoryState((current) =>
-      current.rescueNpcUnreadCount > 0 ? { ...current, rescueNpcUnreadCount: 0 } : current,
-    );
+    return;
   };
 
   const respondRescueNpcRequest = (accept: boolean) => {
+    if (character) {
+      const lockedReason = getChoiceLockedReason(character.affinity ?? 0, accept ? "good" : "evil");
+      if (lockedReason) {
+        return { ok: false, reason: lockedReason, status: storyState.rescueNpcStatus };
+      }
+    }
     const currentStatus = storyState.rescueNpcStatus;
-    if (!character || character.progression.level < 2) {
+    if (!character) {
       return { ok: false, reason: "This request has not appeared yet." };
     }
     if (currentStatus === "locked" || currentStatus === "gone") {
@@ -2398,10 +2952,14 @@ export const useGameState = (): GameState => {
     }
 
     if (accept) {
+      const acceptedAtMs = Date.now();
+      setCharacter(normalizeCharacterState(applyAffinityDelta(character, 10)));
       setStoryState((current) => ({
         ...current,
         rescueNpcStatus: "accepted",
         rescueNpcUnreadCount: 0,
+        aldricRescueDeadlineAtMs: acceptedAtMs + ALDRIC_RESCUE_DURATION_MS,
+        aldricQuestPath: "none",
         npcDispositionById: {
           ...current.npcDispositionById,
           [ALDRIC_NPC_ID]: Math.max(
@@ -2423,10 +2981,12 @@ export const useGameState = (): GameState => {
     }
 
     if (currentStatus === "available") {
+      setCharacter(normalizeCharacterState(applyAffinityDelta(character, -8)));
       setStoryState((current) => ({
         ...current,
         rescueNpcStatus: "refused_once",
         rescueNpcUnreadCount: 0,
+        aldricRescueDeadlineAtMs: current.aldricRescueDeadlineAtMs,
         npcDispositionById: {
           ...current.npcDispositionById,
           [ALDRIC_NPC_ID]: Math.max(
@@ -2439,17 +2999,30 @@ export const useGameState = (): GameState => {
           [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
         },
       }));
+      setStoryNotification({
+        id: "aldric-refused-once",
+        title: "A Plea Not Yet Finished",
+        message:
+          "Aldric catches himself before leaving and asks one last time. He is still in the hall, still desperate, and still clinging to the hope that you will reconsider before he goes alone.",
+        variant: "guild",
+      });
       return {
         ok: true,
-        reason: "Aldric pleads again: \"Please, she is all I have. I beg you... reconsider.\"",
+        reason: "Aldric pleads one last time before he leaves the guild hall.",
         status: "refused_once" as RescueNpcStatus,
       };
     }
 
+    setCharacter(normalizeCharacterState(applyAffinityDelta(character, -12)));
     setStoryState((current) => ({
       ...current,
       rescueNpcStatus: "gone",
       rescueNpcUnreadCount: 0,
+      aldricRescueDeadlineAtMs: undefined,
+      aldricQuestPath: "refused",
+      aldricDarkPathStarted: true,
+      aldricOccasionalAidUnlocked: false,
+      aldricFloor30Pending: true,
       npcDispositionById: {
         ...current.npcDispositionById,
         [ALDRIC_NPC_ID]: Math.max(
@@ -2462,10 +3035,126 @@ export const useGameState = (): GameState => {
         [ALDRIC_NPC_ID]: (current.npcInteractionCountById[ALDRIC_NPC_ID] ?? 0) + 1,
       },
     }));
+    setStoryNotification({
+      id: "aldric-refused-route",
+      title: "Watchtrail Ends In Blood",
+      message:
+        "You refused Aldric's plea. He went after the bandits alone, failed, and came back broken. His daughter is dead. The bandit leader violated and murdered her, and Aldric survived wounded enough to end his life as a successful adventurer. By nightfall, his petition line is crossed out in soot-black ink.",
+      variant: "guild",
+    });
     return {
       ok: true,
       reason: "You refused again. Aldric quietly leaves the guild hall.",
       status: "gone" as RescueNpcStatus,
+    };
+  };
+
+  const respondThornRunnerIntroduction = (choice: ThornRunnerIntroductionChoice) => {
+    const lockedReason = character ? getChoiceLockedReason(character.affinity ?? 0, choice === "steady" ? "good" : "evil") : null;
+    if (lockedReason) {
+      return { ok: false, reason: lockedReason };
+    }
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (storyState.thornRunnerQuestStatus === "locked") {
+      return { ok: false, reason: "Tamsin has not opened corridor work for you yet." };
+    }
+    if (storyState.thornRunnerIntroductionChoice) {
+      return {
+        ok: false,
+        reason:
+          storyState.thornRunnerIntroductionChoice === "steady"
+            ? "Tamsin already marked you as someone who respects corridor work."
+            : "Tamsin already marked you as someone chasing the pay before the lane.",
+        choice: storyState.thornRunnerIntroductionChoice,
+      };
+    }
+
+    const dispositionDelta = choice === "steady" ? 12 : -6;
+    setCharacter(normalizeCharacterState(applyAffinityDelta(character, choice === "steady" ? 4 : -4)));
+    const summary =
+      choice === "steady"
+        ? "Tamsin now treats you like someone who understands Thorn Corridor is route work first and reward second."
+        : "Tamsin still posts work for you, but now watches to see whether coin matters more to you than bringing corridor work back alive.";
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerIntroductionChoice: choice,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[TAMSIN_NPC_ID] ?? 52) + dispositionDelta)),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      choice,
+      reason:
+        choice === "steady"
+          ? "Tamsin nods once and pins her snagline contract to the board. She trusts you with corridor work now."
+          : "Tamsin gives you the job anyway, but the look she leaves you with says she will remember where your mind went first.",
+    };
+  };
+
+  const acknowledgeThornRunnerFollowup = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (storyState.thornRunnerQuestStatus !== "completed") {
+      return { ok: false, reason: "Tamsin has no finished corridor notes to review yet." };
+    }
+    if (storyState.thornRunnerFollowupReviewed) {
+      return { ok: false, reason: "Tamsin has already walked you through her thorn notes." };
+    }
+
+    const summary =
+      storyState.thornRunnerIntroductionChoice === "mercenary"
+        ? "Tamsin records your corridor work in the guild ledger, but keeps her thorn notes practical and brief until you prove the lane matters more than the payout."
+        : "Tamsin adds you to her trusted thorn-lane ledger and leaves marked corridor notes open to you when Floor 2 work turns tight.";
+
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerFollowupReviewed: true,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(
+            0,
+            Math.min(
+              100,
+              (current.npcDispositionById[TAMSIN_NPC_ID] ?? 66) + (current.thornRunnerIntroductionChoice === "mercenary" ? 4 : 8),
+            ),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      reason:
+        storyState.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin logs the recovered satchel and gives you the short version of her corridor notes. You earned the work, but not the warm read."
+          : "Tamsin unseals her thorn notes for you and records the recovered satchel in her corridor ledger.",
     };
   };
 
@@ -2738,6 +3427,11 @@ export const useGameState = (): GameState => {
     devResetAppraisals,
     devTriggerLyraQuest,
     devTriggerAldricQuest,
+    devTriggerTamsinQuest,
+    devSetAldricOutcome,
+    devSetAffinity,
+    devSetupWarriorBattlePreset,
+    devPreviewQuestBoardContracts,
     getQuestSuccessChance,
     getQuestAccess,
     getTowerSuccessChance,
@@ -2778,6 +3472,8 @@ export const useGameState = (): GameState => {
     recordNpcInteraction,
     markNpcTabOpened,
     respondRescueNpcRequest,
+    respondThornRunnerIntroduction,
+    acknowledgeThornRunnerFollowup,
     respondFloorEncounter,
     respondTowerConditionalEncounter,
   };

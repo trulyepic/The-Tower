@@ -21,7 +21,24 @@ export type AdventurerRank = "F" | "E" | "D" | "C" | "B" | "A" | "S" | "SS";
 export type ItemRarity = "common" | "rare" | "epic" | "legendary";
 export type ItemCategory = "material" | "weapon" | "buff";
 export type QuestType = "gather" | "adventure" | "dungeon";
+export type QuestBoardCategory = "job" | "story" | "urgent" | "special" | "hunt" | "wanted";
+export type QuestCombatModel = "passive" | "live" | "raid";
+export type QuestThreadState =
+  | "discovered"
+  | "available"
+  | "accepted"
+  | "active"
+  | "paused"
+  | "follow_up"
+  | "timed_out"
+  | "failed"
+  | "refused"
+  | "completed"
+  | "archived";
 export type RescueNpcStatus = "locked" | "available" | "refused_once" | "accepted" | "gone";
+export type AldricQuestPath = "none" | "refused" | "too_late" | "saved";
+export type ThornRunnerQuestStatus = "locked" | "available" | "completed";
+export type ThornRunnerIntroductionChoice = "steady" | "mercenary";
 export type LyraQuestStatus = "locked" | "available" | "completed";
 export type LyraQuestResolution = "none" | "unresolved" | "returned" | "kept" | "reported";
 export type LyraContactStyle = "rescued" | "disciplined";
@@ -90,8 +107,17 @@ export interface FloorEncounterEventDefinition {
 }
 
 export interface StoryState {
+  questBoardPreviewEnabled?: boolean;
   rescueNpcStatus: RescueNpcStatus;
   rescueNpcUnreadCount: number;
+  aldricRescueDeadlineAtMs?: number;
+  aldricQuestPath: AldricQuestPath;
+  aldricDarkPathStarted: boolean;
+  aldricOccasionalAidUnlocked: boolean;
+  aldricFloor30Pending: boolean;
+  thornRunnerQuestStatus: ThornRunnerQuestStatus;
+  thornRunnerIntroductionChoice?: ThornRunnerIntroductionChoice;
+  thornRunnerFollowupReviewed?: boolean;
   npcDispositionById: Record<string, number>;
   npcInteractionCountById: Record<string, number>;
   lyraMet: boolean;
@@ -182,12 +208,18 @@ export interface QuestDefinition {
   id: string;
   title: string;
   type: QuestType;
+  boardCategory?: QuestBoardCategory;
+  combatModel?: QuestCombatModel;
   rank: AdventurerRank;
   minLevel: number;
   difficulty: 1 | 2 | 3 | 4 | 5;
   durationSeconds: number;
   staminaCost: number;
   baseSuccessChance: number;
+  loreSummary?: string;
+  raidLabel?: string;
+  encounterStages?: string[];
+  signatureMechanics?: string[];
   requiredItems: {
     itemId: ItemId;
     needed: number;
@@ -329,6 +361,36 @@ export interface StoryNotification {
   title: string;
   message: string;
   variant?: "guild" | "leaderboard" | "tower-collapse" | "main-quest";
+}
+
+export type TowerBattlePosition = "front" | "mid" | "rear";
+
+export interface TowerLiveBattleResponse {
+  telegraphId?: string;
+  enemyId: string;
+  mechanic: string;
+  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass";
+  responseId?: ItemId | AbilityId | TowerBattlePosition;
+  success: boolean;
+}
+
+export interface TowerLiveBattleDirective {
+  position: TowerBattlePosition;
+  skillId?: AbilityId | null;
+  braceUsed?: boolean;
+  itemIdsUsed?: ItemId[];
+  responses?: TowerLiveBattleResponse[];
+  focusAfterBattle?: number;
+  abilityCooldownsUntilMs?: Partial<Record<AbilityId, number>>;
+  persistentStatusEffects?: {
+    id: string;
+    name: string;
+    icon: string;
+    tone: "good" | "bad" | "neutral";
+    detail: string;
+    stacks?: number;
+    expiresAtMs?: number;
+  }[];
 }
 
 export interface DailyTask {
@@ -532,6 +594,9 @@ export interface TowerWaveOutcome {
   floorNumber: number;
   wave: TowerWaveKey;
   success: boolean;
+  collapsed?: boolean;
+  collapseMessage?: string;
+  battlePosition?: TowerBattlePosition;
   healthDelta: number;
   countered: number;
   triggered: number;
@@ -544,6 +609,8 @@ export interface TowerWaveOutcome {
     enemyRole?: "normal" | "subBoss" | "boss";
     enemyLevel: number;
     enemyHealth: number;
+    enemyHealthRemaining: number;
+    defeated: boolean;
     turnsToDefeat: number;
     playerDamagePerTurn: number;
     damageTaken: number;
@@ -562,6 +629,8 @@ export interface TowerWaveOutcome {
     icon: string;
     tone: "good" | "bad" | "neutral";
     detail: string;
+    stacks?: number;
+    expiresAtMs?: number;
   }[];
   conditionalEncounter?: {
     id: string;
