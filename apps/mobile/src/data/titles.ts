@@ -77,6 +77,20 @@ export const TITLES: TitleDefinition[] = [
     },
   },
   {
+    id: "title-first-snare",
+    name: "First Snare Survivor",
+    icon: "sprout-outline",
+    rarity: "rare",
+    minLevel: 5,
+    flavor: "Marked by the first floor that tried to pin the climb in place and bleed it of rhythm.",
+    abilityLabel: "Thorn-Taught",
+    bonuses: {
+      damageFlat: 3,
+      speedFlat: 2,
+      questSuccessFlat: 3,
+    },
+  },
+  {
     id: "title-crown-aspirant",
     name: "Crown Aspirant",
     icon: "crown-outline",

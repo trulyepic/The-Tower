@@ -158,7 +158,7 @@ Use for:
 
 Examples:
 - `Warden of Sparks Heart`
-- `Heartseed Core`
+- `Ophanim Core`
 - future floor cores / seals / relic shards
 
 ## Floor 1 Remnant Intent

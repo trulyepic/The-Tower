@@ -30,8 +30,12 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 38,
           icon: "spider",
           description: "Scavenger beast that swarms from the ash trenches.",
-          weaknessNotes: ["Torch pressure", "Antitoxin-prepared resistance"],
+          weaknessNotes: ["Torch pressure", "Antitoxin-prepared resistance", "Rear pressure opens its flank before the bite lands"],
           weaknessItemIds: ["torch", "antitoxin-vial"],
+          positioning: {
+            advantagePositions: ["rear"],
+            note: "Rear pressure gets outside the Ash Rat's rush and opens cleaner hits.",
+          },
           lore:
             "Guild ledgers say the Ash Rats were once ordinary vermin that nested around the first gate. After years of breathing ember soot and feeding on failed climbers' refuse, they turned lean, feverish, and cruel. New adventurers learn quickly that the Tower's smallest mouths are often the first to taste blood.",
           mechanics: [
@@ -47,8 +51,13 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 52,
           icon: "spider",
           description: "Carapaced crawler that burrows through ember grit.",
-          weaknessNotes: ["Torch exposure", "Guard impact control"],
+          weaknessNotes: ["Torch exposure", "Guard impact control", "Rear lane is too unstable while it burrows"],
           weaknessItemIds: ["torch", "guard-tonic"],
+          positioning: {
+            advantagePositions: ["front"],
+            blockedPositions: ["rear"],
+            note: "The Dust Crawler gives up more ground if you stay on its front and stop the burrow line.",
+          },
           lore:
             "Dust Crawlers move beneath the ash like living splinters of the floor itself. Old porters claim they were born from the Tower's discarded shell and taught to strike the feet of anyone rash enough to run without a torch.",
           mechanics: [
@@ -65,8 +74,13 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 120,
           icon: "shield-sword-outline",
           description: "Ancient armored guardian bound to the lower gate.",
-          weaknessNotes: ["Guard-breaking mixtures", "Lock bypass support"],
+          weaknessNotes: ["Guard-breaking mixtures", "Lock bypass support", "Front pressure breaks its guard read faster"],
           weaknessItemIds: ["guard-tonic", "lockpick"],
+          positioning: {
+            advantagePositions: ["front"],
+            blockedPositions: ["rear"],
+            note: "The Gate Sentinel controls the rear lane. Meet it from the front if you want to crack the guard.",
+          },
           lore:
             "The Gate Sentinel stands where the first vows of every climber are tested. Some guild masters teach that it is less a machine than a remnant oath given form, a ward left behind to judge whether a novice can force a path through fear.",
           mechanics: [
@@ -84,8 +98,12 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 190,
           icon: "lightning-bolt-circle",
           description: "A volatile flame warden channeling unstable arc charges.",
-          weaknessNotes: ["Grounding mixtures", "Ward protection"],
+          weaknessNotes: ["Grounding mixtures", "Ward protection", "Mid lane gives the cleanest read on its spark field"],
           weaknessItemIds: ["grounding-tonic", "ward-charm"],
+          positioning: {
+            advantagePositions: ["mid"],
+            note: "The Warden's arcs sweep wide. Mid lane gives the safest angle to read the field and answer cleanly.",
+          },
           lore:
             "The Warden of Sparks is remembered in campfire rumor as the first true sign that the Tower is awake. It gathers ash, light, and static into a burning will, and many climbers believe its crackling halo marks the point where Floor 1 stops being a trial and becomes a sentence.",
           mechanics: [
@@ -132,8 +150,8 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
       { itemId: "guard-tonic", needed: 1 },
     ],
     normalEnemies: ["Thorn Viper", "Needle Imp"],
-    subBosses: ["Briar Butcher"],
-    mainBosses: ["Spine Matron"],
+    subBosses: ["Scourge Seraph"],
+    mainBosses: ["Briar Ophanim"],
     enemyRoster: {
       normal: [
         {
@@ -144,13 +162,18 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 62,
           icon: "snake",
           description: "Living corridor viper that lashes venom through barbed vine growth.",
-          weaknessNotes: ["Thorn salve prep", "Antitoxin support"],
+          weaknessNotes: ["Thorn salve prep", "Antitoxin support", "Front pressure gets inside the coil before it can fully cinch"],
           weaknessItemIds: ["thorn-salve", "antitoxin-vial"],
+          positioning: {
+            advantagePositions: ["front"],
+            blockedPositions: ["rear"],
+            note: "The Thorn Viper owns the rear lane through its coil. Front pressure crowds the bite and opens it up.",
+          },
           lore:
             "By the second floor, the Tower stops testing courage and starts testing restraint. Thorn Vipers are said to have grown from roots watered by old blood, their bodies weaving through the corridor walls as if the brambles themselves wished to hunt.",
           mechanics: [
-            "Venom Thorn: layered thorn poison and bleed. Counter with Thorn Salve.",
-            "Coil Snare: binds movement and drags longer fights. Counter with Rope.",
+            "Venom Thorn: venom-laced barbs seed a slow poison that worsens when the fight drags. Counter with Thorn Salve.",
+            "Coil Snare: binds movement and punishes panic repositioning. Counter with Rope.",
           ],
         },
         {
@@ -161,8 +184,12 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
           health: 54,
           icon: "emoticon-devil-outline",
           description: "Shrieking corridor imp that harries climbers from thorn canopies.",
-          weaknessNotes: ["Torch tracking", "Speed-trimming sigils"],
+          weaknessNotes: ["Torch tracking", "Speed-trimming sigils", "Rear lane gives the clearest angle when it skitters through canopy cover"],
           weaknessItemIds: ["torch", "buff-gale-feather"],
+          positioning: {
+            advantagePositions: ["rear"],
+            note: "The Needle Imp overcommits when you drag the fight toward the rear and track the canopy line.",
+          },
           lore:
             "Needle Imps are not born so much as peeled from the bramble canopy. They chatter in half-heard voices and delight in driving climbers into wasteful panic, making the corridor feel narrower than it truly is.",
           mechanics: [
@@ -173,39 +200,49 @@ export const TOWER_FLOORS: TowerFloorDefinition[] = [
       ],
       subBoss: [
         {
-          id: "f2-briar-butcher",
-          name: "Briar Butcher",
+          id: "f2-scourge-seraph",
+          name: "Scourge Seraph",
           role: "subBoss",
           level: 7,
           health: 158,
           icon: "hook",
-          description: "A thorn-grown executioner that treats every corridor turn as a kill lane.",
-          weaknessNotes: ["Guard tonic timing", "Thorn salve preparation"],
-          weaknessItemIds: ["guard-tonic", "thorn-salve"],
+          description: "A thorn-winged executioner whose lash-ribbons turn the corridor into a sentence.",
+          weaknessNotes: ["Thorn salve preparation", "Guarded timing against forced drag", "It seals the rear lane; front pressure is the clean answer"],
+          weaknessItemIds: ["thorn-salve", "guard-tonic"],
+          positioning: {
+            advantagePositions: ["front"],
+            blockedPositions: ["rear"],
+            note: "The Scourge Seraph drags prey into the rear kill lane. Front pressure is dangerous, but it is the true opening.",
+          },
           lore:
-            "The Briar Butcher is feared among low-rank survivors because it behaves like a jailer that remembers its trade. Hooks, roots, and dragged bodies all feature in the stories told by those who fled the corridor before it closed around them.",
+            "Guild prayer books compare the thing to a seraph only because no lower word feels severe enough. It does not sing, bless, or burn. It descends through the corridor trailing thorn cords like scourges and leaves climbers hanging where the roots can finish the work.",
           mechanics: [
-            "Hook Rend: opens deep bleeding wounds. Counter with Thorn Salve.",
-            "Bramble Lariat: drags prey into hazard lanes. Counter with Rope.",
+            "Seven-Lash Penance: layered barbed strikes open stacking bleed. Counter with Thorn Salve.",
+            "Cincture Drag: thorn cords yank you into the kill lane and punish weak guard. Counter with Guard Tonic.",
           ],
         },
       ],
       boss: [
         {
-          id: "f2-spine-matron",
-          name: "Spine Matron",
+          id: "f2-briar-ophanim",
+          name: "Briar Ophanim",
           role: "boss",
           level: 9,
           health: 236,
-          icon: "flower-pollen",
-          description: "The heart of the corridor, pulsing thorn life into every trapped lane around her.",
-          weaknessNotes: ["Ward layering", "Sustained thorn mitigation"],
-          weaknessItemIds: ["ward-charm", "thorn-salve"],
+          icon: "eye-circle-outline",
+          description: "A many-eyed wheel of root and thorn that turns the whole corridor into judgment.",
+          weaknessNotes: ["Ward layering", "Rope discipline under lane pressure", "Mid lane is the only stable read once the wheel starts turning"],
+          weaknessItemIds: ["ward-charm", "rope"],
+          positioning: {
+            advantagePositions: ["mid"],
+            blockedPositions: ["rear"],
+            note: "Once the Briar Ophanim starts turning, the rear lane collapses. Mid lane is the only reliable place to read and strike.",
+          },
           lore:
-            "Some archivists insist the Spine Matron was once a living altar, turned feral when the Tower's lower veins split open. Whether that tale is true or not, every vine on the floor seems to answer her breathing, and every wound she opens tries to bloom wider.",
+            "Some old scribes insist the lower Tower once housed watcher-engines shaped after the heavenly wheels named in forbidden commentaries. Whatever truth remains in that rumor, the Briar Ophanim rolls with too many eyes, too many roots, and a patience that feels liturgical rather than animal.",
           mechanics: [
-            "Thorn Cage: binds the arena and turns every opening into bleed pressure. Counter with Thorn Salve.",
-            "Heartseed Pulse: corridor pain suppresses recovery and feeds the floor. Counter with Ward Charm.",
+            "Wheel of Briars: rotating thorn rings shear safe ground and force bleed attrition. Counter with Rope.",
+            "Many-Eyed Verdict: its gaze suppresses recovery and punishes repeated greed. Counter with Ward Charm.",
           ],
         },
       ],

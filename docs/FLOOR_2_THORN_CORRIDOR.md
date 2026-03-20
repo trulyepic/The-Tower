@@ -14,8 +14,8 @@ Progression reference:
 - Floor Name: `Thorn Corridor`
 - Subtitle: `The First Snare`
 - Intended Gate:
-  - `Adventurer Rank E`
-  - `Level 5`
+  - `Soft recommendation: Adventurer Rank E`
+  - `Soft recommendation: Level 5`
 
 ## Story Purpose
 
@@ -55,16 +55,21 @@ The floor should push the player to think in terms of:
 - `bringing enough healing to survive extended pressure`
 - `recognizing that one floor can demand a different kind of preparation than the last`
 
+Roster rule for this floor and future floors:
+- normal enemies may reuse status families or pressure patterns in moderation
+- sub-bosses and main bosses should feel unique to the floor
+- later floor bosses should increasingly draw from biblical or biblical-adjacent fantasy imagery rather than reading like generic corridor creatures
+
 ## Enemy Identity
 
 ### Normal Wave
 
 #### Thorn Viper
-- role: poison / bleed opener
+- role: bind-first opener with poison support
 - teaches:
-  - layered pressure
-  - salve use
+  - poison can support a floor without defining the whole floor
   - movement control consequences
+  - salve use under longer pressure
 
 Mechanics:
 - `Venom Thorn`
@@ -82,26 +87,28 @@ Mechanics:
 
 ### Sub-Boss
 
-#### Briar Butcher
+#### Scourge Seraph
 - role: corridor executioner
 - teaches:
   - single mistakes become serious when drag + bleed stack together
+  - Floor 2 sub-bosses should feel more mythic than the normal roster
 
 Mechanics:
-- `Hook Rend`
-- `Bramble Lariat`
+- `Seven-Lash Penance`
+- `Cincture Drag`
 
 ### Main Boss
 
-#### Spine Matron
+#### Briar Ophanim
 - role: floor identity boss
 - teaches:
   - the floor itself can support the boss
   - recovery denial is as dangerous as direct damage
+  - a main boss can feel like a tower myth, not just a larger plant creature
 
 Mechanics:
-- `Thorn Cage`
-- `Heartseed Pulse`
+- `Wheel of Briars`
+- `Many-Eyed Verdict`
 
 ## Recommended Supplies
 
@@ -152,7 +159,7 @@ Floor 2 is supported by early E-rank board work.
   - corridor salvage scout
   - recovers snagged satchels, cut route-lines, and abandoned climb records from thorn lanes
 - first function:
-  - becomes available through the guild once the player is truly Floor 2-ready
+  - becomes available through the guild once the player has truly cleared Floor 1 and started living in Floor 2's shadow
   - posts a special Quest Board contract instead of interrupting the climb directly
   - first guild interaction asks what kind of runner you are before she fully trusts you with thorn-lane work
 - tone:
@@ -203,8 +210,8 @@ Floor 2 rewards should feel like:
 ### Guaranteed Identity Drops
 - `Thorn Viper Fang`
 - `Needle Imp Quill`
-- `Butcher Hook`
-- `Heartseed Core`
+- `Scourge Hook`
+- `Ophanim Core`
 
 ### Bonus Reward Goals
 - `Briar Resin`
@@ -239,7 +246,7 @@ Players should understand Floor 2 as:
 
 That means the UI should keep reinforcing:
 - this is `Floor 2`
-- this floor expects `Rank E`
+- this floor recommends `Rank E`
 - this floor specializes in thorn / bind / attrition pressure
 
 ## Current Implementation Checklist
@@ -251,6 +258,9 @@ That means the UI should keep reinforcing:
 - [x] Store support exists for `Thorn Salve`
 - [x] Rare class weapon targets exist
 - [x] Floor lore exists
-- [ ] Floor 2-specific main-quest chapter text should become more explicit after the first clear of Floor 1
-- [ ] Add one Floor 2-specific title reward if testing shows the sigil + weapon step is not enough
-- [ ] Add Floor 2-specific NPC/story interaction if needed after first playtest pass
+- [x] Floor 2-specific main-quest chapter text now points back to Tamsin once the player has a real corridor report to file
+- [x] Added one Floor 2-specific title reward step through first clear recognition
+- [x] Added Floor 2-specific NPC/story interaction through Tamsin's first Thorn Corridor report
+- [x] Added a later Floor 2 NPC/story warning through Tamsin after the sub-boss lane is broken
+- [x] Added an in-tower Tamsin route-mark encounter after the Floor 2 sub-boss clear
+- [x] Added a post-Floor-2-clear Tamsin aftermath step so Thorn Corridor closes as a real chapter in the guild world

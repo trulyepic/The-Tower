@@ -76,6 +76,7 @@ const RESCUE_QUEST_ID = "quest-aldric-child-rescue";
 const LYRA_QUEST_ID = "quest-lyra-ember-maps";
 const TAMSIN_QUEST_ID = "quest-tamsin-snagline-recovery";
 const TAMSIN_NPC_ID = "npc-tamsin-vale";
+const FLOOR_TWO_TITLE_ID = "title-first-snare";
 const ALDRIC_RESCUE_DURATION_MS = 6 * 60 * 1000;
 const FLOOR_INTEL_QUEST_UNLOCKS: Partial<Record<string, number>> = {
   "gather-shrine-wards": 1,
@@ -86,6 +87,7 @@ const FLOOR_INTEL_NPC_UNLOCKS: Partial<Record<string, number>> = {
   [LYRA_QUEST_ID]: 1,
 };
 const LYRA_CONDITIONAL_ENCOUNTER_ID = "tower-floor1-lyra-intercept";
+const TAMSIN_CONDITIONAL_ENCOUNTER_ID = "tower-floor2-tamsin-route-mark";
 const ALDRIC_NPC_ID = "npc-aldric-vale";
 const ALDRIC_ALLY_ID = "ally-aldric-vale";
 const MAX_EQUIPPED_PASSIVES = 2;
@@ -144,6 +146,13 @@ const DEFAULT_STORY_STATE: StoryState = {
   thornRunnerQuestStatus: "locked",
   thornRunnerIntroductionChoice: undefined,
   thornRunnerFollowupReviewed: undefined,
+  thornRunnerCorridorReportReady: false,
+  thornRunnerCorridorReportReviewed: false,
+  thornRunnerDeepLaneWarningReady: false,
+  thornRunnerDeepLaneWarningReviewed: false,
+  thornRunnerFloorTwoAftermathReady: false,
+  thornRunnerFloorTwoAftermathReviewed: false,
+  floorTwoTitleBackfillNotified: false,
   npcDispositionById: {},
   npcInteractionCountById: {},
   lyraMet: false,
@@ -554,6 +563,10 @@ export interface GameState {
   devTriggerLyraQuest: () => { ok: boolean; reason?: string };
   devTriggerAldricQuest: () => { ok: boolean; reason?: string };
   devTriggerTamsinQuest: () => { ok: boolean; reason?: string };
+  devTriggerTamsinCorridorReport: () => { ok: boolean; reason?: string };
+  devTriggerTamsinDeepLaneWarning: () => { ok: boolean; reason?: string };
+  devTriggerTamsinFloorTwoAftermath: () => { ok: boolean; reason?: string };
+  devTriggerTamsinLateFloorTwoAftermath: () => { ok: boolean; reason?: string };
   devSetAldricOutcome: (path: "saved" | "too_late") => { ok: boolean; reason?: string };
   devSetAffinity: (value: number) => { ok: boolean; reason?: string };
   devSetupWarriorBattlePreset: (preset: "shared" | "knight" | "berserker") => { ok: boolean; reason?: string };
@@ -588,6 +601,7 @@ export interface GameState {
   deactivateClassAbility: (abilityId?: ItemId) => { ok: boolean; reason?: string };
   useSkillResourceItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
+  useQuestRushItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useTowerConsumableItem: (itemId: ItemId) => { ok: boolean; reason?: string };
   startQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   claimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
@@ -612,6 +626,9 @@ export interface GameState {
     choice: ThornRunnerIntroductionChoice,
   ) => { ok: boolean; reason?: string; choice?: ThornRunnerIntroductionChoice };
   acknowledgeThornRunnerFollowup: () => { ok: boolean; reason?: string };
+  acknowledgeThornRunnerCorridorReport: () => { ok: boolean; reason?: string };
+  acknowledgeThornRunnerDeepLaneWarning: () => { ok: boolean; reason?: string };
+  acknowledgeThornRunnerFloorTwoAftermath: () => { ok: boolean; reason?: string };
   respondFloorEncounter: (
     floorNumber: number,
     encounterId: string,
@@ -1069,10 +1086,62 @@ export const useGameState = (): GameState => {
     if (!isHydrated || !character) {
       return;
     }
+    if ((character.towerProgress?.highestFloorCleared ?? 0) < 2) {
+      return;
+    }
+    if ((character.ownedTitleIds ?? []).includes(FLOOR_TWO_TITLE_ID) && storyState.floorTwoTitleBackfillNotified) {
+      return;
+    }
+
+    const needsTitle = !(character.ownedTitleIds ?? []).includes(FLOOR_TWO_TITLE_ID);
+    if (needsTitle) {
+      setCharacter((current) =>
+        current
+          ? normalizeCharacterState({
+              ...current,
+              ownedTitleIds: Array.from(new Set([...(current.ownedTitleIds ?? []), FLOOR_TWO_TITLE_ID])),
+              discoveredTitleIds: Array.from(new Set([...(current.discoveredTitleIds ?? []), FLOOR_TWO_TITLE_ID])),
+              titleProgressById: {
+                ...(current.titleProgressById ?? {}),
+                [FLOOR_TWO_TITLE_ID]: Math.max(1, current.titleProgressById?.[FLOOR_TWO_TITLE_ID] ?? 0),
+              },
+            })
+          : current,
+      );
+    }
+
+    if (storyState.floorTwoTitleBackfillNotified) {
+      return;
+    }
+
+    setStoryState((current) =>
+      current.floorTwoTitleBackfillNotified
+        ? current
+        : {
+            ...current,
+            floorTwoTitleBackfillNotified: true,
+          },
+    );
+    setStoryNotification((current) =>
+      current?.id === "title-backfill-floor2" || current
+        ? current
+        : {
+            id: "title-backfill-floor2",
+            title: "Guild Record Updated",
+            message: "First Snare Survivor has been added to your title archive for clearing Floor 2: Thorn Corridor.",
+            variant: "guild",
+          },
+    );
+  }, [isHydrated, character, storyState.floorTwoTitleBackfillNotified]);
+
+  useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
     if (storyState.thornRunnerQuestStatus !== "locked") {
       return;
     }
-    if (character.adventurerRank === "F" || character.progression.level < 5) {
+    if ((character.towerProgress?.highestFloorCleared ?? 0) < 1) {
       return;
     }
 
@@ -1104,6 +1173,151 @@ export const useGameState = (): GameState => {
           },
     );
   }, [isHydrated, character, storyState.thornRunnerQuestStatus]);
+
+  useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
+    if (
+      !storyState.thornRunnerFollowupReviewed ||
+      storyState.thornRunnerCorridorReportReady ||
+      storyState.thornRunnerCorridorReportReviewed
+    ) {
+      return;
+    }
+    if ((storyState.floorAttemptByNumber["2"] ?? 0) <= 0) {
+      return;
+    }
+
+    setStoryState((current) => {
+      if (
+        !current.thornRunnerFollowupReviewed ||
+        current.thornRunnerCorridorReportReady ||
+        current.thornRunnerCorridorReportReviewed
+      ) {
+        return current;
+      }
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary:
+          "Tamsin wants your first real report from Floor 2: Thorn Corridor before she decides how much of her corridor ledger to open for the climb ahead.",
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerCorridorReportReady: true,
+      };
+    });
+    setStoryNotification((current) =>
+      current?.id === "tamsin-corridor-report"
+        ? current
+        : {
+            id: "tamsin-corridor-report",
+            title: "Tamsin Wants A Thorn Report",
+            message:
+              "You have crossed into Thorn Corridor. Tamsin wants your first real report from inside the lane before she opens more of her route ledger to you.",
+            variant: "guild",
+          },
+    );
+  }, [
+    isHydrated,
+    character,
+    storyState.thornRunnerFollowupReviewed,
+    storyState.thornRunnerCorridorReportReady,
+    storyState.thornRunnerCorridorReportReviewed,
+    storyState.floorAttemptByNumber,
+  ]);
+
+  useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
+    if ((character.towerProgress?.highestFloorCleared ?? 0) < 2) {
+      return;
+    }
+    if (storyState.thornRunnerFloorTwoAftermathReady || storyState.thornRunnerFloorTwoAftermathReviewed) {
+      return;
+    }
+
+    if (!storyState.thornRunnerIntroductionChoice) {
+      setStoryState((current) => {
+        if (
+          (character.towerProgress?.highestFloorCleared ?? 0) < 2 ||
+          current.thornRunnerFloorTwoAftermathReady ||
+          current.thornRunnerFloorTwoAftermathReviewed ||
+          current.thornRunnerIntroductionChoice
+        ) {
+          return current;
+        }
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...TAMSIN_PROFILE_BASE,
+          summary:
+            "Tamsin did not get her corridor briefing in front of you before you cleared Floor 2: Thorn Corridor anyway. She now wants a direct guild-side talk about what you saw and what it means that you came back without her route help.",
+        });
+        return {
+          ...current,
+          ...upserted,
+          thornRunnerFloorTwoAftermathReady: true,
+        };
+      });
+      setStoryNotification((current) =>
+        current?.id === "tamsin-late-floor2-aftermath"
+          ? current
+          : {
+              id: "tamsin-late-floor2-aftermath",
+              title: "Tamsin Wants A Late Corridor Talk",
+              message:
+                "You cleared Floor 2: Thorn Corridor before taking Tamsin's route work. She wants to speak with you in the guild about what you saw down there.",
+              variant: "guild",
+            },
+      );
+      return;
+    }
+
+    if (!storyState.thornRunnerDeepLaneWarningReviewed) {
+      return;
+    }
+
+    setStoryState((current) => {
+      if (
+        !current.thornRunnerDeepLaneWarningReviewed ||
+        current.thornRunnerFloorTwoAftermathReady ||
+        current.thornRunnerFloorTwoAftermathReviewed
+      ) {
+        return current;
+      }
+      const summary =
+        current.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin has a cooler answer for your Floor 2 clear, but even she admits Thorn Corridor did not break your climb. The guild is starting to treat you like someone who can come back from real floor pressure alive."
+          : "Tamsin wants to close the ledger on your first Thorn Corridor clear. The guild is starting to treat you like someone who can survive a floor built to trap and bleed climbers instead of simply batter them.";
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerFloorTwoAftermathReady: true,
+      };
+    });
+    setStoryNotification((current) =>
+      current?.id?.startsWith("tamsin-floor2-aftermath")
+        ? current
+        : {
+            id: `tamsin-floor2-aftermath-${Date.now()}`,
+            title: "Floor 2 Aftermath Waiting",
+            message: "Tamsin wants to close out Thorn Corridor with you. The guild is already reacting to your first full Floor 2 clear.",
+            variant: "guild",
+          },
+    );
+  }, [
+    isHydrated,
+    character,
+    storyState.thornRunnerIntroductionChoice,
+    storyState.thornRunnerDeepLaneWarningReviewed,
+    storyState.thornRunnerFloorTwoAftermathReady,
+    storyState.thornRunnerFloorTwoAftermathReviewed,
+  ]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -1329,21 +1543,6 @@ export const useGameState = (): GameState => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
-    const currentCharacter = applyTimedState(character, Date.now());
-    const leveledCharacter =
-      currentCharacter.progression.level >= 5 && currentCharacter.adventurerRank !== "F"
-        ? currentCharacter
-        : normalizeCharacterState({
-            ...currentCharacter,
-            progression: {
-              ...currentCharacter.progression,
-              level: Math.max(5, currentCharacter.progression.level),
-              xpInLevel: 0,
-              xpToNextLevel: getXpToNextLevel(Math.max(5, currentCharacter.progression.level)),
-            },
-            adventurerRank: currentCharacter.adventurerRank === "F" ? "E" : currentCharacter.adventurerRank,
-          });
-    setCharacter(leveledCharacter);
     setStoryState((current) => {
       const npcState = upsertEncounteredStoryNpc(current, TAMSIN_PROFILE_BASE);
       return {
@@ -1364,6 +1563,164 @@ export const useGameState = (): GameState => {
       variant: "guild",
     });
     return { ok: true, reason: "Dev Tamsin trigger applied. Her Floor 2 quest is available." };
+  };
+
+  const devTriggerTamsinCorridorReport = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setStoryState((current) => {
+      const npcState = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary:
+          "Tamsin wants your first real Thorn Corridor report before she decides how much of her corridor ledger to open for the climb ahead.",
+      });
+      return {
+        ...current,
+        ...npcState,
+        thornRunnerQuestStatus: "completed",
+        thornRunnerIntroductionChoice: current.thornRunnerIntroductionChoice ?? "steady",
+        thornRunnerFollowupReviewed: true,
+        thornRunnerCorridorReportReady: true,
+        thornRunnerCorridorReportReviewed: false,
+        floorAttemptByNumber: {
+          ...current.floorAttemptByNumber,
+          "2": Math.max(1, current.floorAttemptByNumber["2"] ?? 0),
+        },
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, current.npcDispositionById[TAMSIN_NPC_ID] ?? 68)),
+        },
+      };
+    });
+    setStoryNotification({
+      id: "tamsin-corridor-report-dev",
+      title: "Tamsin Wants A Thorn Report",
+      message: "Tamsin's post-entry Floor 2: Thorn Corridor report is now ready for testing in the NPC Hall.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Tamsin corridor report trigger applied. Her Floor 2 follow-up is ready." };
+  };
+
+  const devTriggerTamsinDeepLaneWarning = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setStoryState((current) => {
+      const summary =
+        "Tamsin wants to brief you on what changed deeper in Floor 2: Thorn Corridor after the execution lane broke. She thinks the floor beyond the lash-path is not just thorn growth anymore.";
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerQuestStatus: "completed",
+        thornRunnerIntroductionChoice: current.thornRunnerIntroductionChoice ?? "steady",
+        thornRunnerFollowupReviewed: true,
+        thornRunnerCorridorReportReady: false,
+        thornRunnerCorridorReportReviewed: true,
+        thornRunnerDeepLaneWarningReady: true,
+        thornRunnerDeepLaneWarningReviewed: false,
+        floorAttemptByNumber: {
+          ...current.floorAttemptByNumber,
+          "2": Math.max(2, current.floorAttemptByNumber["2"] ?? 0),
+        },
+      };
+    });
+    setStoryNotification({
+      id: `dev-tamsin-deep-lane-warning-${Date.now()}`,
+      title: "Tamsin Marked A Deeper Threat",
+      message: "Tamsin's next Floor 2: Thorn Corridor warning is now ready for testing in the NPC Hall.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Tamsin deep-lane warning trigger applied. Her next Floor 2 return is ready." };
+  };
+
+  const devTriggerTamsinFloorTwoAftermath = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setStoryState((current) => {
+      const summary =
+        "Tamsin wants to close the ledger on your first Thorn Corridor clear. The guild is already reacting to the fact that you came back from Floor 2 alive.";
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerQuestStatus: "completed",
+        thornRunnerIntroductionChoice: current.thornRunnerIntroductionChoice ?? "steady",
+        thornRunnerFollowupReviewed: true,
+        thornRunnerCorridorReportReady: false,
+        thornRunnerCorridorReportReviewed: true,
+        thornRunnerDeepLaneWarningReady: false,
+        thornRunnerDeepLaneWarningReviewed: true,
+        thornRunnerFloorTwoAftermathReady: true,
+        thornRunnerFloorTwoAftermathReviewed: false,
+        floorAttemptByNumber: {
+          ...current.floorAttemptByNumber,
+          "2": Math.max(3, current.floorAttemptByNumber["2"] ?? 0),
+        },
+      };
+    });
+    setStoryNotification({
+      id: `dev-tamsin-floor2-aftermath-${Date.now()}`,
+      title: "Floor 2 Aftermath Ready",
+      message: "Tamsin's post-clear Thorn Corridor aftermath is now ready for testing in the NPC Hall.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Tamsin Floor 2 aftermath trigger applied. Her post-clear reaction is ready." };
+  };
+
+  const devTriggerTamsinLateFloorTwoAftermath = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setCharacter((current) =>
+      current
+        ? normalizeCharacterState({
+            ...current,
+            towerProgress: {
+              highestFloorCleared: Math.max(2, current.towerProgress?.highestFloorCleared ?? 0),
+            },
+          })
+        : current,
+    );
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary:
+          "Tamsin did not get her corridor briefing in front of you before you cleared Floor 2: Thorn Corridor anyway. She now wants a direct guild-side talk about what you saw and what it means that you came back without her route help.",
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerQuestStatus: current.thornRunnerQuestStatus === "locked" ? "available" : current.thornRunnerQuestStatus,
+        thornRunnerIntroductionChoice: undefined,
+        thornRunnerFollowupReviewed: undefined,
+        thornRunnerCorridorReportReady: false,
+        thornRunnerCorridorReportReviewed: false,
+        thornRunnerDeepLaneWarningReady: false,
+        thornRunnerDeepLaneWarningReviewed: false,
+        thornRunnerFloorTwoAftermathReady: true,
+        thornRunnerFloorTwoAftermathReviewed: false,
+        floorAttemptByNumber: {
+          ...current.floorAttemptByNumber,
+          "2": Math.max(3, current.floorAttemptByNumber["2"] ?? 0),
+        },
+      };
+    });
+    setStoryNotification({
+      id: `dev-tamsin-late-floor2-aftermath-${Date.now()}`,
+      title: "Tamsin Late Floor 2 Catch-Up Ready",
+      message: "Tamsin's late-entry Floor 2 aftermath is now ready for testing in the NPC Hall.",
+      variant: "guild",
+    });
+    return { ok: true, reason: "Dev Tamsin late Floor 2 aftermath trigger applied." };
   };
 
   const devSetAldricOutcome = (path: "saved" | "too_late") => {
@@ -1538,11 +1895,6 @@ export const useGameState = (): GameState => {
     () =>
       character
         ? QUESTS.filter((quest) => {
-            const playerRankIndex = getRankOrderIndex(character.adventurerRank);
-            const questRankIndex = getRankOrderIndex(quest.rank);
-            if (questRankIndex > playerRankIndex) {
-              return false;
-            }
             if (quest.id === RESCUE_QUEST_ID) {
               return storyState.rescueNpcStatus === "accepted";
             }
@@ -1955,13 +2307,55 @@ export const useGameState = (): GameState => {
       return { ok: false, reason: result.reason ?? "Unable to challenge floor." };
     }
 
-    captureLevelUpEvent(currentCharacter, result.character);
-    setCharacter(normalizeCharacterState(result.character));
+    let nextCharacter = result.character;
+    let titleRewardId: string | undefined;
+    if (
+      result.outcome?.success &&
+      floorNumber === 2 &&
+      !(nextCharacter.ownedTitleIds ?? []).includes(FLOOR_TWO_TITLE_ID)
+    ) {
+      titleRewardId = FLOOR_TWO_TITLE_ID;
+      nextCharacter = normalizeCharacterState({
+        ...nextCharacter,
+        ownedTitleIds: Array.from(new Set([...(nextCharacter.ownedTitleIds ?? []), FLOOR_TWO_TITLE_ID])),
+        discoveredTitleIds: Array.from(new Set([...(nextCharacter.discoveredTitleIds ?? []), FLOOR_TWO_TITLE_ID])),
+        titleProgressById: {
+          ...(nextCharacter.titleProgressById ?? {}),
+          [FLOOR_TWO_TITLE_ID]: 1,
+        },
+      });
+    }
+
+    const sanitizeTowerConditionalEncounter = (encounter: TowerWaveOutcome["conditionalEncounter"]) => {
+      if (!encounter) {
+        return undefined;
+      }
+      if (encounter.id !== TAMSIN_CONDITIONAL_ENCOUNTER_ID) {
+        return encounter;
+      }
+      const tamsinThreadStarted = Boolean(storyState.thornRunnerIntroductionChoice);
+      const warningBeatEligible =
+        tamsinThreadStarted &&
+        storyState.thornRunnerCorridorReportReviewed &&
+        !storyState.thornRunnerDeepLaneWarningReady &&
+        !storyState.thornRunnerDeepLaneWarningReviewed;
+      return warningBeatEligible ? encounter : undefined;
+    };
+
+    const sanitizedOutcome = result.outcome
+      ? {
+          ...result.outcome,
+          conditionalEncounter: sanitizeTowerConditionalEncounter(result.outcome.conditionalEncounter),
+        }
+      : null;
+
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(normalizeCharacterState(nextCharacter));
     setDailies(result.dailies);
-    setLastTowerOutcome(result.outcome ?? null);
+    setLastTowerOutcome(sanitizedOutcome ? { ...sanitizedOutcome, titleRewardId } : null);
     setLastRankUpOutcome(null);
     setStoryState((current) => {
-      const conditionalEncounter = result.outcome?.conditionalEncounter;
+      const conditionalEncounter = sanitizedOutcome?.conditionalEncounter;
       const upserted = conditionalEncounter
         ? upsertEncounteredStoryNpc(current, {
             id: conditionalEncounter.id,
@@ -1995,9 +2389,20 @@ export const useGameState = (): GameState => {
       };
     });
     if (result.outcome?.success) {
-      applyClimberCheckpointUpdate("tower_clear", result.character);
+      applyClimberCheckpointUpdate("tower_clear", nextCharacter);
+      if (titleRewardId) {
+        const title = TITLE_BY_ID[titleRewardId];
+        if (title) {
+          setStoryNotification({
+            id: `title-reward-${titleRewardId}-${Date.now()}`,
+            title: "Title Earned",
+            message: `${title.name} was added to your title archive for clearing Floor 2: Thorn Corridor.`,
+            variant: "guild",
+          });
+        }
+      }
     }
-    return { ok: true, reason: result.outcome?.summary };
+    return { ok: true, reason: sanitizedOutcome?.summary };
   };
 
   const resolveTowerWave = (
@@ -2052,8 +2457,25 @@ export const useGameState = (): GameState => {
     });
     captureLevelDownEvent(currentCharacter, adjustedCharacter, "Tower wave collapse");
     setCharacter(adjustedCharacter);
+    const sanitizeTowerConditionalEncounter = (encounter: TowerWaveOutcome["conditionalEncounter"]) => {
+      if (!encounter) {
+        return undefined;
+      }
+      if (encounter.id !== TAMSIN_CONDITIONAL_ENCOUNTER_ID) {
+        return encounter;
+      }
+      const tamsinThreadStarted = Boolean(storyState.thornRunnerIntroductionChoice);
+      const warningBeatEligible =
+        tamsinThreadStarted &&
+        storyState.thornRunnerCorridorReportReviewed &&
+        !storyState.thornRunnerDeepLaneWarningReady &&
+        !storyState.thornRunnerDeepLaneWarningReviewed;
+      return warningBeatEligible ? encounter : undefined;
+    };
+
     const outcome = {
       ...result.outcome,
+      conditionalEncounter: sanitizeTowerConditionalEncounter(result.outcome.conditionalEncounter),
       collapsed: collapsedInTower,
       collapseMessage: collapsedInTower
         ? "A hush of ancient mercy closes around you. The Tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again."
@@ -2886,6 +3308,50 @@ export const useGameState = (): GameState => {
     return { ok: true, reason: `${itemLabel} used. Recovered ${nextHealth - currentCharacter.health} HP.` };
   };
 
+  const useQuestRushItem = (itemId?: ItemId) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!activeQuest) {
+      return { ok: false, reason: "No active quest to speed up right now." };
+    }
+    if (activeQuest.questId === RESCUE_QUEST_ID) {
+      return { ok: false, reason: "Aldric's rescue is already live and cannot be rushed with a token." };
+    }
+    const consumeItemId: ItemId = itemId ?? "quickthread-token";
+    if (consumeItemId !== "quickthread-token") {
+      return { ok: false, reason: "That item cannot accelerate quest time." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const owned = currentCharacter.inventory[consumeItemId] ?? 0;
+    if (owned <= 0) {
+      return { ok: false, reason: "No Quickthread Tokens in inventory." };
+    }
+    const nowMs = Date.now();
+    if (activeQuest.endsAtMs <= nowMs) {
+      return { ok: false, reason: "This quest is already ready to resolve." };
+    }
+    const remainingMs = activeQuest.endsAtMs - nowMs;
+    const nextRemainingMs = remainingMs <= 15000 ? 1000 : Math.max(15000, Math.round(remainingMs * 0.35));
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        inventory: {
+          ...(currentCharacter.inventory ?? {}),
+          [consumeItemId]: owned - 1,
+        },
+      }),
+    );
+    setActiveQuest({
+      ...activeQuest,
+      endsAtMs: nowMs + nextRemainingMs,
+    });
+    return {
+      ok: true,
+      reason: `Quickthread Token burned. ${Math.max(1, Math.round((1 - nextRemainingMs / remainingMs) * 100))}% of the remaining wait was cut away.`,
+    };
+  };
+
   const useTowerConsumableItem = (itemId: ItemId) => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
@@ -3158,6 +3624,167 @@ export const useGameState = (): GameState => {
     };
   };
 
+  const acknowledgeThornRunnerCorridorReport = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!storyState.thornRunnerCorridorReportReady) {
+      return { ok: false, reason: "Tamsin has not asked for your first corridor report yet." };
+    }
+    if (storyState.thornRunnerCorridorReportReviewed) {
+      return { ok: false, reason: "Tamsin has already filed your first Thorn Corridor report." };
+    }
+
+    const summary =
+      storyState.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin files your first report from Floor 2: Thorn Corridor with a cooler hand, but she opens enough of her route ledger to prove the thorns respect work brought back alive."
+          : "Tamsin files your first report from Floor 2: Thorn Corridor and opens more of her thorn-runner ledger to you, treating your climb as one that can survive deliberate pressure instead of only blunt damage.";
+
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerCorridorReportReady: false,
+        thornRunnerCorridorReportReviewed: true,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(
+            0,
+            Math.min(
+              100,
+              (current.npcDispositionById[TAMSIN_NPC_ID] ?? 72) + (current.thornRunnerIntroductionChoice === "mercenary" ? 4 : 8),
+            ),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      reason:
+        storyState.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin files your first corridor report and opens the practical pieces of her route ledger, even if she still keeps the warmer trust at arm's length."
+          : "Tamsin files your first Thorn Corridor report and opens more of her route ledger to support the climb ahead.",
+    };
+  };
+
+  const acknowledgeThornRunnerDeepLaneWarning = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!storyState.thornRunnerDeepLaneWarningReady) {
+      return { ok: false, reason: "Tamsin has not marked a deeper corridor warning for you yet." };
+    }
+    if (storyState.thornRunnerDeepLaneWarningReviewed) {
+      return { ok: false, reason: "Tamsin has already walked you through the deeper corridor warning." };
+    }
+
+    const summary =
+      storyState.thornRunnerIntroductionChoice === "mercenary"
+        ? "Tamsin marks the deeper corridor with a cool hand and warns that the floor beyond the lash-lane is starting to move like judgment, not vegetation."
+        : "Tamsin marks the deeper corridor in her ledger and warns that the floor beyond the lash-lane is starting to move like judgment, not vegetation.";
+
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerDeepLaneWarningReady: false,
+        thornRunnerDeepLaneWarningReviewed: true,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(
+            0,
+            Math.min(
+              100,
+              (current.npcDispositionById[TAMSIN_NPC_ID] ?? 78) + (current.thornRunnerIntroductionChoice === "mercenary" ? 3 : 6),
+            ),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      reason:
+        storyState.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin marks the deeper corridor warning in her ledger and gives you the practical version: do not mistake what waits deeper in Floor 2 for just another thorn brute."
+          : "Tamsin marks the deeper corridor warning in her ledger and tells you plainly: what waits deeper in Floor 2 is no longer just thorn growth with teeth.",
+    };
+  };
+
+  const acknowledgeThornRunnerFloorTwoAftermath = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!storyState.thornRunnerFloorTwoAftermathReady) {
+      return { ok: false, reason: "Tamsin has not opened a Floor 2 aftermath review for you yet." };
+    }
+    if (storyState.thornRunnerFloorTwoAftermathReviewed) {
+      return { ok: false, reason: "Tamsin has already closed the Thorn Corridor aftermath with you." };
+    }
+
+    const summary =
+      !storyState.thornRunnerIntroductionChoice
+        ? "Tamsin logs your clear of Floor 2: Thorn Corridor as the moment she had to stop treating you like an unknown climber. You came back from the floor without her route help, and the guild noticed."
+        : storyState.thornRunnerIntroductionChoice === "mercenary"
+          ? "Tamsin closes the Thorn Corridor ledger with a dry kind of respect. The guild now reads your Floor 2 clear as proof that your climb survives more than beginner luck."
+          : "Tamsin closes the Thorn Corridor ledger and marks your first Floor 2 clear as the moment your climb stopped looking provisional to the guild.";
+
+    setStoryState((current) => {
+      const upserted = upsertEncounteredStoryNpc(current, {
+        ...TAMSIN_PROFILE_BASE,
+        summary,
+      });
+      return {
+        ...current,
+        ...upserted,
+        thornRunnerFloorTwoAftermathReady: false,
+        thornRunnerFloorTwoAftermathReviewed: true,
+        npcDispositionById: {
+          ...current.npcDispositionById,
+          [TAMSIN_NPC_ID]: Math.max(
+            0,
+            Math.min(
+              100,
+              (current.npcDispositionById[TAMSIN_NPC_ID] ?? 84) +
+                (!current.thornRunnerIntroductionChoice ? 5 : current.thornRunnerIntroductionChoice === "mercenary" ? 4 : 7),
+            ),
+          ),
+        },
+        npcInteractionCountById: {
+          ...current.npcInteractionCountById,
+          [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      reason:
+        !storyState.thornRunnerIntroductionChoice
+          ? "Tamsin admits you cleared Floor 2: Thorn Corridor without her route help and still came back alive. The guild now has to read your climb as real, whether you took her lane briefing or not."
+          : storyState.thornRunnerIntroductionChoice === "mercenary"
+            ? "Tamsin closes out Thorn Corridor and admits your clear means more than raw luck. Even the guild quartermaster is now pricing you like someone expected to come back from harsher floors."
+            : "Tamsin closes out Thorn Corridor and marks your clear as the point where the guild started treating your climb like the real thing.",
+    };
+  };
+
   const respondFloorEncounter = (floorNumber: number, encounterId: string, accept: boolean) => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
@@ -3238,6 +3865,37 @@ export const useGameState = (): GameState => {
     accept: boolean,
     contactStyle: "rescued" | "disciplined" = "rescued",
   ) => {
+    if (encounterId === TAMSIN_CONDITIONAL_ENCOUNTER_ID) {
+      setStoryState((current) => {
+        const dispositionShift = accept ? 5 : 1;
+        const summary = accept
+          ? "You found and read one of Tamsin's deeper route marks inside Thorn Corridor. She now knows you noticed the lower lane changing before it had to kill you outright."
+          : "You found one of Tamsin's deeper route marks inside Thorn Corridor but pushed on without studying it. The warning still hangs over the lower lane.";
+        const upserted = upsertEncounteredStoryNpc(current, {
+          ...TAMSIN_PROFILE_BASE,
+          summary,
+        });
+        return {
+          ...current,
+          ...upserted,
+          thornRunnerDeepLaneWarningReady: true,
+          npcDispositionById: {
+            ...current.npcDispositionById,
+            [TAMSIN_NPC_ID]: Math.max(0, Math.min(100, (current.npcDispositionById[TAMSIN_NPC_ID] ?? 72) + dispositionShift)),
+          },
+          npcInteractionCountById: {
+            ...current.npcInteractionCountById,
+            [TAMSIN_NPC_ID]: (current.npcInteractionCountById[TAMSIN_NPC_ID] ?? 0) + 1,
+          },
+        };
+      });
+      return {
+        ok: true,
+        reason: accept
+          ? "Tamsin's warning is logged. You can talk to her in the guild after this run."
+          : "The warning still landed. You can follow up with Tamsin in the guild after this run.",
+      };
+    }
     if (encounterId !== LYRA_CONDITIONAL_ENCOUNTER_ID) {
       return { ok: false, reason: "Unknown conditional encounter." };
     }
@@ -3428,6 +4086,10 @@ export const useGameState = (): GameState => {
     devTriggerLyraQuest,
     devTriggerAldricQuest,
     devTriggerTamsinQuest,
+    devTriggerTamsinCorridorReport,
+    devTriggerTamsinDeepLaneWarning,
+    devTriggerTamsinFloorTwoAftermath,
+    devTriggerTamsinLateFloorTwoAftermath,
     devSetAldricOutcome,
     devSetAffinity,
     devSetupWarriorBattlePreset,
@@ -3457,6 +4119,7 @@ export const useGameState = (): GameState => {
     deactivateClassAbility,
     useSkillResourceItem,
     useHealthRecoveryItem,
+    useQuestRushItem,
     useTowerConsumableItem,
     startQuest,
     claimQuest,
@@ -3474,6 +4137,9 @@ export const useGameState = (): GameState => {
     respondRescueNpcRequest,
     respondThornRunnerIntroduction,
     acknowledgeThornRunnerFollowup,
+    acknowledgeThornRunnerCorridorReport,
+    acknowledgeThornRunnerDeepLaneWarning,
+    acknowledgeThornRunnerFloorTwoAftermath,
     respondFloorEncounter,
     respondTowerConditionalEncounter,
   };

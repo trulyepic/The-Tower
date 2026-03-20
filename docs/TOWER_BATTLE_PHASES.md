@@ -31,6 +31,7 @@ Guild Quest Board and Store remain active and are part of tower prep.
   - [x] Floor 1 now supports a first live-response battle layer:
     - [x] telegraphed mechanics
     - [x] position choice
+    - [x] enemy-specific position advantage / blocked-lane rules
     - [x] brace response
     - [x] committed item timing
     - [x] class-skill response hook
@@ -125,9 +126,9 @@ Goal: make the second floor teach restraint, anti-attrition preparation, and cor
 
 - Floor:
   - `Floor 2: Thorn Corridor (The First Snare)`
-  - `Requires Rank E`
-  - `Min Level 5`
-  - intended as the first post-F-rank tower push
+  - `Soft recommendation: Rank E`
+  - `Soft recommendation: Level 5`
+  - intended as the first post-F-rank tower push, but not hard-locked
 - Core lesson:
   - the Tower can slow-kill through snares, bleed pressure, and recovery suppression
 - New supply family:
@@ -144,14 +145,14 @@ Goal: make the second floor teach restraint, anti-attrition preparation, and cor
     - `Thorn Viper`
     - `Needle Imp`
   - Sub-Boss:
-    - `Briar Butcher`
+    - `Scourge Seraph`
   - Main Boss:
-    - `Spine Matron`
+    - `Briar Ophanim`
 - Guaranteed monster-part drops:
   - `Thorn Viper Fang`
   - `Needle Imp Quill`
-  - `Butcher Hook`
-  - `Heartseed Core`
+  - `Scourge Hook`
+  - `Ophanim Core`
 - Reward direction:
   - `Briar Resin`
   - `Thorn Salve`
@@ -169,11 +170,9 @@ Reference:
 
 ## Quest <-> Tower Coupling (Current Rules)
 
-- Tower floors now use **committed recommended supplies** (`+ / -`) instead of passively reading inventory.
-- Committed recommended supplies are **consumed on floor start** (success or failure).
+- Tower floors now read from the player's **prepared tower supplies** instead of per-wave recommended supply commit cards.
 - Counter-supplies now directly mitigate monster mechanics (poison/overcharge/sweep/shock effects).
-- Tower panel now shows **quest source hints** for recommended supplies so players can farm those on Quest Board.
-- Early floor recommended-supply targets were increased to encourage quest farming loops before climbing.
+- Floors should teach through lore, weakness notes, and intel rather than visible recommended-supplies panels.
 - Enemy mechanics intel now has **discovery gating**:
   - First encounter with a monster records intel.
   - Subsequent encounters reveal the full enemy dossier (description + mechanics).

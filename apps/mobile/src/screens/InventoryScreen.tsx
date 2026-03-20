@@ -42,6 +42,8 @@ interface RarityTheme {
   text: string;
 }
 
+type InventoryTab = "all" | "weapons" | "sigils" | "materials" | "titles";
+
 const rarityThemeMap: Record<ItemRarity, RarityTheme> = {
   common: {
     border: "#9f8f74",
@@ -87,6 +89,7 @@ export const InventoryScreen = ({
 }: InventoryScreenProps) => {
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"ok" | "error">("ok");
+  const [activeTab, setActiveTab] = useState<InventoryTab>("all");
   const [consumableToast, setConsumableToast] = useState<{
     itemId: ItemId;
     title: string;
@@ -164,6 +167,22 @@ export const InventoryScreen = ({
         }),
     [inventoryEntries],
   );
+  const allItemEntries = useMemo(
+    () =>
+      inventoryEntries
+        .map(([itemId, amount]) => ({ item: ITEM_BY_ID[itemId], itemId, amount }))
+        .filter((entry) => Boolean(entry.item))
+        .sort((a, b) => {
+          const rarityDiff =
+            rarityOrder[(b.item?.rarity ?? "common") as ItemRarity] -
+            rarityOrder[(a.item?.rarity ?? "common") as ItemRarity];
+          if (rarityDiff !== 0) {
+            return rarityDiff;
+          }
+          return (a.item?.name ?? a.itemId).localeCompare(b.item?.name ?? b.itemId);
+        }),
+    [inventoryEntries],
+  );
 
   const equippedWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : undefined;
   const nowMs = Date.now();
@@ -175,6 +194,30 @@ export const InventoryScreen = ({
   const equippedTitleIds = character.equippedTitleIds ?? [];
   const discoveredTitles = getDiscoveredTitleItems(character);
   const combat = getCharacterCombatStats(character);
+
+  const getWeaponPreview = (itemId?: ItemId) => {
+    if (!itemId) {
+      return null;
+    }
+    const item = ITEM_BY_ID[itemId];
+    if (!item || item.category !== "weapon") {
+      return null;
+    }
+
+    const requiredLevel = item.requiredLevel ?? 1;
+    const classLocked = Boolean(item.classRestriction && item.classRestriction !== character.classId);
+    const proficiency = classLocked ? 0 : character.progression.level >= requiredLevel ? 1 : 0.25;
+
+    return {
+      requiredLevel,
+      proficiencyPercent: Math.round(proficiency * 100),
+      effectiveAttack: Math.round((item.weaponStats?.attack ?? 0) * proficiency),
+      effectiveCrit: Math.round((item.weaponStats?.crit ?? 0) * proficiency),
+      effectiveSpeed: Math.round((item.weaponStats?.speed ?? 0) * proficiency),
+      classLocked,
+      underleveled: !classLocked && character.progression.level < requiredLevel,
+    };
+  };
 
   const triggerPulse = (animatedValue: Animated.Value) => {
     animatedValue.stopAnimation();
@@ -299,11 +342,22 @@ export const InventoryScreen = ({
     }
     const lines: string[] = [];
     if (item.category === "weapon") {
+      const weaponPreview = getWeaponPreview(itemId);
       lines.push(`Required Level: ${item.requiredLevel ?? 1}`);
       lines.push(`Class: ${(item.classRestriction ?? "Any").toUpperCase()}`);
       lines.push(
         `Stats: +${item.weaponStats?.attack ?? 0} ATK • +${item.weaponStats?.crit ?? 0}% CRIT • +${item.weaponStats?.speed ?? 0} SPD`,
       );
+      if (weaponPreview) {
+        lines.push(
+          `Current Use: +${weaponPreview.effectiveAttack} ATK • +${weaponPreview.effectiveCrit}% CRIT • +${weaponPreview.effectiveSpeed} SPD`,
+        );
+        if (weaponPreview.classLocked) {
+          lines.push(`Current Status: Wrong class. This weapon gives no combat benefit on ${character.classId.toUpperCase()}.`);
+        } else if (weaponPreview.underleveled) {
+          lines.push(`Current Status: Underleveled. You are using it at ${weaponPreview.proficiencyPercent}% proficiency until Level ${weaponPreview.requiredLevel}.`);
+        }
+      }
       if (item.description) {
         lines.push(item.description);
       }
@@ -331,6 +385,14 @@ export const InventoryScreen = ({
       lines,
     });
   };
+
+  const inventoryTabs: Array<{ id: InventoryTab; label: string }> = [
+    { id: "all", label: "All Items" },
+    { id: "weapons", label: "Weapons" },
+    { id: "sigils", label: "Sigils" },
+    { id: "materials", label: "Materials" },
+    { id: "titles", label: "Titles" },
+  ];
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -427,7 +489,15 @@ export const InventoryScreen = ({
                 <Text style={styles.equippedSub}>
                   {equippedWeapon.rarity.toUpperCase()} • Lv {equippedWeapon.requiredLevel ?? 1}+ • {combat.weaponProficiencyPercent}% proficiency
                 </Text>
-                <Text style={styles.equippedSub}>ATK {combat.damage} • CRIT {combat.critChance}% • SPD {combat.speed}</Text>
+                <Text style={styles.equippedSub}>Total ATK {combat.damage} • Total CRIT {combat.critChance}% • Total SPD {combat.speed}</Text>
+                <Text style={styles.equippedSub}>
+                  Weapon now adds +{combat.effectiveWeaponAttack} ATK • +{combat.effectiveWeaponCrit}% CRIT • +{combat.effectiveWeaponSpeed} SPD
+                </Text>
+                {combat.weaponProficiencyPercent < 100 ? (
+                  <Text style={styles.underleveledHint}>
+                    Underleveled weapon: you are only getting {combat.weaponProficiencyPercent}% of its listed weapon stats right now.
+                  </Text>
+                ) : null}
               </View>
             </View>
           ) : (
@@ -443,351 +513,280 @@ export const InventoryScreen = ({
             end={{ x: 1, y: 1 }}
             style={styles.cardGradient}
           />
-          <Text style={styles.sectionTitle}>Sigil Loadout ({equippedBuffIds.length}/{buffSlotLimit})</Text>
-          {equippedBuffIds.length === 0 ? (
-            <Text style={styles.emptyText}>No sigils equipped.</Text>
-          ) : (
-            equippedBuffIds.map((buffId) => {
-              const buff = ITEM_BY_ID[buffId];
-              if (!buff) {
-                return null;
-              }
-              return (
-                <View key={`eq-buff-${buffId}`} style={styles.equippedBuffCard}>
-                  <GameItemIcon itemId={buffId} size={20} />
-                  <View style={styles.equippedMeta}>
-                    <Text style={styles.equippedName}>{buff.name}</Text>
-                    <Text style={styles.equippedSub}>
-                      {buff.rarity.toUpperCase()} SIGIL •{" "}
-                      {(() => {
-                        const active = (character.activeBuffExpiresAtMs?.[buffId] ?? 0) > nowMs;
-                        const remaining = getBuffRemainingSeconds(character, buffId, nowMs);
-                        if (active) {
-                          return `Active ${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`;
-                        }
-                        return remaining > 0
-                          ? `Paused ${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, "0")}`
-                          : "Inactive";
-                      })()}
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={() => handleUnequipBuff(buffId)}
-                    style={[styles.smallActionWrap, towerModeActive ? styles.buttonDisabled : null]}
-                    disabled={towerModeActive}
-                  >
-                    <View style={styles.smallActionButton}>
-                      <Text style={styles.smallActionText}>{towerModeActive ? "Tower Locked" : "Unequip"}</Text>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            })
-          )}
-        </View>
-
-        <View style={styles.panel}>
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(201, 148, 72, 0.08)", "rgba(95, 63, 150, 0.06)", "rgba(22, 16, 36, 0.02)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.cardGradient}
-          />
-          <Text style={styles.sectionTitle}>Armory</Text>
-          {weaponEntries.length === 0 ? (
-            <Text style={styles.emptyText}>No class weapons owned yet. Visit the Guild Store.</Text>
-          ) : (
-            weaponEntries.map(({ item, itemId, amount }) => {
-              if (!item) {
-                return null;
-              }
-
-              const isEquipped = character.equippedWeaponId === itemId;
-              const canEquip = !item.classRestriction || item.classRestriction === character.classId;
-              const rarityTheme = rarityThemeMap[item.rarity];
-              const isLegendary = item.rarity === "legendary";
-
-              return (
-                <View
-                  key={itemId}
-                  style={[
-                    styles.weaponCard,
-                    { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
-                    isLegendary ? styles.legendaryCardGlow : null,
-                  ]}
-                >
-                  <Pressable style={styles.weaponIconWrapLarge} onPress={() => openItemInfo(itemId)}>
-                    <GameItemIcon itemId={itemId} size={44} />
-                  </Pressable>
-                  <View style={styles.weaponMain}>
-                    <Text style={styles.weaponName}>{item.name}</Text>
-                    <View style={styles.badgesRow}>
-                      <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
-                        <Text style={[styles.rarityText, { color: rarityTheme.text }, item.rarity === "legendary" ? styles.legendaryTextGlow : null]}>
-                          {item.rarity.toUpperCase()}
-                        </Text>
-                      </View>
-                      {item.classRestriction ? (
-                        <View style={styles.classPill}>
-                          <Text style={styles.classText}>{item.classRestriction.toUpperCase()}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.weaponOwned}>Owned x{amount} • Tap icon for details</Text>
-                    <Text style={styles.weaponOwned}>
-                      Requires Lv {item.requiredLevel ?? 1} • Proficiency{" "}
-                      {character.progression.level >= (item.requiredLevel ?? 1) ? "100%" : "25%"}
-                    </Text>
-                    <Text style={styles.weaponOwned}>
-                      WPN ATK {item.weaponStats?.attack ?? 0} • CRIT {item.weaponStats?.crit ?? 0}% • SPD {item.weaponStats?.speed ?? 0}
-                    </Text>
-                  </View>
-                  <Pressable
-                    disabled={towerModeActive || !canEquip || isEquipped}
-                    onPress={() => handleEquip(itemId)}
-                    style={[styles.equipButtonWrap, (towerModeActive || !canEquip || isEquipped) ? styles.buttonDisabled : null]}
-                  >
-                    <View style={styles.equipButton}>
-                      <Text style={styles.equipText}>
-                        {isEquipped ? "Equipped" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
-                      </Text>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            })
-          )}
-        </View>
-
-        <View style={styles.panel}>
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(191, 139, 66, 0.08)", "rgba(90, 58, 143, 0.06)", "rgba(21, 15, 35, 0.02)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.cardGradient}
-          />
-          <Text style={styles.sectionTitle}>Sigil Collection</Text>
-          {buffEntries.length === 0 ? (
-            <Text style={styles.emptyText}>No sigils owned yet. Visit Guild Store.</Text>
-          ) : (
-            buffEntries.map(({ item, itemId, amount }) => {
-              if (!item) {
-                return null;
-              }
-              const isEquipped = equippedBuffIds.includes(itemId);
-              const canEquip = equippedBuffIds.length < buffSlotLimit || isEquipped;
-              const rarityTheme = rarityThemeMap[item.rarity];
-              const isLegendary = item.rarity === "legendary";
-
-              return (
-                <View
-                  key={`buff-${itemId}`}
-                  style={[
-                    styles.weaponCard,
-                    { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
-                    isLegendary ? styles.legendaryCardGlow : null,
-                  ]}
-                >
-                  <Pressable style={styles.weaponIconWrapLarge} onPress={() => openItemInfo(itemId)}>
-                    <GameItemIcon itemId={itemId} size={42} />
-                  </Pressable>
-                  <View style={styles.weaponMain}>
-                    <Text style={styles.weaponName}>{item.name}</Text>
-                    <View style={styles.badgesRow}>
-                      <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
-                        <Text style={[styles.rarityText, { color: rarityTheme.text }, item.rarity === "legendary" ? styles.legendaryTextGlow : null]}>
-                          {item.rarity.toUpperCase()}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={styles.weaponOwned}>Owned x{amount} • Tap icon for details</Text>
-                    <Text style={styles.weaponOwned}>
-                      DMG +{item.buffStats?.damageFlat ?? 0} • CRIT +{item.buffStats?.critFlat ?? 0}% • SPD +{item.buffStats?.speedFlat ?? 0} • QUEST +{item.buffStats?.questSuccessFlat ?? 0}%
-                    </Text>
-                    <Text style={styles.weaponOwned}>
-                      Duration {(Math.floor((item.buffDurationSeconds ?? 0) / 60))}m {(item.buffDurationSeconds ?? 0) % 60}s
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={() => (isEquipped ? handleUnequipBuff(itemId) : handleEquipBuff(itemId))}
-                    style={[styles.equipButtonWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
-                    disabled={towerModeActive || (!canEquip && !isEquipped)}
-                  >
-                    <View style={styles.equipButton}>
-                      <Text style={styles.equipText}>{towerModeActive ? "Tower Locked" : isEquipped ? "Unequip" : "Equip"}</Text>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            })
-          )}
-        </View>
-
-        <View style={styles.panel}>
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(198, 143, 67, 0.09)", "rgba(88, 57, 143, 0.05)", "rgba(21, 15, 35, 0.02)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.cardGradient}
-          />
-          <Text style={styles.sectionTitle}>Title Archive ({equippedTitleIds.length}/{titleSlotLimit})</Text>
-          {discoveredTitles.length === 0 ? (
-            <Text style={styles.emptyText}>No discovered titles yet. Start quests to reveal title trails.</Text>
-          ) : discoveredTitles.map((title) => {
-            const unlocked = isTitleUnlocked(character, title);
-            const owned = isTitleOwned(character, title.id);
-            const isEquipped = equippedTitleIds.includes(title.id);
-            const slotsFull = equippedTitleIds.length >= titleSlotLimit;
-            const canEquip = owned && unlocked && (!slotsFull || isEquipped);
-            const rarityTheme = rarityThemeMap[title.rarity];
-            const isLegendary = title.rarity === "legendary";
-            const progress = getTitleProgress(character, title.id);
-            const progressNeed = getTitleRequiredProgress(title);
-            const progressPercent = Math.round((Math.min(progress, progressNeed) / Math.max(1, progressNeed)) * 100);
-            return (
-              <View
-                key={`title-${title.id}`}
-                style={[
-                  styles.weaponCard,
-                  { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
-                  isLegendary ? styles.legendaryCardGlow : null,
-                ]}
+          <Text style={styles.sectionTitle}>Collection</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabRow}>
+            {inventoryTabs.map((tab) => (
+              <Pressable
+                key={tab.id}
+                onPress={() => setActiveTab(tab.id)}
+                style={[styles.inventoryTab, activeTab === tab.id ? styles.inventoryTabActive : null]}
               >
-                <Pressable
-                  style={styles.weaponIconWrapLarge}
-                  onPress={() =>
-                    setItemInfoPanel({
-                      itemId: title.id,
-                      title: title.name,
-                      rarity: title.rarity,
-                      lines: [
-                        title.flavor,
-                        `Ability: ${title.abilityLabel}`,
-                        `Requirement: Level ${title.minLevel}${title.classRestriction ? ` (${title.classRestriction.toUpperCase()})` : ""}`,
-                        `Bonuses: +${title.bonuses.damageFlat ?? 0} ATK • +${title.bonuses.critFlat ?? 0}% CRIT • +${title.bonuses.speedFlat ?? 0} SPD • +${title.bonuses.questSuccessFlat ?? 0}% Quest`,
-                      ],
-                    })
-                  }
-                >
-                  <ImageBackground
-                    source={HUD_ASSETS.slots[title.rarity]}
-                    style={styles.titleArchiveIconFrame}
-                    resizeMode="contain"
-                  >
-                    <Image source={TITLE_ICON_ART[title.id]} style={styles.titleArchiveIconImage} resizeMode="contain" />
-                  </ImageBackground>
-                </Pressable>
-                <View style={styles.weaponMain}>
-                  <Text style={styles.weaponName}>{title.name}</Text>
-                  <View style={styles.badgesRow}>
-                    <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
-                      <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{title.rarity.toUpperCase()}</Text>
-                    </View>
-                    {title.classRestriction ? (
-                      <View style={styles.classPill}>
-                        <Text style={styles.classText}>{title.classRestriction.toUpperCase()}</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  <Text style={styles.weaponOwned}>{title.flavor}</Text>
-                  <Text style={styles.weaponOwned}>Tap icon for details</Text>
-                  <Text style={styles.weaponOwned}>
-                    Ability: {title.abilityLabel}
-                  </Text>
-                  <Text style={styles.weaponOwned}>Status: {owned ? "Earned" : "Not Earned"}</Text>
-                  <Text style={styles.weaponOwned}>
-                    Progress: {Math.min(progress, progressNeed)}/{progressNeed}
-                  </Text>
-                  <View style={styles.titleProgressTrack}>
-                    <View style={[styles.titleProgressFill, { width: `${progressPercent}%`, backgroundColor: rarityTheme.border }]} />
-                  </View>
-                  <Text style={styles.weaponOwned}>
-                    DMG +{title.bonuses.damageFlat ?? 0} • CRIT +{title.bonuses.critFlat ?? 0}% • SPD +{title.bonuses.speedFlat ?? 0} • QUEST +{title.bonuses.questSuccessFlat ?? 0}%
-                  </Text>
-                  {!owned || !unlocked ? (
-                    <Text style={styles.weaponOwned}>
-                      Requirement: {owned ? "" : "Earn title from achievements"}{!owned && !unlocked ? " • " : ""}{!unlocked ? `Level ${title.minLevel}${title.classRestriction ? ` (${title.classRestriction})` : ""}` : ""}
-                    </Text>
-                  ) : null}
-                </View>
-                  <Pressable
-                    onPress={() => (isEquipped ? handleUnequipTitle(title.id) : handleEquipTitle(title.id))}
-                    style={[styles.equipButtonWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
-                    disabled={towerModeActive || (!canEquip && !isEquipped)}
-                  >
-                    <View style={styles.equipButton}>
-                      <Text style={styles.equipText}>
-                        {isEquipped ? "Unequip" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
-                      </Text>
-                    </View>
-                  </Pressable>
-              </View>
-            );
-          })}
-        </View>
+                <Text style={[styles.inventoryTabText, activeTab === tab.id ? styles.inventoryTabTextActive : null]}>{tab.label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
 
-        <View style={styles.panel}>
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(198, 143, 67, 0.09)", "rgba(88, 57, 143, 0.05)", "rgba(21, 15, 35, 0.02)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.cardGradient}
-          />
-          <Text style={styles.sectionTitle}>Materials Board</Text>
-          <View style={styles.materialGrid}>
-            {materialEntries.length === 0 ? (
-              <Text style={styles.emptyText}>No materials yet. Run gather quests.</Text>
-            ) : (
-              materialEntries.map(({ item, itemId, amount }) => {
-                const rarity = item?.rarity ?? "common";
-                const rarityTheme = rarityThemeMap[rarity];
-                const isLegendary = rarity === "legendary";
-                const isAppraised = !item?.requiresAppraisal || (character.appraisedItemIds ?? []).includes(itemId);
-                const displayName = item?.requiresAppraisal && !isAppraised ? "Unknown Remnant" : item?.name ?? itemId;
-                const isUsableConsumable =
-                  itemId === "healing-herb" ||
-                  itemId === "focus-tonic" ||
-                  itemId === "mana-tonic" ||
-                  itemId === "health-potion" ||
-                  (towerModeActive &&
-                    (itemId === "antitoxin-vial" || itemId === "guard-tonic" || itemId === "grounding-tonic"));
+          {activeTab === "all" ? (
+            <>
+              <Text style={styles.collectionHint}>Tap any item to inspect it. This tab is the full bag view.</Text>
+              <View style={styles.inventoryGrid}>
+                {allItemEntries.length === 0 ? (
+                  <Text style={styles.emptyText}>No items yet. Visit the Guild Store or clear quests and floors.</Text>
+                ) : (
+                  allItemEntries.map(({ item, itemId, amount }) => {
+                    if (!item) {
+                      return null;
+                    }
+                    const rarityTheme = rarityThemeMap[item.rarity];
+                    const isAppraised = !item.requiresAppraisal || (character.appraisedItemIds ?? []).includes(itemId);
+                    const displayName = item.requiresAppraisal && !isAppraised ? "Unknown Remnant" : item.name;
+                    return (
+                      <Pressable
+                        key={`all-${itemId}`}
+                        onPress={() => openItemInfo(itemId as ItemId)}
+                        style={[styles.inventoryTile, { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg }]}
+                      >
+                        <View style={styles.inventoryTileCount}>
+                          <Text style={styles.inventoryTileCountText}>x{amount}</Text>
+                        </View>
+                        <GameItemIcon itemId={itemId as ItemId} size={40} />
+                        <Text style={styles.inventoryTileName} numberOfLines={2}>{displayName}</Text>
+                        <Text style={[styles.inventoryTileType, { color: rarityTheme.text }]}>{item.category.toUpperCase()}</Text>
+                      </Pressable>
+                    );
+                  })
+                )}
+              </View>
+            </>
+          ) : null}
+
+          {activeTab === "weapons" ? (
+            <>
+              <Text style={styles.collectionHint}>Weapons now live in their own tab so the loadout is easier to scan.</Text>
+              {weaponEntries.length === 0 ? (
+                <Text style={styles.emptyText}>No class weapons owned yet. Visit the Guild Store.</Text>
+              ) : (
+                <View style={styles.inventoryGrid}>
+                  {weaponEntries.map(({ item, itemId, amount }) => {
+                    if (!item) {
+                      return null;
+                    }
+                    const isEquipped = character.equippedWeaponId === itemId;
+                    const canEquip = !item.classRestriction || item.classRestriction === character.classId;
+                    const rarityTheme = rarityThemeMap[item.rarity];
+                    const weaponPreview = getWeaponPreview(itemId as ItemId);
+                    return (
+                      <View key={`weapon-tab-${itemId}`} style={[styles.inventoryTile, styles.inventoryTileTall, { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg }]}>
+                        <View style={styles.inventoryTileCount}>
+                          <Text style={styles.inventoryTileCountText}>x{amount}</Text>
+                        </View>
+                        <Pressable onPress={() => openItemInfo(itemId as ItemId)} style={styles.inventoryTilePress}>
+                          <GameItemIcon itemId={itemId as ItemId} size={42} />
+                          <Text style={styles.inventoryTileName} numberOfLines={2}>{item.name}</Text>
+                          <Text style={[styles.inventoryTileType, { color: rarityTheme.text }]}>{item.rarity.toUpperCase()}</Text>
+                          <Text style={styles.inventoryTileStat}>Base {item.weaponStats?.attack ?? 0}/{item.weaponStats?.crit ?? 0}/{item.weaponStats?.speed ?? 0}</Text>
+                          <Text style={styles.inventoryTileStat}>Now {weaponPreview?.effectiveAttack ?? 0}/{weaponPreview?.effectiveCrit ?? 0}/{weaponPreview?.effectiveSpeed ?? 0}</Text>
+                        </Pressable>
+                        <Pressable
+                          disabled={towerModeActive || !canEquip || isEquipped}
+                          onPress={() => handleEquip(itemId as ItemId)}
+                          style={[styles.tileActionWrap, (towerModeActive || !canEquip || isEquipped) ? styles.buttonDisabled : null]}
+                        >
+                          <View style={styles.tileActionButton}>
+                            <Text style={styles.tileActionText}>
+                              {isEquipped ? "Equipped" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </>
+          ) : null}
+
+          {activeTab === "sigils" ? (
+            <>
+              <Text style={styles.collectionHint}>Equipped sigils: {equippedBuffIds.length}/{buffSlotLimit}</Text>
+              {buffEntries.length === 0 ? (
+                <Text style={styles.emptyText}>No sigils owned yet. Visit Guild Store.</Text>
+              ) : (
+                <View style={styles.inventoryGrid}>
+                  {buffEntries.map(({ item, itemId, amount }) => {
+                    if (!item) {
+                      return null;
+                    }
+                    const isEquipped = equippedBuffIds.includes(itemId as ItemId);
+                    const canEquip = equippedBuffIds.length < buffSlotLimit || isEquipped;
+                    const rarityTheme = rarityThemeMap[item.rarity];
+                    return (
+                      <View key={`sigil-tab-${itemId}`} style={[styles.inventoryTile, styles.inventoryTileTall, { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg }]}>
+                        <View style={styles.inventoryTileCount}>
+                          <Text style={styles.inventoryTileCountText}>x{amount}</Text>
+                        </View>
+                        <Pressable onPress={() => openItemInfo(itemId as ItemId)} style={styles.inventoryTilePress}>
+                          <GameItemIcon itemId={itemId as ItemId} size={40} />
+                          <Text style={styles.inventoryTileName} numberOfLines={2}>{item.name}</Text>
+                          <Text style={[styles.inventoryTileType, { color: rarityTheme.text }]}>{item.rarity.toUpperCase()}</Text>
+                          <Text style={styles.inventoryTileStat}>ATK +{item.buffStats?.damageFlat ?? 0} • CRIT +{item.buffStats?.critFlat ?? 0}%</Text>
+                          <Text style={styles.inventoryTileStat}>SPD +{item.buffStats?.speedFlat ?? 0} • QUEST +{item.buffStats?.questSuccessFlat ?? 0}%</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => (isEquipped ? handleUnequipBuff(itemId as ItemId) : handleEquipBuff(itemId as ItemId))}
+                          style={[styles.tileActionWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
+                          disabled={towerModeActive || (!canEquip && !isEquipped)}
+                        >
+                          <View style={styles.tileActionButton}>
+                            <Text style={styles.tileActionText}>{towerModeActive ? "Tower Locked" : isEquipped ? "Unequip" : "Equip"}</Text>
+                          </View>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </>
+          ) : null}
+
+          {activeTab === "materials" ? (
+            <>
+              <Text style={styles.collectionHint}>Consumables and materials stay together here so the bag reads more like one game inventory.</Text>
+              <View style={styles.inventoryGrid}>
+                {materialEntries.length === 0 ? (
+                  <Text style={styles.emptyText}>No materials yet. Run gather quests.</Text>
+                ) : (
+                  materialEntries.map(({ item, itemId, amount }) => {
+                    const rarity = item?.rarity ?? "common";
+                    const rarityTheme = rarityThemeMap[rarity];
+                    const isAppraised = !item?.requiresAppraisal || (character.appraisedItemIds ?? []).includes(itemId);
+                    const displayName = item?.requiresAppraisal && !isAppraised ? "Unknown Remnant" : item?.name ?? itemId;
+                    const isUsableConsumable =
+                      itemId === "healing-herb" ||
+                      itemId === "focus-tonic" ||
+                      itemId === "mana-tonic" ||
+                      itemId === "health-potion" ||
+                      (towerModeActive &&
+                        (itemId === "antitoxin-vial" || itemId === "guard-tonic" || itemId === "grounding-tonic"));
+                    return (
+                      <View key={`material-tab-${itemId}`} style={[styles.inventoryTile, styles.inventoryTileTall, { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg }]}>
+                        <View style={styles.inventoryTileCount}>
+                          <Text style={styles.inventoryTileCountText}>x{amount}</Text>
+                        </View>
+                        <Pressable onPress={() => openItemInfo(itemId as ItemId)} style={styles.inventoryTilePress}>
+                          <GameItemIcon itemId={itemId as ItemId} size={38} />
+                          <Text style={styles.inventoryTileName} numberOfLines={2}>{displayName}</Text>
+                          <Text style={[styles.inventoryTileType, { color: rarityTheme.text }]}>
+                            {item?.requiresAppraisal && !isAppraised ? "APPRAISE" : rarity.toUpperCase()}
+                          </Text>
+                        </Pressable>
+                        {isUsableConsumable ? (
+                          <Pressable style={styles.tileActionWrap} onPress={() => handleUseConsumable(itemId as ItemId)}>
+                            <View style={styles.tileActionButton}>
+                              <Text style={styles.tileActionText}>
+                                {towerPreparedItemIds.includes(itemId as ItemId) ? "Prepared" : "Use"}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            </>
+          ) : null}
+
+          {activeTab === "titles" ? (
+            <>
+              <Text style={styles.collectionHint}>Title slots: {equippedTitleIds.length}/{titleSlotLimit}</Text>
+              {discoveredTitles.length === 0 ? (
+                <Text style={styles.emptyText}>No discovered titles yet. Start quests to reveal title trails.</Text>
+              ) : discoveredTitles.map((title) => {
+                const unlocked = isTitleUnlocked(character, title);
+                const owned = isTitleOwned(character, title.id);
+                const isEquipped = equippedTitleIds.includes(title.id);
+                const slotsFull = equippedTitleIds.length >= titleSlotLimit;
+                const canEquip = owned && unlocked && (!slotsFull || isEquipped);
+                const rarityTheme = rarityThemeMap[title.rarity];
+                const isLegendary = title.rarity === "legendary";
+                const progress = getTitleProgress(character, title.id);
+                const progressNeed = getTitleRequiredProgress(title);
+                const progressPercent = Math.round((Math.min(progress, progressNeed) / Math.max(1, progressNeed)) * 100);
                 return (
-                  <Pressable
-                    key={itemId}
+                  <View
+                    key={`title-${title.id}`}
                     style={[
-                      styles.materialCard,
+                      styles.weaponCard,
                       { borderColor: rarityTheme.border, backgroundColor: rarityTheme.bg },
-                      item?.requiresAppraisal && !isAppraised ? styles.appraisalGlow : null,
                       isLegendary ? styles.legendaryCardGlow : null,
                     ]}
-                    onPress={() => openItemInfo(itemId)}
                   >
-                    <View style={styles.materialHead}>
-                      <GameItemIcon itemId={itemId} size={34} />
-                      <Text style={styles.materialName} numberOfLines={1}>{displayName}</Text>
-                    </View>
-                    <View style={styles.materialFoot}>
-                      <Text style={styles.materialCount}>x{amount}</Text>
-                      <Text style={[styles.materialRarity, { color: rarityTheme.text }]}>
-                        {item?.requiresAppraisal && !isAppraised ? "APPRAISE" : rarity.toUpperCase()}
+                    <Pressable
+                      style={styles.weaponIconWrapLarge}
+                      onPress={() =>
+                        setItemInfoPanel({
+                          itemId: title.id,
+                          title: title.name,
+                          rarity: title.rarity,
+                          lines: [
+                            title.flavor,
+                            `Ability: ${title.abilityLabel}`,
+                            `Requirement: Level ${title.minLevel}${title.classRestriction ? ` (${title.classRestriction.toUpperCase()})` : ""}`,
+                            `Bonuses: +${title.bonuses.damageFlat ?? 0} ATK • +${title.bonuses.critFlat ?? 0}% CRIT • +${title.bonuses.speedFlat ?? 0} SPD • +${title.bonuses.questSuccessFlat ?? 0}% Quest`,
+                          ],
+                        })
+                      }
+                    >
+                      <ImageBackground source={HUD_ASSETS.slots[title.rarity]} style={styles.titleArchiveIconFrame} resizeMode="contain">
+                        <Image source={TITLE_ICON_ART[title.id]} style={styles.titleArchiveIconImage} resizeMode="contain" />
+                      </ImageBackground>
+                    </Pressable>
+                    <View style={styles.weaponMain}>
+                      <Text style={styles.weaponName}>{title.name}</Text>
+                      <View style={styles.badgesRow}>
+                        <View style={[styles.rarityPill, { borderColor: rarityTheme.border }]}>
+                          <Text style={[styles.rarityText, { color: rarityTheme.text }]}>{title.rarity.toUpperCase()}</Text>
+                        </View>
+                        {title.classRestriction ? (
+                          <View style={styles.classPill}>
+                            <Text style={styles.classText}>{title.classRestriction.toUpperCase()}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={styles.weaponOwned}>{title.flavor}</Text>
+                      <Text style={styles.weaponOwned}>Ability: {title.abilityLabel}</Text>
+                      <Text style={styles.weaponOwned}>Status: {owned ? "Earned" : "Not Earned"}</Text>
+                      <Text style={styles.weaponOwned}>Progress: {Math.min(progress, progressNeed)}/{progressNeed}</Text>
+                      <View style={styles.titleProgressTrack}>
+                        <View style={[styles.titleProgressFill, { width: `${progressPercent}%`, backgroundColor: rarityTheme.border }]} />
+                      </View>
+                      <Text style={styles.weaponOwned}>
+                        DMG +{title.bonuses.damageFlat ?? 0} • CRIT +{title.bonuses.critFlat ?? 0}% • SPD +{title.bonuses.speedFlat ?? 0} • QUEST +{title.bonuses.questSuccessFlat ?? 0}%
                       </Text>
-                    </View>
-                    {isUsableConsumable ? (
-                      <Pressable style={styles.materialUseButton} onPress={() => handleUseConsumable(itemId as ItemId)}>
-                        <Text style={styles.materialUseText}>
-                          {towerPreparedItemIds.includes(itemId as ItemId) ? "Prepared" : "Use"}
+                      {!owned || !unlocked ? (
+                        <Text style={styles.weaponOwned}>
+                          Requirement to equip - Level {title.minLevel}
+                          {title.classRestriction ? ` (${title.classRestriction.toUpperCase()})` : ""}
                         </Text>
-                      </Pressable>
-                    ) : null}
-                  </Pressable>
+                      ) : null}
+                    </View>
+                    <Pressable
+                      onPress={() => (isEquipped ? handleUnequipTitle(title.id) : handleEquipTitle(title.id))}
+                      style={[styles.equipButtonWrap, (towerModeActive || (!canEquip && !isEquipped)) ? styles.buttonDisabled : null]}
+                      disabled={towerModeActive || (!canEquip && !isEquipped)}
+                    >
+                      <View style={styles.equipButton}>
+                        <Text style={styles.equipText}>
+                          {isEquipped ? "Unequip" : towerModeActive ? "Tower Locked" : canEquip ? "Equip" : "Locked"}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </View>
                 );
-              })
-            )}
-          </View>
+              })}
+            </>
+          ) : null}
         </View>
 
       </ScrollView>
@@ -1224,6 +1223,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
+  underleveledHint: {
+    color: "#ffd69b",
+    fontSize: 11,
+    fontWeight: "800",
+  },
   titleProgressTrack: {
     marginTop: 2,
     width: "100%",
@@ -1280,6 +1284,119 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 12,
     fontWeight: "800",
+  },
+  tabRow: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  inventoryTab: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(196, 157, 92, 0.34)",
+    backgroundColor: "rgba(28, 22, 43, 0.86)",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  inventoryTabActive: {
+    borderColor: "#d2a45a",
+    backgroundColor: "rgba(92, 63, 23, 0.92)",
+  },
+  inventoryTabText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  inventoryTabTextActive: {
+    color: "#ffe9bb",
+  },
+  collectionHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  inventoryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 4,
+  },
+  inventoryTile: {
+    width: "31.8%",
+    minHeight: 138,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    overflow: "hidden",
+  },
+  inventoryTileTall: {
+    minHeight: 196,
+  },
+  inventoryTilePress: {
+    flex: 1,
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  inventoryTileCount: {
+    position: "absolute",
+    top: 7,
+    right: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(240, 220, 169, 0.4)",
+    backgroundColor: "rgba(15, 11, 24, 0.92)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    zIndex: 2,
+  },
+  inventoryTileCountText: {
+    color: "#fff0c8",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  inventoryTileName: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "800",
+    textAlign: "center",
+    minHeight: 30,
+  },
+  inventoryTileType: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textAlign: "center",
+  },
+  inventoryTileStat: {
+    color: colors.textSecondary,
+    fontSize: 10,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  tileActionWrap: {
+    width: "100%",
+    borderRadius: 9,
+    overflow: "hidden",
+  },
+  tileActionButton: {
+    borderWidth: 1,
+    borderColor: "#cfa35c",
+    backgroundColor: "rgba(92, 64, 25, 0.94)",
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  tileActionText: {
+    color: "#fff0cd",
+    fontSize: 11,
+    fontWeight: "900",
   },
   materialGrid: {
     flexDirection: "row",

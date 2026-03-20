@@ -33,6 +33,13 @@ export const GUILD_STORE_ITEMS: GuildStoreEntry[] = [
     sellText: "Keeps your adventurer stable in tough runs.",
   },
   {
+    id: "store-quickthread-token",
+    itemId: "quickthread-token",
+    label: "Quickthread Token",
+    unitPrice: 6,
+    sellText: "Burns most of a normal quest timer almost instantly.",
+  },
+  {
     id: "store-lockpick",
     itemId: "lockpick",
     label: "Lockpick Kit",

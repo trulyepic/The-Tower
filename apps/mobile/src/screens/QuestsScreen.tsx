@@ -17,11 +17,11 @@ import { ITEM_BY_ID } from "../data/items";
 import { GUILD_CORE_NPCS, getExaminerForRank, GuildNpcProfile } from "../data/guildPersonnel";
 import { QUEST_BACKGROUND_ART } from "../data/questVisuals";
 import { getMaxRankForLevel } from "../data/rankProgression";
-import { TITLES } from "../data/titles";
+import { TITLES, TITLE_BY_ID } from "../data/titles";
 import { TITLE_ICON_ART } from "../data/titleVisuals";
 import { CURRENCY_SPRITES, QUEST_TYPE_SPRITE, getAvatarSprite } from "../data/uiSprites";
 import { ABILITY_BY_ID } from "../data/abilities";
-import { FLOOR_ENTRY_LORE } from "../data/floorStory";
+import { FLOOR_CLEAR_STORY, FLOOR_ENTRY_LORE } from "../data/floorStory";
 import {
   getEquippedPassiveBattleBonuses,
   getLiveBattleSkillProfile,
@@ -93,6 +93,7 @@ interface QuestsScreenProps {
   requestGuildMageRecovery: () => { ok: boolean; reason?: string };
   onActivateBuff: (itemId: string) => { ok: boolean; reason?: string };
   onDeactivateBuff: (itemId: string) => { ok: boolean; reason?: string };
+  onUseQuestRushItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   onStartQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   onClaimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
   onResolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
@@ -114,6 +115,9 @@ interface QuestsScreenProps {
     choice: "steady" | "mercenary",
   ) => { ok: boolean; reason?: string; choice?: "steady" | "mercenary" };
   onAcknowledgeThornRunnerFollowup: () => { ok: boolean; reason?: string };
+  onAcknowledgeThornRunnerCorridorReport: () => { ok: boolean; reason?: string };
+  onAcknowledgeThornRunnerDeepLaneWarning: () => { ok: boolean; reason?: string };
+  onAcknowledgeThornRunnerFloorTwoAftermath: () => { ok: boolean; reason?: string };
   climberLeaderboard: Array<ClimberEntry & { isPlayer?: boolean; rank: number }>;
   activeFloorEncounter:
     | { encounter: FloorEncounterEventDefinition; attemptNumber: number; decision?: "accepted" | "declined" }
@@ -217,6 +221,20 @@ const getVisibleQuestRanks = (rank: AdventurerRank): AdventurerRank[] => {
     return [RANK_ORDER[index - 1], RANK_ORDER[index]];
   }
   return [RANK_ORDER[index - 1], RANK_ORDER[index], RANK_ORDER[index + 1]];
+};
+
+const getItemRarityAccent = (itemId: ItemId): { border: string; background: string; glow: string } => {
+  const rarity = ITEM_BY_ID[itemId]?.rarity ?? "common";
+  if (rarity === "legendary") {
+    return { border: "#ffcb78", background: "rgba(120, 66, 12, 0.96)", glow: "#ffbf59" };
+  }
+  if (rarity === "epic") {
+    return { border: "#d7a7ff", background: "rgba(79, 42, 116, 0.96)", glow: "#c58dff" };
+  }
+  if (rarity === "rare") {
+    return { border: "#8fd6ff", background: "rgba(28, 74, 112, 0.96)", glow: "#72cbff" };
+  }
+  return { border: "#cfb280", background: "rgba(86, 63, 31, 0.96)", glow: "#d8bd8b" };
 };
 
 const formatRemaining = (msRemaining: number): string => {
@@ -384,6 +402,38 @@ const QUEST_BOARD_PREVIEW_IDS = new Set([
   "quest-lamp-reliquary-descent",
   "hunt-leviathor-coiling-deep",
 ]);
+const POSITION_LABELS: Record<TowerBattlePosition, string> = {
+  front: "Front",
+  mid: "Mid",
+  rear: "Rear",
+};
+const getEnemyPositioningProfile = (enemy?: TowerEnemyUnit | null) => enemy?.positioning ?? null;
+const getEnemyAdvantagePositions = (enemy?: TowerEnemyUnit | null) => getEnemyPositioningProfile(enemy)?.advantagePositions ?? [];
+const getEnemyBlockedPositions = (enemy?: TowerEnemyUnit | null) => getEnemyPositioningProfile(enemy)?.blockedPositions ?? [];
+const getPositionAttackBonus = (enemy: TowerEnemyUnit | undefined, position: TowerBattlePosition) => {
+  if (!enemy || !getEnemyAdvantagePositions(enemy).includes(position)) {
+    return 0;
+  }
+  if (enemy.role === "boss") {
+    return 16;
+  }
+  if (enemy.role === "subBoss") {
+    return 12;
+  }
+  return 8;
+};
+const describePositionRead = (enemy: TowerEnemyUnit | undefined, position: TowerBattlePosition) => {
+  if (!enemy) {
+    return null;
+  }
+  if (getEnemyBlockedPositions(enemy).includes(position)) {
+    return `${enemy.name} closes the ${POSITION_LABELS[position].toLowerCase()} lane and prevents that shift.`;
+  }
+  if (getEnemyAdvantagePositions(enemy).includes(position)) {
+    return `${POSITION_LABELS[position]} lane reads cleanly against ${enemy.name}. Hits from there land harder.`;
+  }
+  return `${POSITION_LABELS[position]} lane is open, but it gives you no special edge against ${enemy.name}.`;
+};
 const getLiveBattleSuggestion = (mechanic: string): Omit<LiveBattleTelegraph, "id" | "enemyId" | "enemyName" | "mechanic"> => {
   const keyword = mechanic.toLowerCase();
   if (keyword.includes("poison bite")) {
@@ -416,12 +466,14 @@ const buildLiveBattleTelegraphs = (enemies: TowerEnemyUnit[], estimatedTurnDamag
     const turnsNeeded = Math.max(1, Math.ceil((enemy.health ?? 1) / Math.max(1, estimatedTurnDamage)));
     return Array.from({ length: turnsNeeded }, (_, index) => {
       const mechanic = mechanics[index % mechanics.length];
+      const suggestion = getLiveBattleSuggestion(mechanic);
       return {
         id: `${enemy.id}-${index}-${mechanic.replace(/\s+/g, "-").toLowerCase()}`,
         enemyId: enemy.id,
         enemyName: enemy.name,
         mechanic,
-        ...getLiveBattleSuggestion(mechanic),
+        ...suggestion,
+        suggestedPosition: suggestion.suggestedPosition ?? enemy.positioning?.advantagePositions?.[0] ?? "mid",
       };
     });
   });
@@ -619,6 +671,7 @@ export const QuestsScreen = ({
   requestGuildMageRecovery,
   onActivateBuff,
   onDeactivateBuff,
+  onUseQuestRushItem,
   onStartQuest,
   onClaimQuest,
   onResolveLyraQuestChoice,
@@ -633,6 +686,9 @@ export const QuestsScreen = ({
   onRespondRescueNpcRequest,
   onRespondThornRunnerIntroduction,
   onAcknowledgeThornRunnerFollowup,
+  onAcknowledgeThornRunnerCorridorReport,
+  onAcknowledgeThornRunnerDeepLaneWarning,
+  onAcknowledgeThornRunnerFloorTwoAftermath,
   climberLeaderboard,
   activeFloorEncounter,
   onRespondFloorEncounter,
@@ -722,7 +778,9 @@ export const QuestsScreen = ({
   const [aldricBattleOpen, setAldricBattleOpen] = useState(false);
   const [aldricBattleRevealCount, setAldricBattleRevealCount] = useState(0);
   const [aldricBattleAutoResolving, setAldricBattleAutoResolving] = useState(false);
-  const [guildDialog, setGuildDialog] = useState<"bran-store" | "examiner-rank" | "tamsin-floor2" | "tamsin-followup" | null>(null);
+  const [guildDialog, setGuildDialog] = useState<
+    "bran-store" | "examiner-rank" | "tamsin-floor2" | "tamsin-followup" | "tamsin-corridor-report" | "tamsin-deep-warning" | "tamsin-floor2-aftermath" | null
+  >(null);
   const [branSpeakCount, setBranSpeakCount] = useState(0);
   const [examinerSpeakCount, setExaminerSpeakCount] = useState(0);
   const [branDialogLine, setBranDialogLine] = useState(BRAN_STORE_DIALOG_LINES[0]);
@@ -731,6 +789,7 @@ export const QuestsScreen = ({
   const [infoArtExpanded, setInfoArtExpanded] = useState(false);
   const [boardRankFilter, setBoardRankFilter] = useState<BoardRankFilter>("all");
   const [boardTypeFilter, setBoardTypeFilter] = useState<BoardTypeFilter>("all");
+  const [collapsedBoardSections, setCollapsedBoardSections] = useState<Record<string, boolean>>({});
   const lyraChoicePending =
     lastQuestOutcome?.questId === "quest-lyra-ember-maps" &&
     lastQuestOutcome.success &&
@@ -1479,8 +1538,28 @@ const getMechanicSeverity = (mechanic: string): number => {
     if (storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed) {
       targets.push("npc-tamsin-vale");
     }
+    if (storyState.thornRunnerCorridorReportReady && !storyState.thornRunnerCorridorReportReviewed) {
+      targets.push("npc-tamsin-vale");
+    }
+    if (storyState.thornRunnerDeepLaneWarningReady && !storyState.thornRunnerDeepLaneWarningReviewed) {
+      targets.push("npc-tamsin-vale");
+    }
+    if (storyState.thornRunnerFloorTwoAftermathReady && !storyState.thornRunnerFloorTwoAftermathReviewed) {
+      targets.push("npc-tamsin-vale");
+    }
     return targets;
-  }, [rescueNpcStatus, storyState.thornRunnerFollowupReviewed, storyState.thornRunnerIntroductionChoice, storyState.thornRunnerQuestStatus]);
+  }, [
+    rescueNpcStatus,
+    storyState.thornRunnerCorridorReportReady,
+    storyState.thornRunnerCorridorReportReviewed,
+    storyState.thornRunnerDeepLaneWarningReady,
+    storyState.thornRunnerDeepLaneWarningReviewed,
+    storyState.thornRunnerFloorTwoAftermathReady,
+    storyState.thornRunnerFloorTwoAftermathReviewed,
+    storyState.thornRunnerFollowupReviewed,
+    storyState.thornRunnerIntroductionChoice,
+    storyState.thornRunnerQuestStatus,
+  ]);
   const npcAttentionCount = npcAttentionTargets.length;
   const showAldricWantedPlaceholder =
     storyState.aldricQuestPath === "refused" || storyState.aldricQuestPath === "too_late";
@@ -1690,6 +1769,11 @@ const getMechanicSeverity = (mechanic: string): number => {
       },
     ].filter((section) => section.quests.length > 0);
   }, [boardVisibleQuests]);
+  const toggleBoardSection = (key: string) =>
+    setCollapsedBoardSections((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
   useEffect(() => {
     if (boardRankFilter !== "all" && !visibleRanks.includes(boardRankFilter)) {
       setBoardRankFilter("all");
@@ -2152,32 +2236,6 @@ const getMechanicSeverity = (mechanic: string): number => {
     );
   };
 
-  const getTowerCommittedCount = (floorId: string, itemId: ItemId): number =>
-    selectedItemsForTower[floorId]?.[itemId] ?? 0;
-
-  const adjustTowerCommittedItem = (
-    floorId: string,
-    itemId: ItemId,
-    delta: number,
-    maxAllowed: number,
-    owned: number,
-  ) => {
-    setSelectedItemsForTower((current) => {
-      const floorSelection = { ...(current[floorId] ?? {}) };
-      const currentAmount = floorSelection[itemId] ?? 0;
-      const nextAmount = Math.max(0, Math.min(maxAllowed, Math.min(owned, currentAmount + delta)));
-      if (nextAmount <= 0) {
-        delete floorSelection[itemId];
-      } else {
-        floorSelection[itemId] = nextAmount;
-      }
-      return {
-        ...current,
-        [floorId]: floorSelection,
-      };
-    });
-  };
-
   const handleClaimQuest = () => {
     const result = onClaimQuest();
     setNoticeTone(result.ok ? "ok" : "error");
@@ -2324,7 +2382,11 @@ const getMechanicSeverity = (mechanic: string): number => {
       initiativeHistory: [],
       skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
       queuedEnemyIndex: null,
-      turnLog: [playerTurnFirst ? "The lane tightens. Your turn." : "The enemy seizes the first move."],
+      turnLog: [
+        playerTurnFirst
+          ? "Steel rings out first. The enemy is in front of you and the opening is yours."
+          : "The enemy lunges before you can settle your stance and steals the first move.",
+      ],
     });
     setBattleEffectHint(null);
     setBattleStatusHint(null);
@@ -2376,7 +2438,11 @@ const getMechanicSeverity = (mechanic: string): number => {
       initiativeHistory: [],
       skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
       queuedEnemyIndex: null,
-      turnLog: [playerTurnFirst ? "The contract turns hot. Your turn." : "The flock drops first and steals the initiative."],
+      turnLog: [
+        playerTurnFirst
+          ? "The contract erupts into a live clash. You move first."
+          : "The flock drops out of the smoke first and tears the opening move away from you.",
+      ],
     });
     setBattleEffectHint(null);
     setBattleStatusHint(null);
@@ -2399,6 +2465,9 @@ const getMechanicSeverity = (mechanic: string): number => {
       }
       const currentEnemy = current.enemies.find((enemy) => enemy.id === activeTelegraph.enemyId);
       if (!currentEnemy) {
+        return current;
+      }
+      if (responseType === "move" && responseId && getEnemyBlockedPositions(currentEnemy).includes(responseId as TowerBattlePosition)) {
         return current;
       }
       const wallNowMs = Date.now();
@@ -2436,8 +2505,10 @@ const getMechanicSeverity = (mechanic: string): number => {
       playerDamage = calculatePlayerAttackAdjustment(playerDamage, turnStatus.snapshot, passiveBattleBonuses);
       const currentEnemyHp = current.enemyHpById[activeTelegraph.enemyId] ?? (currentEnemy.health ?? 1);
       const woundedTarget = currentEnemy.health > 0 && currentEnemyHp <= Math.ceil((currentEnemy.health ?? 1) * 0.5);
+      const attackPosition = (responseType === "attack" ? current.position : undefined) as TowerBattlePosition | undefined;
+      const positionAttackBonus = attackPosition ? getPositionAttackBonus(currentEnemy, attackPosition) : 0;
       if (responseType === "attack") {
-        playerDamage += skillAttackBonus;
+        playerDamage += skillAttackBonus + positionAttackBonus;
       } else if (responseType === "skill") {
         playerDamage = 0;
       } else if (responseType === "item") {
@@ -2520,7 +2591,10 @@ const getMechanicSeverity = (mechanic: string): number => {
         resultLine = "You raise your guard and brace for the next hit.";
         statusLogLines.push(describeBattleStatusChange(guardFx, "gained"));
       } else if (responseType === "move") {
-        resultLine = `You shift ${String(responseId ?? current.position)} and reset your footing.`;
+        const targetPosition = (responseId as TowerBattlePosition | undefined) ?? current.position;
+        resultLine = getEnemyAdvantagePositions(currentEnemy).includes(targetPosition)
+          ? `You shift ${targetPosition} and line up the clean side of ${activeTelegraph.enemyName}. Hits from there will land harder.`
+          : `You shift ${targetPosition} and reset your footing.`;
       } else if (responseType === "pass") {
         resultLine = `You yield the moment and let ${activeTelegraph.enemyName} commit first.`;
       } else if (responseType === "item" && responseId) {
@@ -2575,10 +2649,13 @@ const getMechanicSeverity = (mechanic: string): number => {
         })();
       } else {
         resultLine = `You used ${actionLabel} on ${activeTelegraph.enemyName} and dealt ${playerDamage} damage${critTriggered ? " (CRIT)" : ""}.`;
+        if (responseType === "attack" && positionAttackBonus > 0) {
+          resultLine += ` ${POSITION_LABELS[current.position]} lane gave you the clean angle for +${positionAttackBonus} damage.`;
+        }
         if (turnStatus.snapshot.counterReadyStacks > 0 && responseType === "attack") {
           resultLine += " Counter window spent cleanly.";
         } else if (woundedTarget && playerDamage > 0) {
-          resultLine += " The wounded target gives way faster under the pressure.";
+          resultLine += " The wounded target buckles faster once your blow lands cleanly.";
         }
       }
       for (const status of getPlayerResponseStatusFx(responseType, success, critTriggered, character.activeClassSkillId)) {
@@ -2627,7 +2704,7 @@ const getMechanicSeverity = (mechanic: string): number => {
           nextTurnOwner = "player";
           nextPlayerTurnsRemaining = 0;
           nextEnemyTurnsRemaining = 0;
-          nextTurnLog.push(`${activeTelegraph.enemyName} falls. The lane opens further.`);
+          nextTurnLog.push(`${activeTelegraph.enemyName} crashes down. The path ahead opens for a heartbeat.`);
         } else {
           const nextEnemyId = current.telegraphs[calculatedNextIndex]?.enemyId ?? activeTelegraph.enemyId;
           const nextEnemyStats = current.enemyStatsById[nextEnemyId] ?? enemyStats;
@@ -2636,7 +2713,9 @@ const getMechanicSeverity = (mechanic: string): number => {
           nextTurnOwner = "player";
           nextPlayerTurnsRemaining = playerFirst ? getTurnBurst(effectiveSpeed, nextEnemyStats.speed) + passiveBattleBonuses.postKillTempoFlat : 0;
           nextEnemyTurnsRemaining = 0;
-          nextTurnLog.push(`${activeTelegraph.enemyName} is down. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next threat"} waits ahead.`);
+          nextTurnLog.push(
+            `${activeTelegraph.enemyName} drops where it stood. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next threat"} is already closing in.`,
+          );
         }
       } else {
         nextIndex = getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
@@ -2644,7 +2723,11 @@ const getMechanicSeverity = (mechanic: string): number => {
         if (nextPlayerTurnsRemaining > 0) {
           nextTurnOwner = "player";
           nextEnemyTurnsRemaining = 0;
-          nextTurnLog.push(bonusPlayerTurns > 0 ? "Your momentum keeps the initiative." : "Your speed keeps the initiative.");
+          nextTurnLog.push(
+            bonusPlayerTurns > 0
+              ? "You keep pressing forward before the enemy can recover."
+              : "You are still faster. The enemy has no time to answer yet.",
+          );
         }
       }
       const nextEffectClockState = getNextBattleEffectClockState(current, nextTurnOwner, wallNowMs);
@@ -2787,7 +2870,7 @@ const getMechanicSeverity = (mechanic: string): number => {
       const nextPlayerTurnsRemaining =
         allEnemiesDown || allBattleLost || nextTurnOwner !== "player" ? 0 : Math.max(1, getTurnBurst(effectivePlayerSpeed, enemyStats.speed));
       const enemyTurnLog = [
-        `${currentEnemy.name} acts with ${activeTelegraph.mechanic.split(":")[0]} and deals ${incomingDamage} damage${enemyCrit ? " (CRIT)" : ""}.`,
+        `${currentEnemy.name} lashes out with ${activeTelegraph.mechanic.split(":")[0]} and hits you for ${incomingDamage}${enemyCrit ? " damage (CRIT)" : " damage"}.`,
       ];
       if (appliedFx) {
         enemyTurnLog.push(describeBattleStatusChange(appliedFx, "gained"));
@@ -2797,10 +2880,10 @@ const getMechanicSeverity = (mechanic: string): number => {
         response.success &&
         (playerStatusSnapshot.hasBulwarkOath || playerStatusSnapshot.hasSteelRhythm || passiveBattleBonuses.counterBonusDamageFlat > 0)
       ) {
-        enemyTurnLog.push("The enemy crashes into your guard and leaves a counter window open.");
+        enemyTurnLog.push("The blow slams into your guard, rebounds, and leaves the enemy wide open for a counter.");
       }
       if (nextPlayerHp < current.playerHp && passiveBattleBonuses.frenzyDurationSeconds > 0) {
-        enemyTurnLog.push("The hit only whips you deeper into a frenzy.");
+        enemyTurnLog.push("Pain only drives you harder. Your battle frenzy rises instead of breaking.");
       }
       const finalTurnOwner = allEnemiesDown || allBattleLost ? "player" : nextTurnOwner;
       const nextEffectClockState = getNextBattleEffectClockState(current, finalTurnOwner, wallNowMs);
@@ -2841,7 +2924,12 @@ const getMechanicSeverity = (mechanic: string): number => {
         effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
         playerTurnsRemaining: playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(current.playerStats.speed, nextEnemyStats.speed)) : 0,
         enemyTurnsRemaining: !playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(nextEnemyStats.speed, current.playerStats.speed)) : 0,
-        turnLog: [...current.turnLog, playerTurnFirst ? "You step into the next target's lane first." : "The next enemy surges in before you can settle."],
+        turnLog: [
+          ...current.turnLog,
+          playerTurnFirst
+            ? "You step over the fallen enemy and meet the next threat before it can set itself."
+            : "Another enemy surges in while you are still recovering from the last exchange.",
+        ],
       };
     });
   };
@@ -2876,6 +2964,9 @@ const getMechanicSeverity = (mechanic: string): number => {
           ? Object.keys(liveTowerBattle.committedItems) as ItemId[]
           : [],
         responses: liveTowerBattle.responses,
+        finalPlayerHp: liveTowerBattle.playerHp,
+        finalEnemyHpById: liveTowerBattle.enemyHpById,
+        battleLog: liveTowerBattle.turnLog,
         abilityCooldownsUntilMs: liveTowerBattle.skillCooldownEndsAtMsById,
         persistentStatusEffects: getPersistentWaveStatusFx(
           liveTowerBattle.playerStatusFx,
@@ -2892,7 +2983,6 @@ const getMechanicSeverity = (mechanic: string): number => {
     }
     const outcome = result.outcome;
     const { countered, triggered, lines, success } = outcome;
-    setWaveResolveModal(outcome);
     if (outcome.conditionalEncounter) {
       setActiveConditionalEncounter(outcome.conditionalEncounter);
       setConditionalEncounterResolved(false);
@@ -2914,6 +3004,12 @@ const getMechanicSeverity = (mechanic: string): number => {
     }));
     setNoticeTone(success ? "ok" : "error");
     setNotice(result.reason ?? `${getWaveTitle(liveTowerBattle.wave)} resolved.`);
+    if (outcome.collapsed && outcome.collapseMessage) {
+      setTowerCollapseAftermath({
+        title: `${getWaveTitle(liveTowerBattle.wave)} Collapse`,
+        message: outcome.collapseMessage,
+      });
+    }
     if (success) {
       setTowerWaveProgressByFloor((current) => {
         const currentWaveState = current[liveTowerBattle.floorNumber] ?? {
@@ -2979,7 +3075,7 @@ const getMechanicSeverity = (mechanic: string): number => {
               ],
               turnLog: [
                 ...current.turnLog,
-                `You give up the initiative. ${activeTelegraph.enemyName} is about to act.`,
+                `You hesitate for a breath. ${activeTelegraph.enemyName} sees the opening and moves.`,
               ],
               lastPlayerDamage: 0,
               lastEnemyDamage: 0,
@@ -3016,15 +3112,13 @@ const getMechanicSeverity = (mechanic: string): number => {
       return;
     }
     const floorSelectionKey = `floor-${floorNumber}`;
-    const selectedItems = selectedItemsForTower[floorSelectionKey] ?? {};
     const enemies = getTowerEnemiesForFloor(floor);
-    const recommendedByWave = getRecommendedItemsByWave(floor, enemies);
-    const allowedForWave = new Set((recommendedByWave[wave] ?? []).map((entry) => entry.itemId));
     const waveCommittedItems = Object.fromEntries(
-      Object.entries(selectedItems).filter(([itemId, amount]) => allowedForWave.has(itemId) && amount > 0),
+      towerPreparedItemIds.map((itemId) => [itemId, 1]),
     ) as Record<ItemId, number>;
-    if (floor.floorNumber === 1) {
-      const waveEnemies = wave === "normal" ? enemies.normal : wave === "subBoss" ? enemies.subBoss : enemies.boss;
+    const waveEnemies = wave === "normal" ? enemies.normal : wave === "subBoss" ? enemies.subBoss : enemies.boss;
+    const supportsLiveBattle = waveEnemies.length > 0;
+    if (supportsLiveBattle) {
       startLiveTowerBattle(floorNumber, wave, waveCommittedItems, waveEnemies);
       return;
     }
@@ -3206,6 +3300,18 @@ const getMechanicSeverity = (mechanic: string): number => {
     onRecordNpcInteraction("npc-tamsin-vale", 1, 0);
     setGuildDialog("tamsin-followup");
   };
+  const promptTamsinCorridorReport = () => {
+    onRecordNpcInteraction("npc-tamsin-vale", 2, 0);
+    setGuildDialog("tamsin-corridor-report");
+  };
+  const promptTamsinDeepWarning = () => {
+    onRecordNpcInteraction("npc-tamsin-vale", 2, 0);
+    setGuildDialog("tamsin-deep-warning");
+  };
+  const promptTamsinFloorTwoAftermath = () => {
+    onRecordNpcInteraction("npc-tamsin-vale", 3, 0);
+    setGuildDialog("tamsin-floor2-aftermath");
+  };
   const handleTamsinDialogChoice = (choice: "steady" | "mercenary") => {
     const result = onRespondThornRunnerIntroduction(choice);
     setGuildDialog(null);
@@ -3219,6 +3325,30 @@ const getMechanicSeverity = (mechanic: string): number => {
     const result = onAcknowledgeThornRunnerFollowup();
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(result.reason ?? (result.ok ? "Tamsin's corridor notes recorded." : "Tamsin has nothing new to add."));
+    if (result.ok) {
+      setGuildDialog(null);
+    }
+  };
+  const handleTamsinCorridorReport = () => {
+    const result = onAcknowledgeThornRunnerCorridorReport();
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Tamsin's first Thorn Corridor report was filed." : "Tamsin has nothing new to log."));
+    if (result.ok) {
+      setGuildDialog(null);
+    }
+  };
+  const handleTamsinDeepWarning = () => {
+    const result = onAcknowledgeThornRunnerDeepLaneWarning();
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Tamsin's deeper corridor warning was logged." : "Tamsin has nothing new to log."));
+    if (result.ok) {
+      setGuildDialog(null);
+    }
+  };
+  const handleTamsinFloorTwoAftermath = () => {
+    const result = onAcknowledgeThornRunnerFloorTwoAftermath();
+    setNoticeTone(result.ok ? "ok" : "error");
+    setNotice(result.reason ?? (result.ok ? "Tamsin closed the Thorn Corridor ledger." : "Tamsin has no new Floor 2 aftermath to record."));
     if (result.ok) {
       setGuildDialog(null);
     }
@@ -3411,6 +3541,7 @@ const getMechanicSeverity = (mechanic: string): number => {
   const towerOutcomeFloor = lastTowerOutcome
     ? towerFloors.find((floor) => floor.floorNumber === lastTowerOutcome.floorNumber) ?? null
     : null;
+  const towerClearStory = lastTowerOutcome?.success ? FLOOR_CLEAR_STORY[lastTowerOutcome.floorNumber] ?? null : null;
   const primedAbilityIds = character.pendingAbilityIds ?? (character.pendingAbilityId ? [character.pendingAbilityId] : []);
   const primedAbilities = primedAbilityIds
     .map((abilityId) => ABILITY_BY_ID[abilityId])
@@ -3506,14 +3637,38 @@ const getMechanicSeverity = (mechanic: string): number => {
       return archmageRiteSummary;
     }
     if (npc.id === QUARTERMASTER_BRAN_NPC_ID) {
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2) {
+        return "Quartermaster Bran has started treating your requests like those of a climber expected to return from harsher floors. His store talk now carries a little more respect than caution.";
+      }
       return "Quartermaster Bran manages the guild store. Buy gear, supplies, and sell materials through this desk.";
     }
     if (npc.id === "npc-tamsin-vale") {
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2 && !storyState.thornRunnerIntroductionChoice) {
+        return "Tamsin has noticed that you cleared Floor 2: Thorn Corridor without taking her route help first. She wants a direct guild-side talk about what you saw and what kind of climber comes back from that floor cold.";
+      }
+      if (storyState.thornRunnerFloorTwoAftermathReady && !storyState.thornRunnerFloorTwoAftermathReviewed) {
+        return "Tamsin wants to close out your first full clear of Floor 2: Thorn Corridor. The guild has started talking about what that clear means for your climb.";
+      }
+      if (storyState.thornRunnerFloorTwoAftermathReviewed) {
+        return "Tamsin has closed the Floor 2: Thorn Corridor ledger on your first clear. In guild eyes, your climb no longer looks like beginner momentum dressed up as luck.";
+      }
+      if (storyState.thornRunnerDeepLaneWarningReady && !storyState.thornRunnerDeepLaneWarningReviewed) {
+        return "Tamsin wants to brief you on what changed deeper in Floor 2: Thorn Corridor after the execution lane broke. She does not think the thing waiting below is just another thorn beast.";
+      }
+      if (storyState.thornRunnerDeepLaneWarningReviewed) {
+        return "Tamsin has marked the deeper corridor warning in her ledger. She now treats the lower reaches of Floor 2: Thorn Corridor as the first sign that the Tower is starting to watch back.";
+      }
+      if (storyState.thornRunnerCorridorReportReady && !storyState.thornRunnerCorridorReportReviewed) {
+        return "Tamsin wants your first report from inside Floor 2: Thorn Corridor before she opens more of her route ledger to the climb ahead.";
+      }
+      if (storyState.thornRunnerCorridorReportReviewed) {
+        return "Tamsin has filed your first report from Floor 2: Thorn Corridor and opened more of her runner's ledger. She now treats your climb like one that can survive deliberate pressure.";
+      }
       if (storyState.thornRunnerQuestStatus === "completed" && storyState.thornRunnerFollowupReviewed) {
-        return "Tamsin has logged the recovered satchel and opened her thorn notes to you. Her corridor work now reads you as proven help.";
+        return "Tamsin has logged the recovered satchel and opened her notes on Floor 2: Thorn Corridor to you. Her corridor work now reads you as proven help.";
       }
       if (storyState.thornRunnerQuestStatus === "completed") {
-        return "Tamsin has seen you bring corridor work back alive. Return once to review what the recovered satchel taught her about Thorn Corridor.";
+        return "Tamsin has seen you bring corridor work back alive. Return once to review what the recovered satchel taught her about Floor 2: Thorn Corridor.";
       }
       if (storyState.thornRunnerIntroductionChoice === "steady") {
         return "Tamsin has posted her snagline recovery under your name. She expects you to treat Thorn Corridor like route work, not salvage gambling.";
@@ -3521,9 +3676,12 @@ const getMechanicSeverity = (mechanic: string): number => {
       if (storyState.thornRunnerIntroductionChoice === "mercenary") {
         return "Tamsin still posted the snagline recovery, but she now watches to see whether you chase the pay faster than the lane.";
       }
-      return "A thorn-lane runner who has started watching your rise past Floor 1. She has corridor work to offer if you can take it seriously.";
+      return "A thorn-lane runner who has started watching your rise past Floor 1. She has work tied to Floor 2: Thorn Corridor if you can take it seriously.";
     }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2) {
+        return `Assigned examiner for ${rankTrial.fromRank} -> ${rankTrial.toRank} promotion trial. Your Floor 2 clear has also put your name on more than one formal guild ledger.`;
+      }
       return `Assigned examiner for ${rankTrial.fromRank} -> ${rankTrial.toRank} promotion trial.`;
     }
     const encountered = encounteredNpcById.get(npc.id);
@@ -3581,7 +3739,11 @@ const getMechanicSeverity = (mechanic: string): number => {
         { icon: "storefront-outline", color: "#ffd48f", text: "Guild Store Access" },
         { icon: "sack", color: "#9ce8c2", text: "Buy / Sell Materials" },
         { icon: "sword-cross", color: "#a8d2ff", text: "Weapon Inventory" },
-        { icon: "flask-outline", color: "#d0b4ff", text: "Sigil & Potion Supply" },
+        {
+          icon: (character.towerProgress?.highestFloorCleared ?? 0) >= 2 ? "medal-outline" : "flask-outline",
+          color: (character.towerProgress?.highestFloorCleared ?? 0) >= 2 ? "#ffcf8d" : "#d0b4ff",
+          text: (character.towerProgress?.highestFloorCleared ?? 0) >= 2 ? "Floor 2 Clear Recognized" : "Sigil & Potion Supply",
+        },
       ];
     }
     if (npc.id === "npc-tamsin-vale") {
@@ -3600,19 +3762,55 @@ const getMechanicSeverity = (mechanic: string): number => {
         },
         {
           icon:
-            storyState.thornRunnerQuestStatus === "completed"
+            storyState.thornRunnerFloorTwoAftermathReady
+              ? "bookmark-check-outline"
+              : storyState.thornRunnerFloorTwoAftermathReviewed
+                ? "book-check-outline"
+                : storyState.thornRunnerDeepLaneWarningReady
+              ? "alert-rhombus-outline"
+              : storyState.thornRunnerDeepLaneWarningReviewed
+                ? "eye-circle-outline"
+                : storyState.thornRunnerCorridorReportReady
+              ? "script-text-outline"
+              : storyState.thornRunnerCorridorReportReviewed
+                ? "book-open-variant"
+                : storyState.thornRunnerQuestStatus === "completed"
               ? storyState.thornRunnerFollowupReviewed
                 ? "notebook-check-outline"
                 : "book-clock-outline"
               : "script-text-outline",
           color:
-            storyState.thornRunnerQuestStatus === "completed"
+            storyState.thornRunnerFloorTwoAftermathReady
+              ? "#ffd48f"
+              : storyState.thornRunnerFloorTwoAftermathReviewed
+                ? "#9ce8c2"
+                : storyState.thornRunnerDeepLaneWarningReady
+              ? "#ffb59d"
+              : storyState.thornRunnerDeepLaneWarningReviewed
+                ? "#d9b6ff"
+                : storyState.thornRunnerCorridorReportReady
+              ? "#ffcf8d"
+              : storyState.thornRunnerCorridorReportReviewed
+                ? "#9ce8c2"
+                : storyState.thornRunnerQuestStatus === "completed"
               ? storyState.thornRunnerFollowupReviewed
                 ? "#9ce8c2"
                 : "#ffd48f"
               : "#d0b4ff",
           text:
-            storyState.thornRunnerQuestStatus === "completed"
+            storyState.thornRunnerFloorTwoAftermathReady
+              ? "Floor 2 Aftermath Waiting"
+              : storyState.thornRunnerFloorTwoAftermathReviewed
+                ? "Floor 2 Ledger Closed"
+                : storyState.thornRunnerDeepLaneWarningReady
+              ? "Deep Corridor Warning"
+              : storyState.thornRunnerDeepLaneWarningReviewed
+                ? "Deeper Threat Logged"
+                : storyState.thornRunnerCorridorReportReady
+              ? "Corridor Report Waiting"
+              : storyState.thornRunnerCorridorReportReviewed
+                ? "Corridor Report Filed"
+                : storyState.thornRunnerQuestStatus === "completed"
               ? storyState.thornRunnerFollowupReviewed
                 ? "Thorn Notes Logged"
                 : "Follow-Up Waiting"
@@ -3769,6 +3967,15 @@ const getMechanicSeverity = (mechanic: string): number => {
       const score =
         npcDispositionById[npc.id] ??
         (completed ? 76 : choice === "steady" ? 66 : choice === "mercenary" ? 42 : 52);
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2 && !choice) {
+        return {
+          label: "Caught Up",
+          score: Math.max(score, 64),
+          icon: "stairs-up",
+          color: "#ffcf8d",
+          flavor: "You climbed past her route work and forced a later introduction. Tamsin is now reading you through what you survived, not through her first briefing.",
+        };
+      }
       if (completed) {
         return {
           label: "Proven",
@@ -3820,9 +4027,9 @@ const getMechanicSeverity = (mechanic: string): number => {
       };
     }
     if (npc.department === "command") {
-      return {
-        label: "Recognized",
-        score: 62,
+    return {
+      label: "Recognized",
+      score: 62,
         icon: "shield-crown-outline",
         color: "#f0d08d",
         flavor: "Guild command knows your face, though not yet your full measure.",
@@ -3844,6 +4051,198 @@ const getMechanicSeverity = (mechanic: string): number => {
       color: "#cdbb9c",
       flavor: "You are known, but no personal bond has formed yet.",
     };
+  };
+  const getNpcPassingRemark = (npc: GuildNpcProfile) => {
+    if (npc.id === RESCUE_REQUEST_NPC_PROFILE.id) {
+      if (rescueNpcStatus === "available" || rescueNpcStatus === "refused_once") {
+        return {
+          lines: [
+            "\"If you're going near Watchtrail, don't let me keep begging twice.\"",
+            "\"Every hour you stand here is another hour my girl stays in their hands.\"",
+          ],
+          icon: "message-alert-outline" as const,
+          color: "#fff0d8",
+          borderColor: "#ffbf8f",
+          backgroundColor: "rgba(129, 61, 34, 0.96)",
+        };
+      }
+      if (storyState.aldricQuestPath === "saved") {
+        return {
+          lines: [
+            "\"You pulled my child out of the dark. I haven't forgotten what that cost.\"",
+            "\"People say tower climber. I say the one who brought my daughter home alive.\"",
+          ],
+          icon: "message-check-outline" as const,
+          color: "#eafff1",
+          borderColor: "#93e3b1",
+          backgroundColor: "rgba(27, 82, 54, 0.94)",
+        };
+      }
+      if (storyState.aldricQuestPath === "too_late" || storyState.aldricQuestPath === "refused") {
+        return {
+          lines: [
+            "\"Some losses don't stop talking just because the hall went quiet.\"",
+            "\"The guild moves on fast. Grief doesn't.\"",
+          ],
+          icon: "message-text-outline" as const,
+          color: "#f0dbff",
+          borderColor: "#caa8ff",
+          backgroundColor: "rgba(67, 43, 94, 0.96)",
+        };
+      }
+    }
+    if (npc.id === "npc-tamsin-vale") {
+      if (storyState.thornRunnerFloorTwoAftermathReady && !storyState.thornRunnerFloorTwoAftermathReviewed) {
+        return {
+          lines: [
+            "\"Floor 2 changed the way this hall says your name. Sit down and hear why.\"",
+            "\"Don't spend the Floor 2 clear too quickly. The hall is still deciding what it means.\"",
+          ],
+          icon: "message-badge-outline" as const,
+          color: "#fff1cf",
+          borderColor: "#ffd08a",
+          backgroundColor: "rgba(102, 72, 29, 0.95)",
+        };
+      }
+      if (storyState.thornRunnerDeepLaneWarningReady && !storyState.thornRunnerDeepLaneWarningReviewed) {
+        return {
+          lines: [
+            "\"The lower stretch isn't growing wild anymore. It's choosing where to hurt you.\"",
+            "\"What waits deeper in Floor 2 has started moving like it's judging mistakes.\"",
+          ],
+          icon: "message-alert-outline" as const,
+          color: "#fff0ed",
+          borderColor: "#ffb69e",
+          backgroundColor: "rgba(118, 52, 43, 0.96)",
+        };
+      }
+      if (storyState.thornRunnerCorridorReportReady && !storyState.thornRunnerCorridorReportReviewed) {
+        return {
+          lines: [
+            "\"Don't give me heroics. Give me what Floor 2: Thorn Corridor actually did to you.\"",
+            "\"Save the brave version for the board. I want the true one.\"",
+          ],
+          icon: "message-text-outline" as const,
+          color: "#fff1cf",
+          borderColor: "#ffd48f",
+          backgroundColor: "rgba(109, 78, 33, 0.95)",
+        };
+      }
+      if (storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed) {
+        return {
+          lines: [
+            "\"I pulled something useful out of that satchel. Read it before you walk in blind again.\"",
+            "\"The satchel told me more than the contract did. Come hear it.\"",
+          ],
+          icon: "message-processing-outline" as const,
+          color: "#fff1cf",
+          borderColor: "#d4b67e",
+          backgroundColor: "rgba(88, 65, 34, 0.95)",
+        };
+      }
+      if (storyState.thornRunnerQuestStatus === "available" && !storyState.thornRunnerIntroductionChoice) {
+        return {
+          lines: [
+            "\"If you step into Floor 2 cold, the corridor will teach you with your blood first.\"",
+            "\"Floor 2 doesn't punish pride all at once. It bleeds it out of you slowly.\"",
+          ],
+          icon: "message-draw" as const,
+          color: "#e7f7ff",
+          borderColor: "#8fd8ff",
+          backgroundColor: "rgba(30, 77, 103, 0.96)",
+        };
+      }
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2 && !storyState.thornRunnerIntroductionChoice) {
+        return {
+          lines: [
+            "\"You cleared Floor 2 without my route marks? Fine. Then start talking.\"",
+            "\"You skipped the briefing and came back alive anyway. That earns a different conversation.\"",
+          ],
+          icon: "message-question-outline" as const,
+          color: "#fff0d2",
+          borderColor: "#ffcf8d",
+          backgroundColor: "rgba(102, 74, 26, 0.95)",
+        };
+      }
+    }
+    if (npc.id === QUARTERMASTER_BRAN_NPC_ID && (character.towerProgress?.highestFloorCleared ?? 0) >= 2) {
+      return {
+        lines: [
+          "\"You're buying like someone planning to come back from harsher floors now.\"",
+          "\"Floor 2 changes what I bother recommending to a climber.\"",
+        ],
+        icon: "message-outline" as const,
+        color: "#fff0d2",
+        borderColor: "#ffcf8d",
+        backgroundColor: "rgba(99, 70, 28, 0.95)",
+      };
+    }
+    if (rankTrial && npc.id === rankExaminerProfile.id) {
+      if (rankUpAvailable) {
+        return {
+          lines: [
+            `"Paper says you're eligible. Now show me the climb agrees."`,
+            `"Eligibility is ink. Promotion is proof."`,
+          ],
+          icon: "message-check-outline" as const,
+          color: "#eafff1",
+          borderColor: "#9ce8c2",
+          backgroundColor: "rgba(30, 86, 56, 0.95)",
+        };
+      }
+      if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2) {
+        return {
+          lines: [
+            `"Floor 2 is on your record now. The office does notice when someone comes back from it."`,
+            `"Deeper floors make cleaner evidence than promises do."`,
+          ],
+          icon: "message-badge-outline" as const,
+          color: "#e8f4ff",
+          borderColor: "#a8d2ff",
+          backgroundColor: "rgba(34, 68, 102, 0.95)",
+        };
+      }
+    }
+    if (npc.id === GUILD_MAGE_NPC_ID && isDead) {
+      return {
+        lines: [
+          "\"Come here before that fracture settles any deeper.\"",
+          "\"Stand still. The Tower already took enough out of you.\"",
+        ],
+        icon: "message-flash-outline" as const,
+        color: "#f6e4ff",
+        borderColor: "#d9b6ff",
+        backgroundColor: "rgba(79, 47, 109, 0.95)",
+      };
+    }
+    if (npc.id === WARRIOR_PATH_GUIDE_NPC_PROFILE.id) {
+      return {
+        lines: [
+          "\"Steel first. Names later. Your path lesson will come.\"",
+          "\"A path chosen too early is usually just a mood with a weapon.\"",
+        ],
+        icon: "message-outline" as const,
+        color: "#efe6ff",
+        borderColor: "#d0b4ff",
+        backgroundColor: "rgba(68, 53, 103, 0.95)",
+      };
+    }
+    return null;
+  };
+  const getNpcPassingRemarkLine = (
+    npc: GuildNpcProfile,
+    remark: NonNullable<ReturnType<typeof getNpcPassingRemark>>,
+  ) => {
+    const lines = remark.lines;
+    if (!lines.length) {
+      return "";
+    }
+    const interactionSeed = npcInteractionCountById[npc.id] ?? 0;
+    const dispositionSeed = storyState.npcDispositionById?.[npc.id] ?? 0;
+    const towerSeed = character.towerProgress?.highestFloorCleared ?? 0;
+    const timeSeed = Math.floor(nowMs / 12000);
+    const index = Math.abs(interactionSeed + dispositionSeed + towerSeed + timeSeed) % lines.length;
+    return lines[index];
   };
   const getQuestSourcesForItem = (itemId: ItemId): string[] =>
     quests
@@ -4194,9 +4593,14 @@ const getMechanicSeverity = (mechanic: string): number => {
 
         <View style={styles.licenseRow}>
           <MaterialCommunityIcons name="badge-account-horizontal-outline" size={15} color={colors.gold} />
-          <Text style={styles.licenseText}>
-            Adventurer Rank: {character.adventurerRank} • Level {character.progression.level}
-          </Text>
+          <View style={styles.licenseStatPill}>
+            <Text style={styles.licensePillLabel}>Rank</Text>
+            <Text style={styles.licenseRankValue}>{character.adventurerRank}</Text>
+          </View>
+          <View style={[styles.licenseStatPill, styles.licenseLevelPill]}>
+            <Text style={styles.licensePillLabel}>Level</Text>
+            <Text style={styles.licenseLevelValue}>{character.progression.level}</Text>
+          </View>
           <View style={styles.licenseFloorInline}>
             <MaterialCommunityIcons name="stairs" size={12} color="#d7ebff" />
             <Text style={styles.licenseFloorInlineLabel}>Floor</Text>
@@ -4393,6 +4797,27 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </View>
                     <ProgressBar value={elapsedRatio * 100} max={100} variant="time" />
                   </View>
+                  {activeQuestDef.id !== SPECIAL_RESCUE_QUEST_ID && !isQuestReadyToClaim ? (
+                    <Pressable
+                      onPress={() => {
+                        const result = onUseQuestRushItem("quickthread-token");
+                        setNoticeTone(result.ok ? "ok" : "error");
+                        setNotice(result.reason ?? (result.ok ? "Quest timer reduced." : "Could not speed up the quest."));
+                      }}
+                      style={styles.actionWrap}
+                    >
+                      <View
+                        style={[
+                          styles.sellButton,
+                          (character.inventory["quickthread-token"] ?? 0) <= 0 ? styles.actionDisabled : null,
+                        ]}
+                      >
+                        <Text style={styles.buyText}>
+                          Burn Quickthread Token {(character.inventory["quickthread-token"] ?? 0) > 0 ? `(${character.inventory["quickthread-token"] ?? 0})` : ""}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ) : null}
 
                   <View style={styles.questMeterBlock}>
                     <View style={styles.meterLabelRow}>
@@ -4500,31 +4925,42 @@ const getMechanicSeverity = (mechanic: string): number => {
                     : null,
                 ]}
               >
-                <View style={styles.boardSectionHead}>
-                  <View style={styles.boardSectionTitleWrap}>
-                    <MaterialCommunityIcons
-                      name={section.icon}
-                      size={16}
-                      color={
-                        section.tone === "urgent"
-                          ? "#ffb3b8"
-                          : section.tone === "story"
-                            ? "#a9ddff"
-                            : section.tone === "special"
-                              ? "#e2b4ff"
-                              : "#ffd48f"
-                      }
-                    />
-                    <Text style={styles.boardSectionTitle}>{section.title}</Text>
+                <Pressable onPress={() => toggleBoardSection(section.key)} style={styles.boardSectionToggle}>
+                  <View style={styles.boardSectionHead}>
+                    <View style={styles.boardSectionTitleWrap}>
+                      <MaterialCommunityIcons
+                        name={section.icon}
+                        size={16}
+                        color={
+                          section.tone === "urgent"
+                            ? "#ffb3b8"
+                            : section.tone === "story"
+                              ? "#a9ddff"
+                              : section.tone === "special"
+                                ? "#e2b4ff"
+                                : "#ffd48f"
+                        }
+                      />
+                      <Text style={styles.boardSectionTitle}>{section.title}</Text>
+                    </View>
+                    <View style={styles.boardSectionControls}>
+                      <View style={styles.boardSectionCountPill}>
+                        <Text style={styles.boardSectionCountText}>{section.quests.length}</Text>
+                      </View>
+                      <MaterialCommunityIcons
+                        name={collapsedBoardSections[section.key] ? "chevron-down" : "chevron-up"}
+                        size={18}
+                        color="#ecd8af"
+                      />
+                    </View>
                   </View>
-                  <View style={styles.boardSectionCountPill}>
-                    <Text style={styles.boardSectionCountText}>{section.quests.length}</Text>
+                  <Text style={styles.boardSectionMeta}>{section.subtitle}</Text>
+                </Pressable>
+                {!collapsedBoardSections[section.key] ? (
+                  <View style={styles.boardSectionList}>
+                    {section.quests.map((quest) => renderQuestBoardCard(quest))}
                   </View>
-                </View>
-                <Text style={styles.boardSectionMeta}>{section.subtitle}</Text>
-                <View style={styles.boardSectionList}>
-                  {section.quests.map((quest) => renderQuestBoardCard(quest))}
-                </View>
+                ) : null}
               </View>
             ))}
             {showAldricWantedPlaceholder ? (
@@ -5360,9 +5796,6 @@ const getMechanicSeverity = (mechanic: string): number => {
               </View>
             ) : currentTowerFloor ? (
               (() => {
-                const towerSelectionKey = `floor-${currentTowerFloor.floorNumber}`;
-                const towerSelectedItems = selectedItemsForTower[towerSelectionKey] ?? {};
-                const successChance = getTowerSuccessChance(currentTowerFloor.floorNumber, towerSelectedItems);
                 const access = getTowerAccess(currentTowerFloor.floorNumber);
                 const blocked = !access.allowed;
                 const towerEnemies = getTowerEnemiesForFloor(currentTowerFloor);
@@ -5385,28 +5818,18 @@ const getMechanicSeverity = (mechanic: string): number => {
                 const subBossWaveUnlocked = waveProgress.subBoss !== "locked";
                 const bossWaveUnlocked = waveProgress.boss !== "locked";
                 const floorFinalEngageReady = waveProgress.boss === "cleared";
-                const mechanicPressure = calculateTowerMechanicPressure(character, currentTowerFloor, towerSelectedItems);
-                const totalRecommended = currentTowerFloor.recommendedItems.reduce(
-                  (sum, requirement) => sum + requirement.needed,
-                  0,
-                );
-                const committedRecommended = currentTowerFloor.recommendedItems.reduce((sum, requirement) => {
-                  const committed = towerSelectedItems[requirement.itemId] ?? 0;
-                  return sum + Math.min(requirement.needed, committed);
-                }, 0);
-                const supplyReadiness = totalRecommended <= 0 ? 0 : Math.round((committedRecommended / totalRecommended) * 100);
-                const recommendedByWave = getRecommendedItemsByWave(currentTowerFloor, towerEnemies);
+                const mechanicPressure = calculateTowerMechanicPressure(character, currentTowerFloor, {});
                 const normalDrops = getWaveDrops(currentTowerFloor, "normal");
                 const subBossDrops = getWaveDrops(currentTowerFloor, "subBoss");
                 const bossDrops = getWaveDrops(currentTowerFloor, "boss");
                 const floorIntelUnlocked = hasFloorIntel(currentTowerFloor.floorNumber) || character.towerProgress.highestFloorCleared >= currentTowerFloor.floorNumber;
                 const floorLore = FLOOR_ENTRY_LORE[currentTowerFloor.floorNumber];
+                const towerPreparedItemSet = new Set(towerPreparedItemIds);
                 const scoutWaveConfigs: Array<{
                   key: TowerWaveKey;
                   label: string;
                   icon: ImageSourcePropType;
                   enemies: TowerEnemyUnit[];
-                  recommended: typeof recommendedByWave.normal;
                   drops: ReturnType<typeof getWaveDrops>;
                 }> = [
                   {
@@ -5414,7 +5837,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                     label: "Normal Wave",
                     icon: TOWER_ENEMY_ROLE_ART.normal,
                     enemies: towerEnemies.normal,
-                    recommended: recommendedByWave.normal,
                     drops: normalDrops,
                   },
                   {
@@ -5422,7 +5844,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                     label: "Sub-Boss",
                     icon: TOWER_ENEMY_ROLE_ART.subBoss,
                     enemies: towerEnemies.subBoss,
-                    recommended: recommendedByWave.subBoss,
                     drops: subBossDrops,
                   },
                   {
@@ -5430,7 +5851,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                     label: "Main Boss",
                     icon: TOWER_ENEMY_ROLE_ART.boss,
                     enemies: towerEnemies.boss,
-                    recommended: recommendedByWave.boss,
                     drops: bossDrops,
                   },
                 ];
@@ -5577,7 +5997,9 @@ const getMechanicSeverity = (mechanic: string): number => {
                         <View style={styles.towerEntryButton}>
                           <View style={styles.towerPrimaryActionInner}>
                             <MaterialCommunityIcons name="gate-open" size={15} color="#ecfbff" />
-                            <Text style={styles.towerPrimaryActionText}>Enter Tower Entrance</Text>
+                            <Text style={styles.towerPrimaryActionText}>
+                              {currentTowerFloor.floorNumber === 1 ? "Enter Tower Entrance" : `Enter ${currentTowerFloor.title}`}
+                            </Text>
                           </View>
                         </View>
                       </Pressable>
@@ -5746,23 +6168,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </View>
                     <Text style={styles.towerChipLegend}>Tap icons for details.</Text>
 
-                    <View style={styles.meterBlock}>
-                      <View style={styles.meterLabelRow}>
-                        <Text style={styles.meterLabel}>Floor Clear Chance</Text>
-                        <Text style={styles.meterLabel}>{successChance}%</Text>
-                      </View>
-                      <ProgressBar value={successChance} max={100} variant="chance" />
-                    </View>
-                    <View style={styles.towerIconGrid}>
-                      <Pressable
-                        onPress={() => showQuickInfo("Supply Readiness", `${supplyReadiness}%`)}
-                        style={styles.towerIconChip}
-                      >
-                        <MaterialCommunityIcons name="bag-personal-outline" size={18} color="#ffd487" />
-                      </Pressable>
-                    </View>
-
-                    <Text style={styles.questMeta}>Wave sections now carry their own supplies, mechanics, and drop pools.</Text>
+                    <Text style={styles.questMeta}>Wave sections now carry their own mechanics, lore reads, and drop pools.</Text>
 
                     <Text style={styles.reqTitle}>Enemy Waves</Text>
                     <View style={styles.waveBlock}>
@@ -5836,7 +6242,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                       {(towerEnemies.normal.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                         ({ enemy, mechanic }, idx) => {
                           const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                          const hasCounter = counterItemId ? (towerSelectedItems[counterItemId] ?? 0) > 0 : false;
+                          const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
                           return (
                             <View key={`normal-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                               <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -5848,51 +6254,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                           );
                         },
                       )}
-                      <Text style={styles.waveSectionLabel}>Recommended Supplies (Normal)</Text>
-                      <View style={styles.towerDropGrid}>
-                        {recommendedByWave.normal.map((requirement, index) => {
-                          if (!floorIntelUnlocked && index > 0) {
-                            return (
-                              <View key={`normal-supply-unknown-${requirement.itemId}`} style={styles.towerSupplyCard}>
-                                <View style={styles.towerSupplyIconButton}>
-                                  <MaterialCommunityIcons name="help-circle-outline" size={24} color="#d4b98c" />
-                                </View>
-                                <Text style={styles.reqText}>Unknown aid</Text>
-                              </View>
-                            );
-                          }
-                          const item = ITEM_BY_ID[requirement.itemId];
-                          const rarity = item?.rarity ?? "common";
-                          const owned = character.inventory[requirement.itemId] ?? 0;
-                          const committed = getTowerCommittedCount(towerSelectionKey, requirement.itemId);
-                          return (
-                            <View key={`normal-supply-${requirement.itemId}`} style={[styles.towerSupplyCard, { borderColor: rarityColorMap[rarity] }]}>
-                              <Pressable
-                                onPress={() =>
-                                  showQuickInfo(
-                                    item?.name ?? requirement.itemId,
-                                    `Wave: Normal\nLoaded: ${committed}/${requirement.needed}\nOwned: ${owned}`,
-                                    rarity,
-                                    requirement.itemId,
-                                  )
-                                }
-                                style={[styles.towerSupplyIconButton, { borderColor: rarityColorMap[rarity] }]}
-                              >
-                                <GameItemIcon itemId={requirement.itemId} size={24} />
-                              </Pressable>
-                              <View style={styles.towerSupplyStepperRow}>
-                                <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, -1, requirement.needed, owned)} style={styles.stepperButton}>
-                                  <Text style={styles.stepperButtonText}>-</Text>
-                                </Pressable>
-                                <Text style={styles.reqText}>{committed}/{requirement.needed}</Text>
-                                <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, 1, requirement.needed, owned)} style={styles.stepperButton}>
-                                  <Text style={styles.stepperButtonText}>+</Text>
-                                </Pressable>
-                              </View>
-                            </View>
-                          );
-                        })}
-                      </View>
                       <Text style={styles.waveSectionLabel}>Normal Drop Pool</Text>
                       <View style={styles.towerDropGrid}>
                         {normalDrops.guaranteed.map((reward) => (
@@ -6046,7 +6407,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                           {(towerEnemies.subBoss.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                             ({ enemy, mechanic }, idx) => {
                               const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                              const hasCounter = counterItemId ? (towerSelectedItems[counterItemId] ?? 0) > 0 : false;
+                              const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
                               return (
                                 <View key={`sub-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                                   <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -6058,51 +6419,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                               );
                             },
                           )}
-                          <Text style={styles.waveSectionLabel}>Recommended Supplies (Sub-Boss)</Text>
-                          <View style={styles.towerDropGrid}>
-                            {recommendedByWave.subBoss.map((requirement, index) => {
-                              if (!floorIntelUnlocked && index > 0) {
-                                return (
-                                  <View key={`sub-supply-unknown-${requirement.itemId}`} style={styles.towerSupplyCard}>
-                                    <View style={styles.towerSupplyIconButton}>
-                                      <MaterialCommunityIcons name="help-circle-outline" size={24} color="#d4b98c" />
-                                    </View>
-                                    <Text style={styles.reqText}>Unknown aid</Text>
-                                  </View>
-                                );
-                              }
-                              const item = ITEM_BY_ID[requirement.itemId];
-                              const rarity = item?.rarity ?? "common";
-                              const owned = character.inventory[requirement.itemId] ?? 0;
-                              const committed = getTowerCommittedCount(towerSelectionKey, requirement.itemId);
-                              return (
-                                <View key={`sub-supply-${requirement.itemId}`} style={[styles.towerSupplyCard, { borderColor: rarityColorMap[rarity] }]}>
-                                  <Pressable
-                                    onPress={() =>
-                                      showQuickInfo(
-                                        item?.name ?? requirement.itemId,
-                                        `Wave: Sub-Boss\nLoaded: ${committed}/${requirement.needed}\nOwned: ${owned}`,
-                                        rarity,
-                                        requirement.itemId,
-                                      )
-                                    }
-                                    style={[styles.towerSupplyIconButton, { borderColor: rarityColorMap[rarity] }]}
-                                  >
-                                    <GameItemIcon itemId={requirement.itemId} size={24} />
-                                  </Pressable>
-                                  <View style={styles.towerSupplyStepperRow}>
-                                    <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, -1, requirement.needed, owned)} style={styles.stepperButton}>
-                                      <Text style={styles.stepperButtonText}>-</Text>
-                                    </Pressable>
-                                    <Text style={styles.reqText}>{committed}/{requirement.needed}</Text>
-                                    <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, 1, requirement.needed, owned)} style={styles.stepperButton}>
-                                      <Text style={styles.stepperButtonText}>+</Text>
-                                    </Pressable>
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
                           <Text style={styles.waveSectionLabel}>Sub-Boss Drop Pool</Text>
                           <View style={styles.towerDropGrid}>
                             {subBossDrops.guaranteed.map((reward) => (
@@ -6259,7 +6575,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                           {(towerEnemies.boss.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                             ({ enemy, mechanic }, idx) => {
                               const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                              const hasCounter = counterItemId ? (towerSelectedItems[counterItemId] ?? 0) > 0 : false;
+                              const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
                               return (
                                 <View key={`boss-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                                   <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -6271,51 +6587,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                               );
                             },
                           )}
-                          <Text style={styles.waveSectionLabel}>Recommended Supplies (Main Boss)</Text>
-                          <View style={styles.towerDropGrid}>
-                            {recommendedByWave.boss.map((requirement, index) => {
-                              if (!floorIntelUnlocked && index > 0) {
-                                return (
-                                  <View key={`boss-supply-unknown-${requirement.itemId}`} style={styles.towerSupplyCard}>
-                                    <View style={styles.towerSupplyIconButton}>
-                                      <MaterialCommunityIcons name="help-circle-outline" size={24} color="#d4b98c" />
-                                    </View>
-                                    <Text style={styles.reqText}>Unknown aid</Text>
-                                  </View>
-                                );
-                              }
-                              const item = ITEM_BY_ID[requirement.itemId];
-                              const rarity = item?.rarity ?? "common";
-                              const owned = character.inventory[requirement.itemId] ?? 0;
-                              const committed = getTowerCommittedCount(towerSelectionKey, requirement.itemId);
-                              return (
-                                <View key={`boss-supply-${requirement.itemId}`} style={[styles.towerSupplyCard, { borderColor: rarityColorMap[rarity] }]}>
-                                  <Pressable
-                                    onPress={() =>
-                                      showQuickInfo(
-                                        item?.name ?? requirement.itemId,
-                                        `Wave: Main Boss\nLoaded: ${committed}/${requirement.needed}\nOwned: ${owned}`,
-                                        rarity,
-                                        requirement.itemId,
-                                      )
-                                    }
-                                    style={[styles.towerSupplyIconButton, { borderColor: rarityColorMap[rarity] }]}
-                                  >
-                                    <GameItemIcon itemId={requirement.itemId} size={24} />
-                                  </Pressable>
-                                  <View style={styles.towerSupplyStepperRow}>
-                                    <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, -1, requirement.needed, owned)} style={styles.stepperButton}>
-                                      <Text style={styles.stepperButtonText}>-</Text>
-                                    </Pressable>
-                                    <Text style={styles.reqText}>{committed}/{requirement.needed}</Text>
-                                    <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, 1, requirement.needed, owned)} style={styles.stepperButton}>
-                                      <Text style={styles.stepperButtonText}>+</Text>
-                                    </Pressable>
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
                           <Text style={styles.waveSectionLabel}>Main Boss Drop Pool</Text>
                           <View style={styles.towerDropGrid}>
                             {bossDrops.guaranteed.map((reward) => (
@@ -6433,21 +6704,10 @@ const getMechanicSeverity = (mechanic: string): number => {
                             {floorLore?.body ??
                               "These are the guild's current notes on the floor. Better ledgers, prior clears, and trusted field reports reveal more."}
                           </Text>
-                          <View style={styles.meterBlock}>
-                            <View style={styles.meterLabelRow}>
-                              <Text style={styles.meterLabel}>Floor Clear Chance</Text>
-                              <Text style={styles.meterLabel}>{successChance}%</Text>
-                            </View>
-                            <ProgressBar value={successChance} max={100} variant="chance" />
-                          </View>
                           <View style={styles.towerScoutStatsRow}>
                             <Pressable onPress={() => showQuickInfo("Stamina Cost", `${currentTowerFloor.staminaCost}`)} style={styles.towerScoutStatChip}>
                               <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
                               <Text style={styles.towerScoutStatText}>{currentTowerFloor.staminaCost}</Text>
-                            </Pressable>
-                            <Pressable onPress={() => showQuickInfo("Supply Readiness", `${supplyReadiness}% ready`)} style={styles.towerScoutStatChip}>
-                              <MaterialCommunityIcons name="bag-personal-outline" size={18} color="#ffd487" />
-                              <Text style={styles.towerScoutStatText}>{supplyReadiness}% Ready</Text>
                             </Pressable>
                           </View>
                           {towerStageIsWaves ? (
@@ -6512,15 +6772,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                                   : blocked
                                     ? access.reason ?? "Tower route locked."
                                     : "";
-                            const waveSupplyState = wave.recommended.map((requirement) => {
-                              const owned = character.inventory[requirement.itemId] ?? 0;
-                              const committed = getTowerCommittedCount(towerSelectionKey, requirement.itemId);
-                              return {
-                                requirement,
-                                owned,
-                                committed,
-                              };
-                            });
                             return (
                             <View key={`scout-${wave.key}`} style={styles.towerScoutCard}>
                               <View style={styles.towerScoutCardHead}>
@@ -6622,58 +6873,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                                 </View>
 
                                 <View style={[styles.towerScoutIntelStage, useWideTowerScout ? styles.towerScoutIntelStageWide : null]}>
-                                  <Text style={styles.waveSectionLabel}>Recommended Supplies</Text>
-                                  <View style={[styles.towerDropGrid, styles.towerScoutUtilityGrid, useWideTowerScout ? styles.towerScoutUtilityGridWide : null]}>
-                                    {wave.recommended.length > 0 ? (
-                                      waveSupplyState.map(({ requirement, owned, committed }, index) => {
-                                        if (!floorIntelUnlocked && index > 0) {
-                                          return (
-                                            <View key={`scout-supply-hidden-${wave.key}-${requirement.itemId}`} style={[styles.towerSupplyCard, useWideTowerScout ? styles.towerSupplyCardScoutWide : null]}>
-                                              <View style={styles.towerSupplyIconButton}>
-                                                <MaterialCommunityIcons name="help-circle-outline" size={24} color="#d4b98c" />
-                                              </View>
-                                              <Text style={styles.reqText}>Unknown aid</Text>
-                                            </View>
-                                          );
-                                        }
-                                        const item = ITEM_BY_ID[requirement.itemId];
-                                        const rarity = item?.rarity ?? "common";
-                                        return (
-                                          <View key={`scout-supply-${wave.key}-${requirement.itemId}`} style={[styles.towerSupplyCard, useWideTowerScout ? styles.towerSupplyCardScoutWide : null, { borderColor: rarityColorMap[rarity] }]}>
-                                            <Pressable
-                                              onPress={() =>
-                                                showQuickInfo(
-                                                  item?.name ?? requirement.itemId,
-                                                  `Wave: ${wave.label}\nNeed: ${requirement.needed}\nLoaded: ${committed}\nOwned: ${owned}`,
-                                                  rarity,
-                                                  requirement.itemId,
-                                                )
-                                              }
-                                              style={[styles.towerSupplyIconButton, { borderColor: rarityColorMap[rarity] }]}
-                                            >
-                                              <GameItemIcon itemId={requirement.itemId} size={24} />
-                                            </Pressable>
-                                            <View style={styles.towerSupplyStepperRow}>
-                                              <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, -1, requirement.needed, owned)} style={styles.stepperButton}>
-                                                <Text style={styles.stepperButtonText}>-</Text>
-                                              </Pressable>
-                                              <Text style={styles.reqText}>{committed}/{requirement.needed}</Text>
-                                              <Pressable onPress={() => adjustTowerCommittedItem(towerSelectionKey, requirement.itemId, 1, requirement.needed, owned)} style={styles.stepperButton}>
-                                                <Text style={styles.stepperButtonText}>+</Text>
-                                              </Pressable>
-                                            </View>
-                                            <Text style={styles.reqOwnedText}>Owned {owned}</Text>
-                                          </View>
-                                        );
-                                      })
-                                    ) : (
-                                      <View style={styles.rewardChip}>
-                                        <MaterialCommunityIcons name="check-circle-outline" size={13} color="#8de9a8" />
-                                        <Text style={styles.rewardChipText}>No special supplies recommended.</Text>
-                                      </View>
-                                    )}
-                                  </View>
-
                                   <Text style={styles.waveSectionLabel}>Possible Drops</Text>
                                   <View style={[styles.towerDropGrid, styles.towerScoutUtilityGrid, useWideTowerScout ? styles.towerScoutUtilityGridWide : null]}>
                                     {[...wave.drops.guaranteed, ...(floorIntelUnlocked ? wave.drops.possible : [])].map((reward) => {
@@ -6855,6 +7054,8 @@ const getMechanicSeverity = (mechanic: string): number => {
                 {(() => {
                   const disposition = getNpcDisposition(npc);
                   const needsAttention = npcAttentionTargets.includes(npc.id);
+                  const passingRemark = getNpcPassingRemark(npc);
+                  const passingRemarkLine = passingRemark ? getNpcPassingRemarkLine(npc, passingRemark) : "";
                   return (
                     <>
                 <LinearGradient
@@ -6890,6 +7091,31 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </ImageBackground>
                   </View>
                 </View>
+                {passingRemark ? (
+                  <View
+                    style={[
+                      styles.npcSpeechBubble,
+                      {
+                        borderColor: passingRemark.borderColor,
+                        backgroundColor: passingRemark.backgroundColor,
+                      },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.npcSpeechBubbleTail,
+                        {
+                          backgroundColor: passingRemark.backgroundColor,
+                          borderColor: passingRemark.borderColor,
+                        },
+                      ]}
+                    />
+                    <View style={styles.npcSpeechBubbleInner}>
+                      <MaterialCommunityIcons name={passingRemark.icon} size={13} color={passingRemark.color} />
+                      <Text style={[styles.npcSpeechBubbleText, { color: passingRemark.color }]}>{passingRemarkLine}</Text>
+                    </View>
+                  </View>
+                ) : null}
                 <View style={styles.npcBody}>
                   <View style={styles.npcAvatar}>
                     <Image
@@ -7043,12 +7269,42 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </View>
                   </Pressable>
                 ) : npc.id === "npc-tamsin-vale" ? (
-                  storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed ? (
+                  storyState.thornRunnerFloorTwoAftermathReady && !storyState.thornRunnerFloorTwoAftermathReviewed ? (
+                    <Pressable onPress={promptTamsinFloorTwoAftermath} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Review Floor 2 Aftermath</Text>
+                      </View>
+                    </Pressable>
+                  ) : storyState.thornRunnerDeepLaneWarningReady && !storyState.thornRunnerDeepLaneWarningReviewed ? (
+                    <Pressable onPress={promptTamsinDeepWarning} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Review Deeper Corridor Warning</Text>
+                      </View>
+                    </Pressable>
+                  ) : storyState.thornRunnerCorridorReportReady && !storyState.thornRunnerCorridorReportReviewed ? (
+                    <Pressable onPress={promptTamsinCorridorReport} style={styles.actionWrap}>
+                      <View style={styles.sellButton}>
+                        <Text style={styles.buyText}>Report Thorn Corridor</Text>
+                      </View>
+                    </Pressable>
+                  ) : storyState.thornRunnerQuestStatus === "completed" && !storyState.thornRunnerFollowupReviewed ? (
                     <Pressable onPress={promptTamsinFollowup} style={styles.actionWrap}>
                       <View style={styles.sellButton}>
                         <Text style={styles.buyText}>Review Thorn Notes</Text>
                       </View>
                     </Pressable>
+                  ) : storyState.thornRunnerFloorTwoAftermathReviewed ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Floor 2 Aftermath Logged</Text>
+                    </View>
+                  ) : storyState.thornRunnerDeepLaneWarningReviewed ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Deeper Warning Logged</Text>
+                    </View>
+                  ) : storyState.thornRunnerCorridorReportReviewed ? (
+                    <View style={[styles.sellButton, styles.actionDisabled]}>
+                      <Text style={styles.buyText}>Corridor Report Filed</Text>
+                    </View>
                   ) : storyState.thornRunnerQuestStatus === "completed" ? (
                     <View style={[styles.sellButton, styles.actionDisabled]}>
                       <Text style={styles.buyText}>Thorn Notes Recorded</Text>
@@ -7281,7 +7537,13 @@ const getMechanicSeverity = (mechanic: string): number => {
                     <View style={styles.floorEncounterText}>
                       <Text style={styles.floorEncounterName}>{lastTowerOutcome.conditionalEncounter.npcName}</Text>
                       <Text style={styles.floorEncounterMeta}>
-                        {lastTowerOutcome.conditionalEncounter.npcTitle} • {lastTowerOutcome.conditionalEncounter.contactStyle === "disciplined" ? "Disciplined Intercept" : "Emergency Intercept"}
+                        {lastTowerOutcome.conditionalEncounter.npcTitle} • {
+                          lastTowerOutcome.conditionalEncounter.npcName === "Tamsin Vale"
+                            ? "Route Mark"
+                            : lastTowerOutcome.conditionalEncounter.contactStyle === "disciplined"
+                              ? "Disciplined Intercept"
+                              : "Emergency Intercept"
+                        }
                       </Text>
                     </View>
                     <View style={styles.rewardChip}>
@@ -7309,6 +7571,105 @@ const getMechanicSeverity = (mechanic: string): number => {
                 contentContainerStyle={styles.encounterScrollContent}
                 showsVerticalScrollIndicator={false}
               >
+              {lastTowerOutcome.success && towerClearStory ? (
+                <View style={styles.floorClearHeroCard}>
+                  <View style={styles.floorClearHeroHead}>
+                    <View style={styles.floorClearHeroIcon}>
+                      <MaterialCommunityIcons
+                        name={towerClearStory.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                        size={22}
+                        color="#ffe1a0"
+                      />
+                    </View>
+                    <View style={styles.floorClearHeroText}>
+                      <Text style={styles.floorClearHeroLabel}>Floor Cleared</Text>
+                      <Text style={styles.floorClearHeroTitle}>{towerClearStory.title}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.outcomeText}>{towerClearStory.body}</Text>
+                  <View style={styles.floorClearStoryCard}>
+                    <Text style={styles.floorClearStoryLabel}>Story Implication</Text>
+                    <Text style={styles.questMeta}>{towerClearStory.implication}</Text>
+                  </View>
+                </View>
+              ) : null}
+              {lastTowerOutcome.success && towerOutcomeFloor ? (
+                <View style={styles.requirementsBlock}>
+                  <Text style={styles.reqTitle}>Reward Summary</Text>
+                  <View style={styles.chipsRow}>
+                    <View style={styles.rewardChip}>
+                      <MaterialCommunityIcons name="star-circle-outline" size={14} color="#8fb9ff" />
+                      <Text style={styles.rewardChipText}>+{towerOutcomeFloor.reward.xp} XP</Text>
+                    </View>
+                    <View style={styles.rewardChip}>
+                      <MaterialCommunityIcons name="cash" size={14} color="#ffd58f" />
+                      <Text style={styles.rewardChipText}>+{towerOutcomeFloor.reward.gold}g</Text>
+                    </View>
+                    <View style={styles.rewardChip}>
+                      <MaterialCommunityIcons name="school-outline" size={14} color="#d7b2ff" />
+                      <Text style={styles.rewardChipText}>+{towerOutcomeFloor.reward.masteryXp} Mastery</Text>
+                    </View>
+                  </View>
+                  {(lastTowerOutcome.itemRewards?.length ?? 0) > 0 ? (
+                    <View style={styles.floorDropBlock}>
+                      <Text style={styles.floorDropLabel}>Drops Earned</Text>
+                      <View style={styles.floorDropGrid}>
+                        {lastTowerOutcome.itemRewards?.map((reward) => {
+                          const item = ITEM_BY_ID[reward.itemId];
+                          const accent = getItemRarityAccent(reward.itemId);
+                          return (
+                            <View
+                              key={`tower-drop-${reward.itemId}-${reward.guaranteed ? "g" : "r"}`}
+                              style={[
+                                styles.floorDropCard,
+                                { borderColor: accent.border, backgroundColor: accent.background, shadowColor: accent.glow },
+                              ]}
+                            >
+                              <View style={styles.floorDropIconWrap}>
+                                <GameItemIcon itemId={reward.itemId} size={28} />
+                              </View>
+                              <View style={styles.floorDropTextWrap}>
+                                <Text style={styles.floorDropName}>{item?.name ?? reward.itemId}</Text>
+                                <Text style={styles.floorDropMeta}>
+                                  {reward.guaranteed ? "Guaranteed Drop" : "Bonus Drop"} • x{reward.amount}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ) : null}
+                  {lastTowerOutcome.titleRewardId ? (
+                    <View style={styles.titleRewardCard}>
+                      <View style={styles.titleRewardIconWrap}>
+                        <Image source={TITLE_ICON_ART[lastTowerOutcome.titleRewardId]} style={styles.titleRewardIcon} resizeMode="contain" />
+                      </View>
+                      <View style={styles.titleRewardTextWrap}>
+                        <View style={styles.titleRewardTopRow}>
+                          <Text style={styles.titleRewardLabel}>TITLE EARNED</Text>
+                        </View>
+                        <Text style={styles.titleRewardName}>
+                          {TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.name ?? lastTowerOutcome.titleRewardId}
+                        </Text>
+                        <Text style={styles.titleRewardMeta}>
+                          {TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.flavor ?? "Added to your title archive."}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+              {lastTowerOutcome.success && towerClearStory ? (
+                <View style={styles.floorClearQuestCard}>
+                  <View style={styles.floorClearQuestHead}>
+                    <MaterialCommunityIcons name="book-open-page-variant-outline" size={18} color="#a8d2ff" />
+                    <Text style={styles.reqTitle}>Main Quest Shift</Text>
+                  </View>
+                  <Text style={styles.floorClearQuestTitle}>{towerClearStory.mainQuestTitle}</Text>
+                  <Text style={styles.questMeta}>{towerClearStory.mainQuestBody}</Text>
+                </View>
+              ) : null}
               <Text style={styles.resultChance}>Progression: Normal {"->"} Sub-Boss {"->"} Boss</Text>
               <View style={styles.encounterHealthCard}>
                 <HealthMeter current={character.health} max={character.healthCap} title="Current HP" compact />
@@ -8028,9 +8389,31 @@ const getMechanicSeverity = (mechanic: string): number => {
                           <Pressable
                             disabled={!isPlayerTurn || awaitingNextEnemy}
                             onPress={() => recordLiveBattleResponse("attack", "attack")}
-                            onHoverIn={() => setBattleEffectHint("Attack: Strike the current target with your weapon.")}
-                            onHoverOut={() => setBattleEffectHint((currentHint) => (currentHint === "Attack: Strike the current target with your weapon." ? null : currentHint))}
-                            onPressIn={() => setBattleEffectHint("Attack: Strike the current target with your weapon.")}
+                            onHoverIn={() =>
+                              setBattleEffectHint(
+                                currentEnemy && getPositionAttackBonus(currentEnemy, liveTowerBattle.position) > 0
+                                  ? `Attack: Strike with your weapon. ${POSITION_LABELS[liveTowerBattle.position]} lane is a strong angle against ${currentEnemy.name}.`
+                                  : "Attack: Strike the current target with your weapon.",
+                              )
+                            }
+                            onHoverOut={() =>
+                              setBattleEffectHint((currentHint) =>
+                                currentHint === "Attack: Strike the current target with your weapon." ||
+                                currentHint ===
+                                  (currentEnemy && getPositionAttackBonus(currentEnemy, liveTowerBattle.position) > 0
+                                    ? `Attack: Strike with your weapon. ${POSITION_LABELS[liveTowerBattle.position]} lane is a strong angle against ${currentEnemy.name}.`
+                                    : "")
+                                  ? null
+                                  : currentHint,
+                              )
+                            }
+                            onPressIn={() =>
+                              setBattleEffectHint(
+                                currentEnemy && getPositionAttackBonus(currentEnemy, liveTowerBattle.position) > 0
+                                  ? `Attack: Strike with your weapon. ${POSITION_LABELS[liveTowerBattle.position]} lane is a strong angle against ${currentEnemy.name}.`
+                                  : "Attack: Strike the current target with your weapon.",
+                              )
+                            }
                             style={[styles.liveBattleActionButton, styles.liveBattleActionButtonAttack, !isPlayerTurn ? styles.actionDisabled : null]}
                           >
                             <View style={styles.liveBattleActionButtonInner}>
@@ -8038,10 +8421,15 @@ const getMechanicSeverity = (mechanic: string): number => {
                               <Text style={styles.liveBattleActionText}>Attack</Text>
                             </View>
                           </Pressable>
-                          {(["front", "mid", "rear"] as TowerBattlePosition[]).map((position) => (
+                          {(["front", "mid", "rear"] as TowerBattlePosition[]).map((position) => {
+                            const positionBlocked = getEnemyBlockedPositions(currentEnemy).includes(position);
+                            const positionHint =
+                              describePositionRead(currentEnemy, position) ??
+                              `Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`;
+                            return (
                             <Pressable
                               key={`tower-pos-${position}`}
-                              disabled={!isPlayerTurn}
+                              disabled={!isPlayerTurn || awaitingNextEnemy || positionBlocked}
                               onPress={() => {
                                 setLiveTowerBattle((current) => (current ? { ...current, position } : current));
                                 recordLiveBattleResponse("move", position);
@@ -8050,15 +8438,15 @@ const getMechanicSeverity = (mechanic: string): number => {
                                 styles.liveBattleActionButton,
                                 styles.liveBattleActionButtonMove,
                                 liveTowerBattle.position === position ? styles.liveBattleActionButtonActive : null,
-                                !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null,
+                                !isPlayerTurn || awaitingNextEnemy || positionBlocked ? styles.actionDisabled : null,
                               ]}
-                              onHoverIn={() => setBattleEffectHint(`Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`)}
+                              onHoverIn={() => setBattleEffectHint(positionHint)}
                               onHoverOut={() =>
                                 setBattleEffectHint((currentHint) =>
-                                  currentHint === `Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.` ? null : currentHint,
+                                  currentHint === positionHint ? null : currentHint,
                                 )
                               }
-                              onPressIn={() => setBattleEffectHint(`Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`)}
+                              onPressIn={() => setBattleEffectHint(positionHint)}
                             >
                               <View style={styles.liveBattleActionButtonInner}>
                                 <MaterialCommunityIcons
@@ -8069,7 +8457,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                                 <Text style={styles.liveBattleActionText}>Shift {position[0].toUpperCase()}{position.slice(1)}</Text>
                               </View>
                             </Pressable>
-                          ))}
+                          )})}
                         </View>
                       </View>
                       <Pressable
@@ -8718,7 +9106,7 @@ const getMechanicSeverity = (mechanic: string): number => {
           const enemyKnown = (character.knownTowerEnemyIds ?? []).includes(selectedTowerEnemy.id);
           const enemyFloorNumber = getTowerEnemyFloorNumber(selectedTowerEnemy.id);
           const enemyIntelUnlocked = enemyFloorNumber ? hasFloorIntel(enemyFloorNumber) || character.towerProgress.highestFloorCleared >= enemyFloorNumber : enemyKnown;
-          const enemyHpVisible = enemyKnown && character.progression.level >= selectedTowerEnemy.level;
+          const enemyHpVisible = character.progression.level >= selectedTowerEnemy.level || enemyIntelUnlocked;
           const enemyRoleLabel =
             selectedTowerEnemy.role === "boss"
               ? "Main Boss"
@@ -8836,6 +9224,30 @@ const getMechanicSeverity = (mechanic: string): number => {
                           <GameItemIcon itemId={itemId} size={18} />
                         </Pressable>
                       ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+              {enemyCombatIntelUnlocked && selectedTowerEnemy.positioning ? (
+                <View style={styles.enemyDossierLoreCard}>
+                  <Text style={styles.enemyDossierSectionTitle}>Positioning</Text>
+                  {selectedTowerEnemy.positioning.note ? (
+                    <Text style={styles.enemyDossierLoreText}>{selectedTowerEnemy.positioning.note}</Text>
+                  ) : null}
+                  {selectedTowerEnemy.positioning.advantagePositions?.length ? (
+                    <View style={styles.enemyWeaknessRow}>
+                      <MaterialCommunityIcons name="crosshairs-gps" size={13} color="#9fe0b3" />
+                      <Text style={styles.enemyDossierLoreText}>
+                        Strong angle: {selectedTowerEnemy.positioning.advantagePositions.map((position) => POSITION_LABELS[position]).join(", ")}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {selectedTowerEnemy.positioning.blockedPositions?.length ? (
+                    <View style={styles.enemyWeaknessRow}>
+                      <MaterialCommunityIcons name="block-helper" size={13} color="#ffb1a4" />
+                      <Text style={styles.enemyDossierLoreText}>
+                        Closed lane: {selectedTowerEnemy.positioning.blockedPositions.map((position) => POSITION_LABELS[position]).join(", ")}
+                      </Text>
                     </View>
                   ) : null}
                 </View>
@@ -9120,12 +9532,144 @@ const getMechanicSeverity = (mechanic: string): number => {
               </View>
               <Text style={styles.outcomeText}>
                 {storyState.thornRunnerIntroductionChoice === "mercenary"
-                  ? "\"You earned the pay. I'll give you the useful notes too, but don't mistake that for trust.\""
-                  : "\"That kind of recovery keeps corridor work alive. Take the notes. Thorn Corridor punishes people who walk in blind.\""}
+                  ? "\"You earned the pay. I'll hand over the useful notes too, but don't mistake that for trust.\""
+                  : "\"That kind of recovery keeps runners alive. Take the notes. Floor 2: Thorn Corridor punishes people who walk in blind.\""}
               </Text>
               <Pressable onPress={handleTamsinFollowup} style={styles.actionWrap}>
                 <View style={styles.claimButton}>
                   <Text style={styles.claimText}>Record Tamsin's Notes</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {guildDialog === "tamsin-corridor-report" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(125, 186, 119, 0.12)", "rgba(84, 117, 171, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile("npc-tamsin-vale")?.avatarOverride ??
+                    getAvatarSprite("ranger-2", "ranger")
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Tamsin Vale</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                "Now give me the part the board contract could not."
+              </Text>
+              <Text style={styles.outcomeText}>
+                "Tell me what Floor 2: Thorn Corridor actually did to you once you were inside it. Where did it slow you down? Where did it force you to spend recovery you thought you could save?"
+              </Text>
+              <Text style={styles.outcomeText}>
+                {storyState.thornRunnerIntroductionChoice === "mercenary"
+                  ? "\"You brought back the feel of Floor 2: Thorn Corridor, not just a payout. That earns you more of my route ledger than I expected.\""
+                  : "\"That is the kind of report that keeps runners alive. I'll open more of my route ledger before Floor 2 closes its grip on the next climber.\""}
+              </Text>
+              <Pressable onPress={handleTamsinCorridorReport} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>File First Corridor Report</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {guildDialog === "tamsin-deep-warning" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(186, 125, 119, 0.12)", "rgba(120, 97, 171, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile("npc-tamsin-vale")?.avatarOverride ??
+                    getAvatarSprite("ranger-2", "ranger")
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Tamsin Vale</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                "The deeper stretch you opened in Floor 2 changed how the whole corridor behaves."
+              </Text>
+              <Text style={styles.outcomeText}>
+                "Past the execution stretch, the roots stop moving like a simple trap. They start turning, pulling, and closing in as if they are obeying something deeper below."
+              </Text>
+              <Text style={styles.outcomeText}>
+                {storyState.thornRunnerIntroductionChoice === "mercenary"
+                  ? "\"Call it what you like, but don't step deeper into Floor 2 expecting another brute with more thorns on it. Bring warding, keep your footing, and assume the floor is judging every mistake now.\""
+                  : "\"I'm marking this because it matters: what waits deeper in Floor 2 is not just another thorn beast. Keep your footing, keep warding close, and do not let the floor set the pace of the fight for you.\""}
+              </Text>
+              <Pressable onPress={handleTamsinDeepWarning} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>Log Deeper Corridor Warning</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {guildDialog === "tamsin-floor2-aftermath" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(222, 176, 98, 0.14)", "rgba(103, 132, 186, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={
+                    getNpcDialogProfile("npc-tamsin-vale")?.avatarOverride ??
+                    getAvatarSprite("ranger-2", "ranger")
+                  }
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <Text style={styles.npcDialogHeroName}>Tamsin Vale</Text>
+              </View>
+              <Text style={styles.outcomeText}>
+                {!storyState.thornRunnerIntroductionChoice
+                  ? "\"You cleared Floor 2 before you ever took my route briefing. Fine. Then hear this part now, while the floor is still fresh in your blood.\""
+                  : "\"Floor 2 is done. Stop and hear what that actually means before you treat it like one more mark on the board.\""}
+              </Text>
+              <Text style={styles.outcomeText}>
+                {!storyState.thornRunnerIntroductionChoice
+                  ? "\"People can stumble through Floor 1 and still look lucky. Floor 2: Thorn Corridor is where the guild starts deciding whether a climber can come back from a floor built to slow them, bleed them, and make them panic.\""
+                  : "\"People survive Floor 1 and still look lucky. Thorn Corridor is where the guild starts deciding whether a climber can come back from a floor built to slow them, bleed them, and make them panic.\""}
+              </Text>
+              <Text style={styles.outcomeText}>
+                {!storyState.thornRunnerIntroductionChoice
+                  ? "\"You came back from it without my route help. That changes the read. It means I start from what you proved in the lane, not from what I hoped to teach you before you went in.\""
+                  : storyState.thornRunnerIntroductionChoice === "mercenary"
+                  ? "\"You still came back alive from the first real snare, and the hall noticed. Bran prices you differently now. The examiner watches you differently too. That is what a real floor clear changes.\""
+                  : "\"You did more than live through it. You brought back a clear from the first floor that truly tries to hold people in place and wear them down. The hall notices that. So do I.\""}
+              </Text>
+              <Pressable onPress={handleTamsinFloorTwoAftermath} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>Close Thorn Corridor Ledger</Text>
                 </View>
               </Pressable>
             </View>
@@ -9558,6 +10102,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  licenseStatPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(226, 188, 116, 0.46)",
+    backgroundColor: "rgba(78, 54, 23, 0.92)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  licenseLevelPill: {
+    borderColor: "rgba(116, 204, 255, 0.42)",
+    backgroundColor: "rgba(22, 56, 82, 0.92)",
+  },
+  licensePillLabel: {
+    color: "#f6dec0",
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
+  licenseRankValue: {
+    color: "#ffd77f",
+    fontWeight: "900",
+  },
+  licenseLevelValue: {
+    color: "#89dbff",
+    fontWeight: "900",
+  },
   licenseFloorInline: {
     flexDirection: "row",
     alignItems: "center",
@@ -9744,10 +10318,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
   },
+  boardSectionToggle: {
+    gap: 6,
+  },
   boardSectionTitleWrap: {
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
+  },
+  boardSectionControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   boardSectionTitle: {
     color: "#fff0cf",
@@ -9777,6 +10359,78 @@ const styles = StyleSheet.create({
   },
   boardSectionList: {
     gap: 10,
+  },
+  floorClearHeroCard: {
+    gap: 12,
+    padding: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(241, 211, 146, 0.34)",
+    backgroundColor: "rgba(73, 51, 27, 0.32)",
+  },
+  floorClearHeroHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  floorClearHeroIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255, 213, 143, 0.42)",
+    backgroundColor: "rgba(110, 76, 36, 0.46)",
+  },
+  floorClearHeroText: {
+    flex: 1,
+    gap: 2,
+  },
+  floorClearHeroLabel: {
+    color: "#d7c29b",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+  },
+  floorClearHeroTitle: {
+    color: "#fff0cf",
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  floorClearStoryCard: {
+    gap: 6,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255, 213, 143, 0.18)",
+    backgroundColor: "rgba(35, 24, 17, 0.34)",
+  },
+  floorClearStoryLabel: {
+    color: "#ffda96",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  floorClearQuestCard: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(168, 210, 255, 0.24)",
+    backgroundColor: "rgba(31, 42, 69, 0.34)",
+  },
+  floorClearQuestHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  floorClearQuestTitle: {
+    color: "#eef6ff",
+    fontSize: 18,
+    fontWeight: "900",
   },
   healthLockCard: {
     borderRadius: 12,
@@ -9995,6 +10649,38 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "900",
     letterSpacing: 0.3,
+  },
+  npcSpeechBubble: {
+    position: "relative",
+    alignSelf: "flex-start",
+    maxWidth: "92%",
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  npcSpeechBubbleTail: {
+    position: "absolute",
+    left: 18,
+    bottom: -7,
+    width: 12,
+    height: 12,
+    backgroundColor: "rgba(82, 60, 34, 0.96)",
+    borderLeftWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "rgba(255, 214, 150, 0.4)",
+    transform: [{ rotate: "-45deg" }],
+  },
+  npcSpeechBubbleInner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  npcSpeechBubbleText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
   },
   npcBody: {
     flexDirection: "row",
@@ -10621,6 +11307,56 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     alignItems: "center",
+  },
+  floorDropBlock: {
+    marginTop: 8,
+    gap: 8,
+  },
+  floorDropLabel: {
+    color: "#f3deba",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  floorDropGrid: {
+    gap: 8,
+  },
+  floorDropCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  floorDropIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 236, 198, 0.28)",
+    backgroundColor: "rgba(17, 16, 24, 0.82)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  floorDropTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  floorDropName: {
+    color: "#fff1d7",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  floorDropMeta: {
+    color: "#f0d4a7",
+    fontSize: 10,
+    fontWeight: "700",
   },
   titleRewardLegendary: {
     shadowColor: "#ffd287",

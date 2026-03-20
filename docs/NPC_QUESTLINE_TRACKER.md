@@ -8,6 +8,12 @@ Each dedicated questline document should capture the full arc, branch outcomes, 
 - Every NPC questline we begin should get its own dedicated doc.
 - This tracker is the quick-reference index.
 - The dedicated doc is the canon source for the actual arc.
+- Every story NPC must support:
+  - the intended path
+  - a late path if the player reaches later progress first
+  - an ignored or alternate path if the player skips the NPC's early help
+- NPCs must react to what the player actually accomplished, even when the player did not
+  follow the ideal introduction order.
 
 ## Active Questlines
 
@@ -15,7 +21,7 @@ Each dedicated questline document should capture the full arc, branch outcomes, 
 - dedicated doc:
   - [TAMSIN_VALE_QUESTLINE.md](/Users/kin/web-rpg/docs/TAMSIN_VALE_QUESTLINE.md)
 - current status:
-  - `Phase I complete`
+  - `Phase III active`
 - current implementation status:
   - `Implemented in-game`
 - current player-facing arc:
@@ -23,10 +29,14 @@ Each dedicated questline document should capture the full arc, branch outcomes, 
   - first branch read
   - `Tamsin's Snagline Recovery`
   - thorn-notes follow-up
+  - first Thorn Corridor report
+  - deeper corridor warning after the Floor 2 sub-boss push
 - next return point:
-  - `Later Floor 2 / early mid-floor corridor content`
+  - `Later Floor 2 / early Floor 3 corridor pressure`
 - notes:
-  - Tamsin is considered complete for now and should resume when the next thorn-lane phase starts.
+  - Tamsin's first corridor-report phase is now live.
+  - Her deeper-corridor warning phase is now live after the Floor 2 sub-boss push.
+  - Her next return should wait for the next real route-pressure complication instead of reopening her immediately again.
 
 ### Aldric Vale
 - dedicated doc:

@@ -61,6 +61,17 @@ Early intent:
 - `Rear`
   - safer against bites, rush-ins, and ambush-style openings
 
+Current rule:
+- monsters may define:
+  - `advantage positions`
+    - attacking from those lanes deals bonus damage
+    - this should be surfaced in enemy weakness intel
+  - `blocked positions`
+    - those movement options must be greyed out in battle
+    - the enemy is explicitly preventing that shift, not merely discouraging it
+- not every monster needs a positional weakness
+- sub-bosses and bosses should use positioning more deliberately than filler enemies
+
 ### Brace
 
 - `Brace` is the universal defensive action.

@@ -20,8 +20,6 @@ export const deriveMainQuestTracker = ({
   const clearedFloorTwo = (character.towerProgress?.highestFloorCleared ?? 0) >= 2;
   const floorOneEntered = hasEnteredFloorOne(storyState);
   const floorTwoEntered = hasEnteredFloorTwo(storyState);
-  const floorTwoReady = character.adventurerRank !== "F" && character.progression.level >= 5;
-
   if (clearedFloorTwo) {
     return {
       stageId: "mq-beyond-beginnings",
@@ -59,13 +57,25 @@ export const deriveMainQuestTracker = ({
   }
 
   if (floorTwoEntered) {
+    const needsTamsinReport =
+      storyState.thornRunnerCorridorReportReady && !storyState.thornRunnerCorridorReportReviewed;
+    const needsDeepLaneWarning =
+      storyState.thornRunnerDeepLaneWarningReady && !storyState.thornRunnerDeepLaneWarningReviewed;
+    const needsFloorTwoAftermath =
+      storyState.thornRunnerFloorTwoAftermathReady && !storyState.thornRunnerFloorTwoAftermathReviewed;
     return {
       stageId: "mq-thorn-corridor",
       chapter: "Chapter II · Thorn Corridor",
       title: "Break The First Snare",
       summary:
         "The second floor is no mere deeper copy of Floor 1. Thorn Corridor slows, binds, and bleeds climbers until panic does the Tower's work for it.",
-      currentDirective: "Study Floor 2: Thorn Corridor, prepare a thorn-ready loadout, and survive its opening pressure without letting attrition decide the run.",
+      currentDirective: needsFloorTwoAftermath
+        ? "Return to Tamsin and close the Thorn Corridor ledger so Floor 2 lands as a real chapter, not just another cleared lane."
+        : needsDeepLaneWarning
+        ? "Return to Tamsin and review her deeper corridor warning before you commit harder into Floor 2's lower lane."
+        : needsTamsinReport
+        ? "Return to Tamsin with your first Thorn Corridor report, then keep adapting your loadout and route discipline to the floor's bind-and-bleed pressure."
+        : "Study Floor 2: Thorn Corridor, prepare a thorn-ready loadout, and survive its opening pressure without letting attrition decide the run.",
       stakes:
         "If Floor 2 teaches the Tower that you can be trapped into bad decisions, later floors will only refine that lesson against you.",
       icon: "sprout-outline",
@@ -85,9 +95,21 @@ export const deriveMainQuestTracker = ({
         },
         {
           id: "mq-floor2-learn",
-          label: "Adapt to thorn pressure",
-          detail: "Use guild intel, salves, rope, and recovery planning to answer Floor 2's bind and bleed identity.",
-          done: false,
+          label: needsFloorTwoAftermath
+            ? "Close Thorn Corridor with Tamsin"
+            : needsDeepLaneWarning
+            ? "Review Tamsin's deeper corridor warning"
+            : needsTamsinReport
+              ? "Report your first thorn-lane run to Tamsin"
+              : "Adapt to thorn pressure",
+          detail: needsFloorTwoAftermath
+            ? "You cleared Floor 2. Return to Tamsin so the guild-side aftermath lands and the climb turns cleanly toward what comes next."
+            : needsDeepLaneWarning
+            ? "Tamsin has marked a change in the deeper corridor after your sub-boss push. Hear her warning before you treat the lower lane like more of the same."
+            : needsTamsinReport
+            ? "Bring Tamsin your first real report from inside Thorn Corridor so her runner's ledger can sharpen the climb ahead."
+            : "Use guild intel, salves, rope, and recovery planning to answer Floor 2's bind and bleed identity.",
+          done: needsFloorTwoAftermath ? false : needsDeepLaneWarning ? false : needsTamsinReport ? false : Boolean(storyState.thornRunnerCorridorReportReviewed),
           icon: "book-search-outline",
         },
         {
@@ -101,16 +123,17 @@ export const deriveMainQuestTracker = ({
     };
   }
 
-  if (clearedFloorOne && floorTwoReady) {
+  if (clearedFloorOne) {
     return {
       stageId: "mq-thorn-corridor",
       chapter: "Chapter II · Thorn Corridor",
       title: "Prepare For The First Snare",
       summary:
-        "You have outlived the threshold. Thorn Corridor waits as the first floor that expects E-rank discipline, sharper preparation, and the patience to survive a trap instead of a charge.",
-      currentDirective: "Buy or earn Floor 2 intel, prepare Thorn Salve and recovery support, then enter Floor 2: Thorn Corridor.",
+        "You have outlived the threshold. Thorn Corridor waits as the first floor that punishes poor preparation, impatience, and weak recovery planning harder than raw beginner mistakes.",
+      currentDirective:
+        "Buy or earn Floor 2 intel if you want safer odds, prepare Thorn Salve and recovery support, then enter Floor 2: Thorn Corridor whenever you are ready to risk it.",
       stakes:
-        "This is where the guild stops calling you lucky and starts expecting proof that your climb can keep changing with the Tower.",
+        "The guild can advise you, but it cannot climb for you. If you force Thorn Corridor early, the Tower will punish the decision instead of stopping you from making it.",
       icon: "sprout-outline",
       accent: "#a6d87f",
       progressIndex: 7,
@@ -120,10 +143,10 @@ export const deriveMainQuestTracker = ({
         "E-rank footing is enough to face Floor 2: Thorn Corridor. The first snare is now open to you.",
       objectives: [
         {
-          id: "mq-rank-e-ready",
-          label: "Reach E-rank readiness",
-          detail: "Completed. You now meet the first real post-threshold climb requirements.",
-          done: true,
+          id: "mq-floor2-footing",
+          label: "Improve your footing for Floor 2",
+          detail: "Recommended, not required. Rank progress and Level 5+ make Thorn Corridor less punishing, but you may challenge it early if you choose.",
+          done: character.adventurerRank !== "F" && character.progression.level >= 5,
           icon: "medal-outline",
         },
         {
@@ -136,52 +159,9 @@ export const deriveMainQuestTracker = ({
         {
           id: "mq-enter-floor2",
           label: "Enter Floor 2: Thorn Corridor",
-          detail: "Take your first real step into the corridor once your salves and supplies are in place.",
+          detail: "Take your first real step into the corridor when you decide the risk is worth it.",
           done: false,
           icon: "stairs-up",
-        },
-      ],
-    };
-  }
-
-  if (clearedFloorOne) {
-    return {
-      stageId: "mq-rank-e-ascent",
-      chapter: "Chapter II · Earn The Right To Climb",
-      title: "Claim Your E-Rank Footing",
-      summary:
-        "Floor 1: Ashen Threshold is behind you, but Thorn Corridor is not for raw survivors. The guild now expects rank discipline, stronger preparation, and a climb that can hold under pressure.",
-      currentDirective: "Earn your E-rank footing, reach Level 5, and build the materials that will let you face Floor 2 without stumbling into it blind.",
-      stakes:
-        "If you rush the second floor with only Floor 1 habits, the Tower will teach the lesson through attrition instead of mercy.",
-      icon: "medal-outline",
-      accent: "#8fd3ff",
-      progressIndex: 6,
-      totalStages: TOTAL_STAGES,
-      notificationTitle: "Main Quest Advanced",
-      notificationMessage:
-        "Floor 1: Ashen Threshold is cleared. Now you must earn the standing and preparation needed for Floor 2: Thorn Corridor.",
-      objectives: [
-        {
-          id: "mq-rank-push",
-          label: "Earn E-rank standing",
-          detail: "Clear the first rank trial and leave F-rank behind before pushing deeper.",
-          done: character.adventurerRank !== "F",
-          icon: "medal-outline",
-        },
-        {
-          id: "mq-level-five",
-          label: "Reach Level 5",
-          detail: "Grow into the first post-threshold floor instead of forcing the climb too early.",
-          done: character.progression.level >= 5,
-          icon: "arm-flex-outline",
-        },
-        {
-          id: "mq-thorn-prep",
-          label: "Prepare thorn-ready support",
-          detail: "Start building a corridor loadout: recovery, rope, torchlight, and Thorn Salve for Floor 2: Thorn Corridor.",
-          done: (character.inventory["thorn-salve"] ?? 0) > 0,
-          icon: "medical-bag",
         },
       ],
     };

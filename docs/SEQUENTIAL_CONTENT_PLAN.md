@@ -270,6 +270,8 @@ Goal: establish the first real arc before expanding factions.
 - [x] Add one new item family needed for Floor 2
 - [x] Add one new per-class reward tier or upgrade target
 - [ ] Make sure Floor 2 remnants follow the same `Remnants` design rules and future legendary weaponline support
+- [x] Add a post-Floor-2-clear guild/NPC aftermath so the chapter lands before Floor 3
+- [ ] Build the Floor 3 merchant branch consequence from the NPC choice documented in `FLOOR_3_MERCHANT_BRANCH.md`
 
 Current Floor 2 definition:
 - `Floor 2: Thorn Corridor (The First Snare)`
@@ -277,8 +279,8 @@ Current Floor 2 definition:
   - teach that later floors win through control and attrition, not only burst damage
   - push the player toward rank-up and more deliberate prep before deeper ascent
 - Intended gate:
-  - `Rank E`
-  - `Level 5`
+  - `Soft recommendation: Rank E`
+  - `Soft recommendation: Level 5`
 - Core lesson:
   - Floor 1 says "survive"
   - Floor 2 says "survive while trapped"
@@ -299,6 +301,11 @@ Current Floor 2 definition:
 
 Supporting reference:
 - [FLOOR_2_THORN_CORRIDOR.md](/Users/kin/web-rpg/docs/FLOOR_2_THORN_CORRIDOR.md)
+
+Future floor roster note:
+- normal enemies may reuse status families or pressure archetypes in moderation
+- sub-bosses and main bosses should stay unique to the floor
+- later bosses should increasingly use biblical or biblical-adjacent fantasy inspiration rather than generic creature escalation
 
 ### Floor 3
 - [ ] Repeat the same structure
@@ -380,6 +387,7 @@ This is the actual order we should follow from here:
 1. `Use the Main Quest tracker as the active spine for Floor 1 story beats`
 2. `Define and build Floor 2 properly`
 3. `Define Floor 2 rewards: items, one weapon step, one title/sigil step`
+4. `Later: extend floor-clear style ceremonial result presentation to major story/special quest completions`
 4. `Then move to Floor 3`
 
 ## Update Rule

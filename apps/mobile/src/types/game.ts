@@ -118,6 +118,13 @@ export interface StoryState {
   thornRunnerQuestStatus: ThornRunnerQuestStatus;
   thornRunnerIntroductionChoice?: ThornRunnerIntroductionChoice;
   thornRunnerFollowupReviewed?: boolean;
+  thornRunnerCorridorReportReady?: boolean;
+  thornRunnerCorridorReportReviewed?: boolean;
+  thornRunnerDeepLaneWarningReady?: boolean;
+  thornRunnerDeepLaneWarningReviewed?: boolean;
+  thornRunnerFloorTwoAftermathReady?: boolean;
+  thornRunnerFloorTwoAftermathReviewed?: boolean;
+  floorTwoTitleBackfillNotified?: boolean;
   npcDispositionById: Record<string, number>;
   npcInteractionCountById: Record<string, number>;
   lyraMet: boolean;
@@ -365,6 +372,12 @@ export interface StoryNotification {
 
 export type TowerBattlePosition = "front" | "mid" | "rear";
 
+export interface TowerEnemyPositioningProfile {
+  advantagePositions?: TowerBattlePosition[];
+  blockedPositions?: TowerBattlePosition[];
+  note?: string;
+}
+
 export interface TowerLiveBattleResponse {
   telegraphId?: string;
   enemyId: string;
@@ -380,6 +393,9 @@ export interface TowerLiveBattleDirective {
   braceUsed?: boolean;
   itemIdsUsed?: ItemId[];
   responses?: TowerLiveBattleResponse[];
+  finalPlayerHp?: number;
+  finalEnemyHpById?: Record<string, number>;
+  battleLog?: string[];
   focusAfterBattle?: number;
   abilityCooldownsUntilMs?: Partial<Record<AbilityId, number>>;
   persistentStatusEffects?: {
@@ -514,6 +530,7 @@ export interface TowerEnemyUnit {
   weaknessNotes?: string[];
   weaknessItemIds?: ItemId[];
   mechanics?: string[];
+  positioning?: TowerEnemyPositioningProfile;
 }
 
 export interface FloorIntelDefinition {
@@ -529,6 +546,12 @@ export interface TowerOutcome {
   floorNumber: number;
   successChance: number;
   summary: string;
+  titleRewardId?: TitleId;
+  itemRewards?: Array<{
+    itemId: ItemId;
+    amount: number;
+    guaranteed?: boolean;
+  }>;
   healthDelta?: number;
   levelPenaltyApplied?: number;
   emergencyReviveTriggered?: boolean;

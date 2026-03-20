@@ -231,17 +231,43 @@ export const MainQuestScreen = ({
       }
       const completed = storyState.thornRunnerQuestStatus === "completed";
       const followupReviewed = storyState.thornRunnerFollowupReviewed;
+      const corridorReportReady = storyState.thornRunnerCorridorReportReady;
+      const corridorReportReviewed = storyState.thornRunnerCorridorReportReviewed;
+      const deepLaneWarningReady = storyState.thornRunnerDeepLaneWarningReady;
+      const deepLaneWarningReviewed = storyState.thornRunnerDeepLaneWarningReviewed;
+      const floorTwoAftermathReady = storyState.thornRunnerFloorTwoAftermathReady;
+      const floorTwoAftermathReviewed = storyState.thornRunnerFloorTwoAftermathReviewed;
       const active = activeQuest?.questId === quest.id;
       const available = storyState.thornRunnerQuestStatus === "available";
       const accepted = Boolean(storyState.thornRunnerIntroductionChoice) && !active && !completed;
-      const visible = completed || active || accepted || available;
+      const visible =
+        completed ||
+        active ||
+        accepted ||
+        available ||
+        corridorReportReady ||
+        corridorReportReviewed ||
+        deepLaneWarningReady ||
+        deepLaneWarningReviewed ||
+        floorTwoAftermathReady ||
+        floorTwoAftermathReviewed;
       if (!visible) {
         return [];
       }
-      const state: QuestThreadState = completed
-        ? followupReviewed
-          ? "completed"
-          : "follow_up"
+      const state: QuestThreadState = floorTwoAftermathReady
+        ? "follow_up"
+        : deepLaneWarningReady
+        ? "follow_up"
+        : corridorReportReady
+        ? "follow_up"
+        : completed
+          ? followupReviewed && corridorReportReviewed
+            ? deepLaneWarningReviewed
+              ? floorTwoAftermathReviewed
+              ? "completed"
+              : "follow_up"
+              : "follow_up"
+            : "follow_up"
         : active
           ? "active"
           : accepted
@@ -261,6 +287,9 @@ export const MainQuestScreen = ({
               "Unlocked Tamsin's Snagline Recovery.",
               "Completed the snagline contract.",
               ...(followupReviewed ? ["Reviewed Tamsin's thorn notes in the NPC Hall."] : []),
+              ...(corridorReportReviewed ? ["Filed your first Thorn Corridor field report with Tamsin."] : []),
+              ...(deepLaneWarningReviewed ? ["Reviewed Tamsin's deeper corridor warning after breaking the execution lane."] : []),
+              ...(floorTwoAftermathReviewed ? ["Closed Thorn Corridor's first-clear aftermath with Tamsin in the NPC Hall."] : []),
             ]
           : active
             ? [
@@ -279,10 +308,24 @@ export const MainQuestScreen = ({
               : available
                 ? ["Reached Floor 2 readiness.", "Met Tamsin Vale in the NPC Hall."]
                 : [],
-        pending: completed
-          ? followupReviewed
-            ? "No pending step. This thread is complete."
-            : "Return to Tamsin in the NPC Hall to review the notes she pulled from the recovered satchel."
+        pending: floorTwoAftermathReady
+          ? "Return to Tamsin in the NPC Hall and close the ledger on your first full Thorn Corridor clear."
+          : deepLaneWarningReady
+          ? "Return to Tamsin in the NPC Hall and review her deeper corridor warning before you commit harder into Floor 2's lower lane."
+          : corridorReportReady
+          ? "Return to Tamsin in the NPC Hall and file your first report from inside Thorn Corridor."
+          : completed
+            ? followupReviewed && corridorReportReviewed && deepLaneWarningReviewed && floorTwoAftermathReviewed
+              ? "No pending step. This thread is complete."
+              : !followupReviewed
+                ? "Return to Tamsin in the NPC Hall to review the notes she pulled from the recovered satchel."
+                : !corridorReportReviewed
+                  ? "Enter Thorn Corridor once, then return to Tamsin with your first real corridor report."
+                  : !deepLaneWarningReviewed
+                    ? "Push deeper into Floor 2, then return when Tamsin marks the next real change in the corridor."
+                    : !floorTwoAftermathReviewed
+                      ? "Clear Floor 2, then return to Tamsin so she can close the Thorn Corridor ledger with you."
+                  : "Push deeper into Floor 2, then return when Tamsin marks the next real change in the lane."
           : active
             ? "Resolve Tamsin's Snagline Recovery from the Guild board."
             : accepted
@@ -291,7 +334,7 @@ export const MainQuestScreen = ({
                 : "Hear Tamsin's thorn briefing in the NPC Hall."
               : available
                 ? "Hear Tamsin's thorn briefing in the NPC Hall."
-              : "Reach Level 5, Rank E, and unlock Floor 2 readiness first.",
+              : "Clear Floor 1 first. Tamsin opens corridor work once the climb has actually reached Thorn Corridor's shadow.",
       })];
     });
   }, [activeQuest, character.alliedNpcIds, sideQuestDefinitions, storyState]);

@@ -4,6 +4,7 @@ This is the master implementation tracker for the project.
 Use this file for non-tower planning, and use `docs/TOWER_BATTLE_PHASES.md` for tower combat-phase details.
 For actual playable content order, use `docs/SEQUENTIAL_CONTENT_PLAN.md`.
 For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
+For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
 
 ## Current Direction
 
@@ -53,6 +54,11 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
   - Rank Examiner card (mapped by adventurer rank)
   - Revival specialist mage card
   - NPC conversation modal pattern (Bran + Examiner), reusable for future NPC interactions
+- [x] NPC Hall ambient speech baseline:
+  - live per-NPC speech bubbles in the hall
+  - state-driven passing remarks tied to story progress and tower climb
+  - this is an ongoing content layer and must be updated whenever major story, floor, NPC, or guild-state beats are added
+  - future pass still needed for broader gossip, rumors, and hidden quest hooks
 
 ## Gameplay Systems
 
@@ -233,6 +239,8 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
 ## Current Sequential Focus
 
 - `Floor 2: Thorn Corridor` is the active next chapter.
+- Floor 2 now includes a post-clear Tamsin aftermath beat so the chapter closes before we step into Floor 3.
+- Floor 3 merchant consequence is documented for later implementation in [FLOOR_3_MERCHANT_BRANCH.md](/Users/kin/web-rpg/docs/FLOOR_3_MERCHANT_BRANCH.md).
 - Runtime and docs now treat it as the first true `E-rank` tower floor.
 - Detailed reference:
   - [FLOOR_2_THORN_CORRIDOR.md](/Users/kin/web-rpg/docs/FLOOR_2_THORN_CORRIDOR.md)
@@ -241,3 +249,5 @@ For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
 - TODO:
   - add first real Hunt quest structure after the current Tamsin / side-quest work is settled
   - add first real Wanted system structure after Hunt is properly defined
+  - give major story/special quest completions the same ceremonial result treatment now used for tower floor clears
+  - add live reactive NPC hall bubbles and more granular per-NPC reaction text that updates off player story progress, tower clears, affinity, and known choices

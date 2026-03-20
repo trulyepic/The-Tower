@@ -105,6 +105,7 @@ export default function App() {
             requestGuildMageRecovery={game.requestGuildMageRecovery}
             onActivateBuff={game.activateBuff}
             onDeactivateBuff={game.deactivateBuff}
+            onUseQuestRushItem={game.useQuestRushItem}
             onStartQuest={game.startQuest}
             onClaimQuest={game.claimQuest}
             onResolveLyraQuestChoice={game.resolveLyraQuestChoice}
@@ -119,6 +120,9 @@ export default function App() {
             onRespondRescueNpcRequest={game.respondRescueNpcRequest}
             onRespondThornRunnerIntroduction={game.respondThornRunnerIntroduction}
             onAcknowledgeThornRunnerFollowup={game.acknowledgeThornRunnerFollowup}
+            onAcknowledgeThornRunnerCorridorReport={game.acknowledgeThornRunnerCorridorReport}
+            onAcknowledgeThornRunnerDeepLaneWarning={game.acknowledgeThornRunnerDeepLaneWarning}
+            onAcknowledgeThornRunnerFloorTwoAftermath={game.acknowledgeThornRunnerFloorTwoAftermath}
             climberLeaderboard={game.climberLeaderboard}
             activeFloorEncounter={game.activeFloorEncounter}
             onRespondFloorEncounter={game.respondFloorEncounter}
@@ -276,6 +280,42 @@ export default function App() {
                       style={[styles.devMenuButton, styles.devMenuButtonTeal]}
                     >
                       <Text style={styles.devMenuButtonText}>Trigger Tamsin</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerTamsinCorridorReport();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Tamsin Corridor Report</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerTamsinDeepLaneWarning();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Tamsin Deep Warning</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerTamsinFloorTwoAftermath();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Tamsin Floor 2 Aftermath</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devTriggerTamsinLateFloorTwoAftermath();
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Tamsin Late Floor 2</Text>
                     </Pressable>
                     <Pressable
                       onPress={() => {
@@ -696,10 +736,10 @@ export default function App() {
                       ? "Seek The Archmage"
                       : game.storyNotification.variant === "main-quest"
                         ? towerModeActive
-                          ? "Inside Tower"
+                          ? "After This Run"
                           : "Open Main Quest"
                       : towerModeActive
-                        ? "Inside Tower"
+                        ? "Guild After This Run"
                         : "Go To Guild"}
                   </Text>
                 </Pressable>

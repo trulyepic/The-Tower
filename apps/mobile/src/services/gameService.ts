@@ -151,23 +151,6 @@ export const hasQuestAccess = (
   character: CharacterState,
   quest: QuestDefinition,
 ): { allowed: boolean; reason?: string } => {
-  const playerRankIndex = RANK_ORDER.indexOf(character.adventurerRank);
-  const questRankIndex = RANK_ORDER.indexOf(quest.rank);
-
-  if (playerRankIndex < questRankIndex) {
-    return {
-      allowed: false,
-      reason: `Requires ${quest.rank}-Rank Adventurer License.`,
-    };
-  }
-
-  if (character.progression.level < quest.minLevel) {
-    return {
-      allowed: false,
-      reason: `Requires Level ${quest.minLevel}.`,
-    };
-  }
-
   return { allowed: true };
 };
 
@@ -314,24 +297,6 @@ export const hasTowerAccess = (
       allowed: false,
       reason: `Clear Floor ${nextFloor} first.`,
     };
-  }
-
-  if (character.progression.level < floor.minLevel) {
-    return {
-      allowed: false,
-      reason: `Requires Level ${floor.minLevel}.`,
-    };
-  }
-
-  if (floor.requiredRank) {
-    const playerRankIndex = RANK_ORDER.indexOf(character.adventurerRank);
-    const requiredRankIndex = RANK_ORDER.indexOf(floor.requiredRank);
-    if (playerRankIndex < requiredRankIndex) {
-      return {
-        allowed: false,
-        reason: `Requires Rank ${floor.requiredRank}.`,
-      };
-    }
   }
 
   if (character.stamina < floor.staminaCost) {
@@ -1431,6 +1396,160 @@ export const mockGameService: GameService = {
       1,
       Math.round((combatStats.damage + abilityBonuses.damageFlat + liveDamageBonus) * playerDamageMultiplier),
     );
+    const hasResolvedLiveBattleState =
+      typeof liveBattle?.finalPlayerHp === "number" &&
+      typeof liveBattle?.finalEnemyHpById === "object" &&
+      liveBattle.finalEnemyHpById !== null;
+    if (hasResolvedLiveBattleState) {
+      const finalEnemyHpById = liveBattle.finalEnemyHpById ?? {};
+      const runningHealth = Math.max(0, liveBattle.finalPlayerHp ?? character.health);
+      const countered = (liveBattle?.responses ?? []).filter((entry) => entry.success).length;
+      const triggered = (liveBattle?.responses ?? []).filter((entry) => !entry.success).length;
+      const enemyBattles: NonNullable<TowerWaveOutcome["enemyBattles"]> = waveUnits.map((unit) => {
+        const enemyHealth = Math.max(
+          1,
+          unit.health ??
+            (unit.role === "boss"
+              ? 170 + floor.minLevel * 12
+              : unit.role === "subBoss"
+                ? 110 + floor.minLevel * 10
+                : 40 + floor.minLevel * 6),
+        );
+        const enemyHealthRemaining = Math.max(0, finalEnemyHpById[unit.id] ?? enemyHealth);
+        return {
+          enemyId: unit.id,
+          enemyName: unit.name,
+          enemyIcon: unit.icon,
+          enemyRole: unit.role,
+          enemyLevel: unit.level,
+          enemyHealth,
+          enemyHealthRemaining,
+          defeated: enemyHealthRemaining <= 0,
+          turnsToDefeat: enemyHealthRemaining <= 0 ? Math.max(1, Math.ceil(enemyHealth / playerDamagePerTurn)) : 0,
+          playerDamagePerTurn,
+          damageTaken: 0,
+          events: [
+            {
+              mechanic: "Live Clash",
+              countered: false,
+              positive: enemyHealthRemaining <= 0,
+              resultText:
+                enemyHealthRemaining <= 0
+                  ? `${unit.name} was defeated in live combat.`
+                  : `${unit.name} remained at ${enemyHealthRemaining} HP when the clash ended.`,
+              icon: "sword-cross",
+            },
+          ],
+        };
+      });
+      const success = runningHealth > 0 && enemyBattles.every((battle) => battle.defeated);
+      const waveStaminaCost = Math.max(1, Math.round(floor.staminaCost / 3));
+      const nextStamina = Math.max(0, character.stamina - waveStaminaCost);
+      const nextInventory = { ...(character.inventory ?? {}) };
+      for (const [itemId, amount] of Object.entries(selectedItems)) {
+        const count = Math.max(0, Math.floor(amount));
+        if (count <= 0) {
+          continue;
+        }
+        const owned = nextInventory[itemId] ?? 0;
+        nextInventory[itemId] = Math.max(0, owned - count);
+      }
+      const nextCharacter: CharacterState = {
+        ...character,
+        health: runningHealth,
+        stamina: nextStamina,
+        inventory: nextInventory,
+        knownTowerEnemyIds: Array.from(
+          new Set([...(character.knownTowerEnemyIds ?? []), ...waveUnits.map((unit) => unit.id)]),
+        ),
+      };
+      return {
+        ok: true,
+        character: nextCharacter,
+        outcome: {
+          floorNumber: floor.floorNumber,
+          wave,
+          success,
+          collapsed: !success && runningHealth <= 0,
+          collapseMessage:
+            !success && runningHealth <= 0
+              ? "A hush of ancient mercy closes around you. The Tower refuses your final breath and casts you back to the guild at 1 HP. Your body remains standing, but your being is fractured. Seek the Archmage to restore yourself before venturing out again."
+              : undefined,
+          battlePosition: liveBattle?.position ?? "mid",
+          healthDelta: runningHealth - character.health,
+          countered,
+          triggered,
+          summary: `${wave === "normal" ? "Normal Wave" : wave === "subBoss" ? "Sub-Boss" : "Main Boss"} ${
+            success ? "cleared" : "failed"
+          }.`,
+          lines:
+            liveBattle?.battleLog?.length
+              ? liveBattle.battleLog
+              : [`${wave === "normal" ? "Normal Wave" : wave === "subBoss" ? "Sub-Boss" : "Main Boss"} live clash resolved.`],
+          enemyBattles,
+          statusEffects: [],
+          conditionalEncounter:
+            success
+              ? (() => {
+                  if (floor.floorNumber === 2 && wave === "subBoss") {
+                    return {
+                      id: "tower-floor2-tamsin-route-mark",
+                      npcName: "Tamsin Vale",
+                      npcTitle: "Thorn Runner",
+                      classId: "ranger" as const,
+                      avatarId: "ranger-2" as const,
+                      triggerPhase: "subBoss" as const,
+                      message:
+                        "At the break in the lash-lane, you find one of Tamsin's route marks cut into the stone beneath the roots: three quick slashes, then a circle scored hard enough to bite the wall. Someone who knew the corridor is warning you that the lower lane is changing.",
+                      acceptLabel: "Read Tamsin's Mark",
+                      declineLabel: "Ignore It And Press On",
+                      acceptOutcome:
+                        "You stop long enough to read the route mark properly. The warning is clear: what waits deeper in Floor 2 is not just another thorn beast.",
+                      declineOutcome:
+                        "You press on without reading the mark in full. The warning stays in your head anyway: the lower lane is changing.",
+                    };
+                  }
+                  if (floor.floorNumber !== 1) {
+                    return undefined;
+                  }
+                  const poisonTriggered = (liveBattle?.persistentStatusEffects ?? []).some((effect) =>
+                    effect.name.toLowerCase().includes("poison"),
+                  );
+                  const disciplinedPreparation =
+                    (committedItems?.["antitoxin-vial"] ?? 0) >= 1 &&
+                    (committedItems?.torch ?? 0) >= 1 &&
+                    !poisonTriggered;
+                  if (!poisonTriggered && !disciplinedPreparation) {
+                    return undefined;
+                  }
+                  return {
+                    id: "tower-floor1-lyra-intercept",
+                    npcName: "Lyra Ashstep",
+                    npcTitle: "Ember Scout",
+                    classId: "ranger" as const,
+                    avatarId: "ranger-3" as const,
+                    contactStyle: poisonTriggered ? ("rescued" as const) : ("disciplined" as const),
+                    triggerPhase: "normal" as const,
+                    message:
+                      poisonTriggered
+                        ? "Lyra intercepts your climb: \"You are carrying poison stress from the first wave. I can keep the ash from finishing what your prep started if you listen now.\""
+                        : "Lyra steps out of the ash with a thin, approving smile: \"You brought the right counters before the Tower forced them into your blood. Few novices do that. Want the cleaner route?\"",
+                    acceptLabel: "Take Lyra's Advice",
+                    declineLabel: "Push On Alone",
+                    acceptOutcome:
+                      poisonTriggered
+                        ? "Lyra marks a safer line through the ruins and steadies the climb before your early mistakes cost more."
+                        : "Lyra marks a cleaner ember line through the ruins, rewarding the discipline you already showed.",
+                    declineOutcome:
+                      poisonTriggered
+                        ? "You ignore the warning and continue with the ash still remembering your mistake."
+                        : "You turn down the scout line and continue on your own, even after earning Lyra's respect.",
+                  };
+                })()
+              : undefined,
+        },
+      };
+    }
     let runningHealth = character.health;
     let countered = 0;
     let triggered = 0;
@@ -1676,8 +1795,29 @@ export const mockGameService: GameService = {
                 : `${value.value}`,
         })),
         conditionalEncounter:
-          floor.floorNumber === 1 && success
+          success
             ? (() => {
+                if (floor.floorNumber === 2 && wave === "subBoss") {
+                  return {
+                    id: "tower-floor2-tamsin-route-mark",
+                    npcName: "Tamsin Vale",
+                    npcTitle: "Thorn Runner",
+                    classId: "ranger" as const,
+                    avatarId: "ranger-2" as const,
+                    triggerPhase: "subBoss" as const,
+                    message:
+                      "At the break in the lash-lane, you find one of Tamsin's route marks cut into the stone beneath the roots: three quick slashes, then a circle scored hard enough to bite the wall. Someone who knew the corridor is warning you that the lower lane is changing.",
+                    acceptLabel: "Read Tamsin's Mark",
+                    declineLabel: "Ignore It And Press On",
+                    acceptOutcome:
+                      "You stop long enough to read the route mark properly. The warning is clear: what waits deeper in Floor 2 is not just another thorn beast.",
+                    declineOutcome:
+                      "You press on without reading the mark in full. The warning stays in your head anyway: the lower lane is changing.",
+                  };
+                }
+                if (floor.floorNumber !== 1) {
+                  return undefined;
+                }
                 const poisonTriggered = Object.keys(statusEffectMap).some((key) => key.includes("trigger:poisoned"));
                 const disciplinedPreparation =
                   (committedItems?.["antitoxin-vial"] ?? 0) >= 1 &&
@@ -1732,6 +1872,18 @@ export const mockGameService: GameService = {
     for (const gainedItem of gainedItems) {
       nextInventory[gainedItem.itemId] = (nextInventory[gainedItem.itemId] ?? 0) + gainedItem.amount;
     }
+    const itemRewards = [
+      ...((floor.guaranteedItemRewards ?? []).map((reward) => ({
+        itemId: reward.itemId,
+        amount: reward.amount,
+        guaranteed: true,
+      }))),
+      ...gainedItems.map((reward) => ({
+        itemId: reward.itemId,
+        amount: reward.amount,
+        guaranteed: false,
+      })),
+    ];
     const nextProgression = applyProgressGain(character.progression, floor.reward.xp, floor.reward.masteryXp);
     const nextHealthCap = getDerivedHealthCap({
       ...character,
@@ -1764,6 +1916,7 @@ export const mockGameService: GameService = {
         success: true,
         floorNumber: floor.floorNumber,
         successChance: 100,
+        itemRewards,
         summary: `Floor ${floor.floorNumber} finalized. Rewards and drops transferred to inventory.`,
       },
     };
@@ -2122,6 +2275,18 @@ export const mockGameService: GameService = {
     if (nextCharacter.health <= 0) {
       successSummary += " You cleared the floor but the tower cast you out before your final breath. Restore your being with the Archmage.";
     }
+    const itemRewards = [
+      ...((floor.guaranteedItemRewards ?? []).map((reward) => ({
+        itemId: reward.itemId,
+        amount: reward.amount,
+        guaranteed: true,
+      }))),
+      ...gainedItems.map((reward) => ({
+        itemId: reward.itemId,
+        amount: reward.amount,
+        guaranteed: false,
+      })),
+    ];
 
     return {
       ok: true,
@@ -2141,6 +2306,7 @@ export const mockGameService: GameService = {
         supplyUsage,
         phaseResults,
         conditionalEncounter,
+        itemRewards,
         summary: successSummary,
       },
     };
