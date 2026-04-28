@@ -12,6 +12,7 @@ Related:
 - `docs/NPC_QUESTLINE_TRACKER.md`
 - `docs/SEQUENTIAL_CONTENT_PLAN.md`
 - `docs/ROADMAP.md`
+- `docs/FLOOR_LOCAL_WORLD_REWORK.md`
 
 ## Why This Rework Exists
 
@@ -31,6 +32,11 @@ That causes a few recurring problems:
 The goal of this rework is not to throw away the current system.
 The goal is to turn the current working pieces into one consistent game-facing quest structure.
 
+The biggest direction change is:
+- the detached global Quest Board should be treated as legacy scaffolding
+- ordinary work should migrate into floor-local work loops
+- the guild should remain important through `Floor 1`, rank administration, and special notices
+
 ## Rework Goals
 
 1. Make the Quest Board easier to understand at a glance
@@ -44,30 +50,29 @@ The goal is to turn the current working pieces into one consistent game-facing q
 
 ## Player-Facing Structure
 
-### 1. Quest Board
+### 1. Quest Surface
 
-The board should separate work into clear groups instead of mixing everything together.
+The old board grouped work globally.
+The new direction should preserve the grouping logic, but move it into floor-local work surfaces wherever possible.
 
-Planned board groups:
+Planned floor-local work groups:
 - `Jobs`
-  - repeatable or grounded guild work
-  - resource farming
+  - repeatable or grounded local work
+  - floor resource farming
   - floor support preparation
 - `Story Contracts`
-  - named NPC or narrative-linked quest work
-  - may still be taken from the board, but should feel more important
+  - named NPC or narrative-linked work tied to that floor
 - `Urgent`
-  - time-sensitive contracts
-  - visible countdowns
-  - permanent consequence warnings
-- `Special`
+  - time-sensitive local or guild-posted contracts
+- `Special Notices`
   - rank trials
   - rescue operations
+  - black-ledger raids
   - story event contracts that do not behave like normal jobs
-- `Future Tabs`
-  - `Hunt`
-  - `Wanted`
-  - remain scaffolded until their real implementation phase
+
+Standing rule:
+- ordinary jobs should belong to a floor
+- only exceptional notices should remain centrally guild-posted
 
 ### 2. Quest Journal
 
@@ -164,11 +169,11 @@ Future NPC quests can reuse the same deadline model with different outcomes.
 
 ## NPC Questline Integration
 
-NPC quests should not feel detached from the board.
+NPC quests should not feel detached from the work surface.
 
 Planned rule:
 - an NPC thread may begin in dialogue
-- but if the action becomes formal guild work, it should appear in the board/journal system consistently
+- but if the action becomes formal work, it should appear in the floor-local work/journal system consistently
 
 ### Example flow
 

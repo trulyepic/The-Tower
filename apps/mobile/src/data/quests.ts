@@ -1,5 +1,11 @@
 import { QuestDefinition } from "../types/game";
 
+export const A_TO_S_RAID_NOTICE_IDS = [
+  "hunt-leviathor-coiling-deep",
+  "hunt-ashen-gate-tyrant",
+  "hunt-bell-warden-hollow-choir",
+] as const;
+
 export const QUESTS: QuestDefinition[] = [
   {
     id: "gather-camp-firewood",
@@ -498,17 +504,14 @@ export const QUESTS: QuestDefinition[] = [
       "Guild black ledgers speak of a sea-serpent remnant older than the lower Tower routes: an armored deep wyrm remembered in broken chapel texts as a twisting dragon of the abyss. When it rises, entire ascent caravans vanish without even wreckage returning.",
     encounterStages: ["Scalewake Rise", "Furnace Maw", "Crooked Tide", "Judgment Coil"],
     signatureMechanics: ["Brinefire Exhalation", "Covenant-Breaker Roar", "Scalewake Shedding", "Abyssal Coil Crush"],
-    requiredItems: [
-      { itemId: "ward-charm", needed: 2 },
-      { itemId: "grounding-tonic", needed: 2 },
-      { itemId: "health-potion", needed: 3 },
-    ],
+    requiredItems: [],
     recommendedItems: [
-      { itemId: "focus-tonic", needed: 2 },
-      { itemId: "mana-tonic", needed: 2 },
+      { itemId: "ward-charm", needed: 1 },
+      { itemId: "guard-tonic", needed: 1 },
       { itemId: "buff-royal-crest", needed: 1 },
     ],
     itemRewards: [
+      { itemId: "proof-leviathor-scale-seal", amount: 1, chance: 1 },
       { itemId: "tower-crest-fragment", amount: 2, chance: 0.35 },
       { itemId: "buff-royal-crest", amount: 1, chance: 0.18 },
       { itemId: "weapon-warrior-briarcleaver", amount: 1, chance: 0.06 },
@@ -519,6 +522,84 @@ export const QUESTS: QuestDefinition[] = [
       xp: 1200,
       gold: 950,
       masteryXp: 420,
+    },
+  },
+  {
+    id: "hunt-ashen-gate-tyrant",
+    title: "Raid Hunt: Ashen Gate Tyrant",
+    type: "dungeon",
+    boardCategory: "hunt",
+    combatModel: "raid",
+    raidLabel: "Raid Hunt",
+    rank: "S",
+    minLevel: 62,
+    difficulty: 5,
+    durationSeconds: 240,
+    staminaCost: 12,
+    baseSuccessChance: 17,
+    loreSummary:
+      "The Ninth Gate was never meant to stand open, but something in the ash quarter forced it and kept walking. Guild marshals describe a plated giant that breaks siege lines with its own ruined gate bound to its back.",
+    encounterStages: ["Gatefall Approach", "Ash Rampart", "Broken Hinge Court", "Tyrant's March"],
+    signatureMechanics: ["Gatebreaker Charge", "Ashplate Reversal", "Lockstep Quake", "Hinge-Sunder Blow"],
+    requiredItems: [
+      { itemId: "guard-tonic", needed: 2 },
+      { itemId: "health-potion", needed: 3 },
+      { itemId: "ward-charm", needed: 1 },
+    ],
+    recommendedItems: [
+      { itemId: "focus-tonic", needed: 2 },
+      { itemId: "buff-thornward-seal", needed: 1 },
+      { itemId: "buff-royal-crest", needed: 1 },
+    ],
+    itemRewards: [
+      { itemId: "proof-gate-tyrant-heartplate", amount: 1, chance: 1 },
+      { itemId: "ancient-core", amount: 1, chance: 0.28 },
+      { itemId: "tower-crest-fragment", amount: 1, chance: 0.18 },
+      { itemId: "weapon-warrior-emberblade", amount: 1, chance: 0.05 },
+    ],
+    reward: {
+      xp: 1260,
+      gold: 980,
+      masteryXp: 440,
+    },
+  },
+  {
+    id: "hunt-bell-warden-hollow-choir",
+    title: "Raid Hunt: Bell Warden of the Hollow Choir",
+    type: "dungeon",
+    boardCategory: "hunt",
+    combatModel: "raid",
+    raidLabel: "Raid Hunt",
+    rank: "S",
+    minLevel: 64,
+    difficulty: 5,
+    durationSeconds: 250,
+    staminaCost: 13,
+    baseSuccessChance: 16,
+    loreSummary:
+      "Far above the lower crypt lines, a drowned bell hall still answers when no rope is drawn. The guild believes a hollow choir-keeper is sounding it, and every toll leaves another ascent route empty by morning.",
+    encounterStages: ["Silent Nave", "Choir Stairs", "Ringing Vault", "Warden's Toll"],
+    signatureMechanics: ["Choir Toll", "Silence Brand", "Resonant Break", "Last Bell Sentence"],
+    requiredItems: [
+      { itemId: "ward-charm", needed: 2 },
+      { itemId: "grounding-tonic", needed: 2 },
+      { itemId: "health-potion", needed: 2 },
+    ],
+    recommendedItems: [
+      { itemId: "focus-tonic", needed: 2 },
+      { itemId: "mana-tonic", needed: 2 },
+      { itemId: "buff-arcane-sigil", needed: 1 },
+    ],
+    itemRewards: [
+      { itemId: "proof-hollow-bell-core", amount: 1, chance: 1 },
+      { itemId: "tower-crest-fragment", amount: 1, chance: 0.22 },
+      { itemId: "buff-arcane-sigil", amount: 1, chance: 0.14 },
+      { itemId: "weapon-mage-astralspire", amount: 1, chance: 0.05 },
+    ],
+    reward: {
+      xp: 1320,
+      gold: 1020,
+      masteryXp: 460,
     },
   },
 ];

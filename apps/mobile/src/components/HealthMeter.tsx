@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StyleSheet, Text, View, ViewStyle } from "react-native";
 
@@ -9,7 +10,24 @@ interface HealthMeterProps {
   compact?: boolean;
   bare?: boolean;
   hideValues?: boolean;
+  trackFooter?: ReactNode;
+  footer?: ReactNode;
   containerStyle?: ViewStyle;
+  themeOverrides?: Partial<{
+    label: string;
+    icon: string;
+    titleColor: string;
+    valueColor: string;
+    metaColor: string;
+    fillColor: string;
+    underlayFillColor: string;
+    trackColor: string;
+    trackBorderColor: string;
+    containerColor: string;
+    containerBorderColor: string;
+    pillColor: string;
+    pillBorderColor: string;
+  }>;
 }
 
 const getHealthState = (percent: number) => {
@@ -73,10 +91,37 @@ export const HealthMeter = ({
   compact = false,
   bare = false,
   hideValues = false,
+  trackFooter,
+  footer,
   containerStyle,
+  themeOverrides,
 }: HealthMeterProps) => {
   const percent = Math.max(0, Math.min(100, Math.round((current / Math.max(1, max)) * 100)));
-  const state = getHealthState(percent);
+  const baseState = getHealthState(percent);
+  const state = {
+    ...baseState,
+    label: themeOverrides?.label ?? baseState.label,
+    icon: themeOverrides?.icon ?? baseState.icon,
+    title: [baseState.title, themeOverrides?.titleColor ? { color: themeOverrides.titleColor } : null],
+    value: [baseState.value, themeOverrides?.valueColor ? { color: themeOverrides.valueColor } : null],
+    meta: [baseState.meta, themeOverrides?.metaColor ? { color: themeOverrides.metaColor } : null],
+    fill: [baseState.fill, themeOverrides?.fillColor ? { backgroundColor: themeOverrides.fillColor } : null],
+    track: [
+      baseState.track,
+      themeOverrides?.trackColor ? { backgroundColor: themeOverrides.trackColor } : null,
+      themeOverrides?.trackBorderColor ? { borderColor: themeOverrides.trackBorderColor } : null,
+    ],
+    container: [
+      baseState.container,
+      themeOverrides?.containerColor ? { backgroundColor: themeOverrides.containerColor } : null,
+      themeOverrides?.containerBorderColor ? { borderColor: themeOverrides.containerBorderColor } : null,
+    ],
+    pill: [
+      baseState.pill,
+      themeOverrides?.pillColor ? { backgroundColor: themeOverrides.pillColor } : null,
+      themeOverrides?.pillBorderColor ? { borderColor: themeOverrides.pillBorderColor } : null,
+    ],
+  };
 
   return (
     <View
@@ -91,15 +136,22 @@ export const HealthMeter = ({
       <View style={styles.head}>
         <MaterialCommunityIcons name="heart-pulse" size={compact ? 14 : 16} color={state.icon} />
         <Text style={[styles.title, state.title, compact ? styles.titleCompact : null]}>{title}</Text>
-        <View style={[styles.statePill, state.pill]}>
-          <Text style={styles.stateText}>{state.label}</Text>
-        </View>
+        {state.label ? (
+          <View style={[styles.statePill, state.pill]}>
+            <Text style={styles.stateText}>{state.label}</Text>
+          </View>
+        ) : null}
         <Text style={[styles.value, state.value, compact ? styles.valueCompact : null]}>{hideValues ? "???/???" : `${current}/${max}`}</Text>
       </View>
       <View style={[styles.track, state.track, compact ? styles.trackCompact : null, bare ? styles.trackBare : null]}>
+        {themeOverrides?.underlayFillColor ? (
+          <View style={[styles.fill, styles.underlayFill, { width: "100%", backgroundColor: themeOverrides.underlayFillColor }]} />
+        ) : null}
         <View style={[styles.fill, state.fill, { width: `${percent}%` }]} />
       </View>
+      {trackFooter ? <View style={styles.trackFooter}>{trackFooter}</View> : null}
       {meta ? <Text style={[styles.meta, state.meta, compact ? styles.metaCompact : null]}>{meta}</Text> : null}
+      {footer ? <View style={styles.footer}>{footer}</View> : null}
     </View>
   );
 };
@@ -274,6 +326,14 @@ const styles = StyleSheet.create({
     height: "100%",
     borderRadius: 999,
   },
+  underlayFill: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+  },
+  trackFooter: {
+    marginTop: -1,
+  },
   fillSafe: {
     backgroundColor: "#57d47a",
   },
@@ -285,5 +345,8 @@ const styles = StyleSheet.create({
   },
   fillFractured: {
     backgroundColor: "#b688ff",
+  },
+  footer: {
+    marginTop: 1,
   },
 });

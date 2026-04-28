@@ -7,7 +7,7 @@ import { FLOOR_ENCOUNTER_EVENTS, INITIAL_RIVAL_CLIMBERS } from "../data/floorSto
 import { getGuildMasterForRank } from "../data/guild";
 import { ITEM_BY_ID } from "../data/items";
 import { deriveMainQuestTracker } from "../data/mainQuest";
-import { QUESTS } from "../data/quests";
+import { A_TO_S_RAID_NOTICE_IDS, QUESTS } from "../data/quests";
 import { RANK_UP_TRIALS } from "../data/rankTrials";
 import { getMaxRankForLevel, getRankOrderIndex } from "../data/rankProgression";
 import { TOWER_FLOORS } from "../data/towerFloors";
@@ -77,6 +77,7 @@ const LYRA_QUEST_ID = "quest-lyra-ember-maps";
 const TAMSIN_QUEST_ID = "quest-tamsin-snagline-recovery";
 const TAMSIN_NPC_ID = "npc-tamsin-vale";
 const FLOOR_TWO_TITLE_ID = "title-first-snare";
+const BALANCE_TEST_WEAPON_ID: ItemId = "weapon-warrior-guildsworn-tidecutter";
 const ALDRIC_RESCUE_DURATION_MS = 6 * 60 * 1000;
 const FLOOR_INTEL_QUEST_UNLOCKS: Partial<Record<string, number>> = {
   "gather-shrine-wards": 1,
@@ -91,7 +92,38 @@ const TAMSIN_CONDITIONAL_ENCOUNTER_ID = "tower-floor2-tamsin-route-mark";
 const ALDRIC_NPC_ID = "npc-aldric-vale";
 const ALDRIC_ALLY_ID = "ally-aldric-vale";
 const MAX_EQUIPPED_PASSIVES = 2;
-const TOWER_USABLE_CONSUMABLE_IDS: ItemId[] = ["antitoxin-vial", "guard-tonic", "grounding-tonic"];
+const COMBAT_POUCH_USABLE_ITEM_IDS: ItemId[] = [
+  "healing-herb",
+  "health-potion",
+  "focus-tonic",
+  "mana-tonic",
+  "antitoxin-vial",
+  "guard-tonic",
+  "grounding-tonic",
+];
+const DEFAULT_COMBAT_POUCH_CAPACITY = 3;
+const getCombatPouchCapacity = (character: Pick<CharacterState, "combatPouchCapacity">): number =>
+  Math.max(1, character.combatPouchCapacity ?? DEFAULT_COMBAT_POUCH_CAPACITY);
+const normalizeCombatPouch = (character: CharacterState): CharacterState => {
+  const capacity = getCombatPouchCapacity(character);
+  const normalizedEntries = Object.entries(character.combatPouchItems ?? {})
+    .filter(
+      ([itemId, count]) =>
+        COMBAT_POUCH_USABLE_ITEM_IDS.includes(itemId) &&
+        (character.inventory?.[itemId] ?? 0) > 0 &&
+        Math.max(0, Math.floor(count)) > 0,
+    )
+    .slice(0, capacity)
+    .map(([itemId, count]) => [
+      itemId,
+      Math.min(Math.max(1, Math.floor(count)), character.inventory?.[itemId] ?? 0),
+    ]);
+  return {
+    ...character,
+    combatPouchCapacity: capacity,
+    combatPouchItems: Object.fromEntries(normalizedEntries),
+  };
+};
 
 const mergeTowerStatusEffects = (
   current: NonNullable<TowerWaveOutcome["statusEffects"]>,
@@ -167,6 +199,7 @@ const DEFAULT_STORY_STATE: StoryState = {
   mainQuestLog: [],
   mainQuestUnreadCount: 0,
   warriorPathGuideNoticeShown: false,
+  unlockedRaidQuestIds: [],
   climberRivals: INITIAL_RIVAL_CLIMBERS,
   lastLeaderboardRank: undefined,
   floorAttemptByNumber: {},
@@ -496,7 +529,9 @@ const normalizeAppraisedItems = (character: CharacterState): CharacterState => (
 const normalizeCharacterState = (character: CharacterState): CharacterState =>
   normalizeAppraisedItems(
     normalizeKnownTowerIntel(
-    normalizeAffinity(normalizeAbilityLoadout(normalizeTitleLoadout(normalizeRankForLevel(applyDerivedVitals(character))))),
+    normalizeCombatPouch(
+      normalizeAffinity(normalizeAbilityLoadout(normalizeTitleLoadout(normalizeRankForLevel(applyDerivedVitals(character))))),
+    ),
     ),
   );
 
@@ -513,7 +548,8 @@ export interface GameState {
   lastTowerOutcome: TowerOutcome | null;
   lastTowerWaveOutcome: TowerWaveOutcome | null;
   towerStatusEffects: NonNullable<TowerWaveOutcome["statusEffects"]>;
-  towerPreparedItemIds: ItemId[];
+  combatPouchItems: Record<ItemId, number>;
+  combatPouchCapacity: number;
   lastRankUpOutcome: RankUpOutcome | null;
   levelUpEvent: {
     fromLevel: number;
@@ -556,6 +592,16 @@ export interface GameState {
   resetGame: () => void;
   resetTowerProgress: () => void;
   devIncreaseLevel: () => { ok: boolean; reason?: string };
+  devAddLevels: (amount: number) => { ok: boolean; reason?: string };
+  devSetLevel: (level: number) => { ok: boolean; reason?: string };
+  devPrepareFirstRankTrial: () => { ok: boolean; reason?: string };
+  devPrepareSecondRankTrial: () => { ok: boolean; reason?: string };
+  devPrepareThirdRankTrial: () => { ok: boolean; reason?: string };
+  devPrepareFourthRankTrial: () => { ok: boolean; reason?: string };
+  devPrepareFifthRankTrial: () => { ok: boolean; reason?: string };
+  devResetRankProgression: () => { ok: boolean; reason?: string };
+  devAddSigilSlot: () => { ok: boolean; reason?: string };
+  devResetSigilSlots: () => { ok: boolean; reason?: string };
   devRestoreAdventurer: () => { ok: boolean; reason?: string };
   devFractureAdventurer: () => { ok: boolean; reason?: string };
   devAdvanceTowerFloor: () => { ok: boolean; reason?: string };
@@ -571,6 +617,7 @@ export interface GameState {
   devSetAffinity: (value: number) => { ok: boolean; reason?: string };
   devSetupWarriorBattlePreset: (preset: "shared" | "knight" | "berserker") => { ok: boolean; reason?: string };
   devPreviewQuestBoardContracts: () => { ok: boolean; reason?: string };
+  unlockASRankRaidNotices: () => { ok: boolean; reason?: string };
   getQuestSuccessChance: (questId: string, committedItems?: Record<ItemId, number>) => number;
   getQuestAccess: (questId: string) => { allowed: boolean; reason?: string };
   getTowerSuccessChance: (floorNumber: number, committedItems?: Record<ItemId, number>) => number;
@@ -593,6 +640,8 @@ export interface GameState {
   unequipWeapon: () => { ok: boolean; reason?: string };
   equipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
   unequipBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
+  setSigilAppearanceMode: (mode: "dynamic" | "default_frame") => { ok: boolean; reason?: string };
+  setSigilAppearanceItem: (itemId: ItemId | null) => { ok: boolean; reason?: string };
   equipTitle: (titleId: ItemId) => { ok: boolean; reason?: string };
   unequipTitle: (titleId: ItemId) => { ok: boolean; reason?: string };
   activateBuff: (itemId: ItemId) => { ok: boolean; reason?: string };
@@ -602,9 +651,16 @@ export interface GameState {
   useSkillResourceItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useHealthRecoveryItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
   useQuestRushItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
-  useTowerConsumableItem: (itemId: ItemId) => { ok: boolean; reason?: string };
-  startQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
-  claimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
+  addCombatPouchItem: (itemId: ItemId, amount?: number | "all") => { ok: boolean; reason?: string };
+  removeCombatPouchItem: (itemId: ItemId, amount?: number | "all") => { ok: boolean; reason?: string };
+  startQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string; activeQuest?: ActiveQuestState | null };
+  clearActiveQuest: () => { ok: boolean };
+  claimQuest: (
+    forcedSuccess?: boolean,
+    summaryOverride?: string,
+    itemIdsUsed?: ItemId[],
+    questSnapshotOverride?: ActiveQuestState | null,
+  ) => { ok: boolean; reason?: string };
   resolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
   conquerTowerFloor: (floorNumber: number, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
   resolveTowerWave: (
@@ -615,6 +671,12 @@ export interface GameState {
   ) => { ok: boolean; reason?: string; outcome?: TowerWaveOutcome };
   finalizeTowerFloor: (floorNumber: number) => { ok: boolean; reason?: string };
   attemptRankUp: (committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
+  resolveRankUpCombatTrial: (
+    success: boolean,
+    committedItems?: Record<ItemId, number>,
+    finalPlayerHp?: number,
+    summaryOverride?: string,
+  ) => { ok: boolean; reason?: string };
   clearLevelUpEvent: () => void;
   clearLevelDownEvent: () => void;
   dismissStoryNotification: () => void;
@@ -656,7 +718,6 @@ export const useGameState = (): GameState => {
   const [lastTowerOutcome, setLastTowerOutcome] = useState<TowerOutcome | null>(null);
   const [lastTowerWaveOutcome, setLastTowerWaveOutcome] = useState<TowerWaveOutcome | null>(null);
   const [towerStatusEffects, setTowerStatusEffects] = useState<NonNullable<TowerWaveOutcome["statusEffects"]>>([]);
-  const [towerPreparedItemIds, setTowerPreparedItemIds] = useState<ItemId[]>([]);
   const [lastRankUpOutcome, setLastRankUpOutcome] = useState<RankUpOutcome | null>(null);
   const [levelUpEvent, setLevelUpEvent] = useState<GameState["levelUpEvent"]>(null);
   const [levelDownEvent, setLevelDownEvent] = useState<GameState["levelDownEvent"]>(null);
@@ -804,6 +865,9 @@ export const useGameState = (): GameState => {
                 {},
               pausedBuffRemainingMs: state.character.pausedBuffRemainingMs ?? {},
               inventory: state.character.inventory ?? {},
+              devBuffSlotLimitOverride: state.character.devBuffSlotLimitOverride,
+              sigilAppearanceMode: state.character.sigilAppearanceMode ?? "dynamic",
+              sigilAppearanceItemId: state.character.sigilAppearanceItemId ?? null,
               knownTowerEnemyIds: state.character.knownTowerEnemyIds ?? [],
               towerProgress: state.character.towerProgress ?? { highestFloorCleared: 0 },
               health: state.character.health ?? 100,
@@ -947,6 +1011,24 @@ export const useGameState = (): GameState => {
       storyState,
     });
   }, [selectedClass, character, classSequenceByClass, activeQuest, dailies, completedQuestCount, storyState, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated || !character) {
+      return;
+    }
+    if ((character.inventory?.[BALANCE_TEST_WEAPON_ID] ?? 0) > 0) {
+      return;
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        inventory: {
+          ...(character.inventory ?? {}),
+          [BALANCE_TEST_WEAPON_ID]: 1,
+        },
+      }),
+    );
+  }, [isHydrated, character]);
 
   useEffect(() => {
     if (!isHydrated || !character) {
@@ -1343,7 +1425,6 @@ export const useGameState = (): GameState => {
     setLastTowerOutcome(null);
     setLastTowerWaveOutcome(null);
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     setLastRankUpOutcome(null);
     setLevelUpEvent(null);
     setLevelDownEvent(null);
@@ -1359,7 +1440,6 @@ export const useGameState = (): GameState => {
       current ? normalizeCharacterState({ ...current, towerProgress: { highestFloorCleared: 0 } }) : current,
     );
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     setStoryState((current) => ({
       ...current,
       floorAttemptByNumber: {},
@@ -1403,6 +1483,428 @@ export const useGameState = (): GameState => {
     return { ok: true, reason: `Dev level increased: ${currentCharacter.progression.level} -> ${nextLevel}` };
   };
 
+  const devAddLevels = (amount: number) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const increment = Math.max(1, Math.round(amount));
+    const targetLevel = Math.max(1, Math.min(80, currentCharacter.progression.level + increment));
+    if (targetLevel === currentCharacter.progression.level) {
+      return { ok: true, reason: `Level unchanged: already ${targetLevel}.` };
+    }
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      healthCap: nextHealthCap,
+      health: Math.min(currentCharacter.health, nextHealthCap),
+      focusCap: nextFocusCap,
+      focus: Math.min(currentCharacter.focus, nextFocusCap),
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    return { ok: true, reason: `Dev level increased: ${currentCharacter.progression.level} -> ${targetLevel}` };
+  };
+
+  const devSetLevel = (level: number) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const targetLevel = Math.max(1, Math.min(80, Math.round(level)));
+    const currentCharacter = applyTimedState(character, Date.now());
+    if (currentCharacter.progression.level === targetLevel) {
+      return { ok: true, reason: `Level unchanged: already ${targetLevel}.` };
+    }
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      healthCap: nextHealthCap,
+      health: Math.min(currentCharacter.health, nextHealthCap),
+      focusCap: nextFocusCap,
+      focus: Math.min(currentCharacter.focus, nextFocusCap),
+    });
+    if (targetLevel > currentCharacter.progression.level) {
+      captureLevelUpEvent(currentCharacter, nextCharacter);
+    }
+    setCharacter(nextCharacter);
+    return { ok: true, reason: `Dev level set: ${currentCharacter.progression.level} -> ${targetLevel}` };
+  };
+
+  const devPrepareFirstRankTrial = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const targetLevel = Math.max(6, currentCharacter.progression.level);
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextInventory = {
+      ...(currentCharacter.inventory ?? {}),
+      "healing-herb": Math.max(1, currentCharacter.inventory?.["healing-herb"] ?? 0),
+      "guard-tonic": Math.max(1, currentCharacter.inventory?.["guard-tonic"] ?? 0),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      healthCap: nextHealthCap,
+      health: nextHealthCap,
+      focusCap: nextFocusCap,
+      focus: nextFocusCap,
+      stamina: currentCharacter.staminaCap,
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    setCompletedQuestCount((count) => Math.max(5, count));
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "First rank trial prepared: Level 6, 5 quest clears, healing herb, and guard tonic ready.",
+    };
+  };
+
+  const devPrepareSecondRankTrial = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const targetLevel = Math.max(10, currentCharacter.progression.level);
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextInventory = {
+      ...(currentCharacter.inventory ?? {}),
+      "antitoxin-vial": Math.max(1, currentCharacter.inventory?.["antitoxin-vial"] ?? 0),
+      "ward-charm": Math.max(1, currentCharacter.inventory?.["ward-charm"] ?? 0),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "E",
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "E",
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      adventurerRank: "E",
+      inventory: nextInventory,
+      healthCap: nextHealthCap,
+      health: nextHealthCap,
+      focusCap: nextFocusCap,
+      focus: nextFocusCap,
+      stamina: currentCharacter.staminaCap,
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    setCompletedQuestCount((count) => Math.max(14, count));
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "Second rank trial prepared: E-rank, Level 10, 14 quest clears, antitoxin vial, and ward charm ready.",
+    };
+  };
+
+  const devPrepareThirdRankTrial = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const targetLevel = Math.max(15, currentCharacter.progression.level);
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextInventory = {
+      ...(currentCharacter.inventory ?? {}),
+      "focus-tonic": Math.max(1, currentCharacter.inventory?.["focus-tonic"] ?? 0),
+      "health-potion": Math.max(1, currentCharacter.inventory?.["health-potion"] ?? 0),
+      "guard-tonic": Math.max(1, currentCharacter.inventory?.["guard-tonic"] ?? 0),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "D",
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "D",
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      adventurerRank: "D",
+      inventory: nextInventory,
+      healthCap: nextHealthCap,
+      health: nextHealthCap,
+      focusCap: nextFocusCap,
+      focus: nextFocusCap,
+      stamina: currentCharacter.staminaCap,
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    setCompletedQuestCount((count) => Math.max(26, count));
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "Third rank trial prepared: D-rank, Level 15, 26 quest clears, focus tonic, health potion, and guard tonic ready.",
+    };
+  };
+
+  const devPrepareFourthRankTrial = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const targetLevel = Math.max(20, currentCharacter.progression.level);
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextInventory = {
+      ...(currentCharacter.inventory ?? {}),
+      "focus-tonic": Math.max(2, currentCharacter.inventory?.["focus-tonic"] ?? 0),
+      "health-potion": Math.max(2, currentCharacter.inventory?.["health-potion"] ?? 0),
+      "guard-tonic": Math.max(1, currentCharacter.inventory?.["guard-tonic"] ?? 0),
+      "ward-charm": Math.max(1, currentCharacter.inventory?.["ward-charm"] ?? 0),
+      "ancient-core": Math.max(1, currentCharacter.inventory?.["ancient-core"] ?? 0),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "C",
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "C",
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      adventurerRank: "C",
+      inventory: nextInventory,
+      healthCap: nextHealthCap,
+      health: nextHealthCap,
+      focusCap: nextFocusCap,
+      focus: nextFocusCap,
+      stamina: currentCharacter.staminaCap,
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    setCompletedQuestCount((count) => Math.max(40, count));
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "Fourth rank trial prepared: C-rank, Level 20, 40 quest clears, and field-command supplies ready.",
+    };
+  };
+
+  const devPrepareFifthRankTrial = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const targetLevel = Math.max(40, currentCharacter.progression.level);
+    const nextProgression = {
+      ...currentCharacter.progression,
+      level: targetLevel,
+      xpInLevel: 0,
+      xpToNextLevel: getXpToNextLevel(targetLevel),
+    };
+    const nextInventory = {
+      ...(currentCharacter.inventory ?? {}),
+      "focus-tonic": Math.max(2, currentCharacter.inventory?.["focus-tonic"] ?? 0),
+      "health-potion": Math.max(2, currentCharacter.inventory?.["health-potion"] ?? 0),
+      "ancient-core": Math.max(1, currentCharacter.inventory?.["ancient-core"] ?? 0),
+      "tower-crest-fragment": Math.max(1, currentCharacter.inventory?.["tower-crest-fragment"] ?? 0),
+    };
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "B",
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      progression: nextProgression,
+      inventory: nextInventory,
+      adventurerRank: "B",
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      progression: nextProgression,
+      adventurerRank: "B",
+      inventory: nextInventory,
+      healthCap: nextHealthCap,
+      health: nextHealthCap,
+      focusCap: nextFocusCap,
+      focus: nextFocusCap,
+      stamina: currentCharacter.staminaCap,
+    });
+    captureLevelUpEvent(currentCharacter, nextCharacter);
+    setCharacter(nextCharacter);
+    setCompletedQuestCount((count) => Math.max(58, count));
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "Fifth rank trial prepared: B-rank, Level 40, 58 quest clears, and charter-run supplies ready.",
+    };
+  };
+
+  const unlockASRankRaidNotices = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const trial = getNextRankTrial();
+    if (trial?.id !== "rank-trial-a-s") {
+      return { ok: false, reason: "Orin Crest only sanctions these raid notices for the A -> S record." };
+    }
+    const unlockedIds = new Set(storyState.unlockedRaidQuestIds ?? []);
+    const newlyUnlocked = A_TO_S_RAID_NOTICE_IDS.filter((questId) => !unlockedIds.has(questId));
+    if (newlyUnlocked.length === 0) {
+      return {
+        ok: true,
+        reason: "Orin Crest: The black-ledger raid notices remain posted. Bring back the three proofs and the office will enter your ascent into record.",
+      };
+    }
+    setStoryState((current) => ({
+      ...current,
+      unlockedRaidQuestIds: Array.from(new Set([...(current.unlockedRaidQuestIds ?? []), ...A_TO_S_RAID_NOTICE_IDS])),
+    }));
+    return {
+      ok: true,
+      reason:
+        "Orin Crest posts three black-ledger raid notices to the board: Leviathor of the Coiling Deep, Ashen Gate Tyrant, and Bell Warden of the Hollow Choir. Bring back their proofs if you want the S-rank record opened.",
+    };
+  };
+
+  const devResetRankProgression = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const nextHealthCap = getDerivedHealthCap({
+      ...currentCharacter,
+      adventurerRank: "F",
+    });
+    const nextFocusCap = getDerivedSkillResourceCap({
+      ...currentCharacter,
+      adventurerRank: "F",
+    });
+    const nextCharacter = normalizeCharacterState({
+      ...currentCharacter,
+      adventurerRank: "F",
+      healthCap: nextHealthCap,
+      health: Math.min(currentCharacter.health, nextHealthCap),
+      focusCap: nextFocusCap,
+      focus: Math.min(currentCharacter.focus, nextFocusCap),
+    });
+    setCharacter(nextCharacter);
+    setCompletedQuestCount(0);
+    setLastRankUpOutcome(null);
+    return {
+      ok: true,
+      reason: "Rank progression reset: Adventurer Rank F, 0 quest clears, and a fresh trial record.",
+    };
+  };
+
+  const devAddSigilSlot = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const currentLimit = getBuffSlotLimit(
+      currentCharacter.adventurerRank,
+      currentCharacter.devBuffSlotLimitOverride,
+    );
+    const nextLimit = Math.min(8, currentLimit + 1);
+    if (nextLimit === currentLimit) {
+      return { ok: false, reason: "Sigil slot preview is already at the current cap (8)." };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        devBuffSlotLimitOverride: nextLimit,
+      }),
+    );
+    return { ok: true, reason: `Dev sigil slots increased: ${currentLimit} -> ${nextLimit}.` };
+  };
+
+  const devResetSigilSlots = () => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const baseLimit = getBuffSlotLimit(currentCharacter.adventurerRank);
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        devBuffSlotLimitOverride: undefined,
+      }),
+    );
+    return { ok: true, reason: `Sigil slots reset to rank default: ${baseLimit}.` };
+  };
+
   const devRestoreAdventurer = () => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
@@ -1417,7 +1919,6 @@ export const useGameState = (): GameState => {
       }),
     );
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     return { ok: true, reason: "Dev restore applied: HP, stamina, and focus refilled." };
   };
 
@@ -1455,7 +1956,6 @@ export const useGameState = (): GameState => {
     setLastTowerOutcome(null);
     setLastTowerWaveOutcome(null);
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     return { ok: true, reason: `Dev tower advance applied. Highest cleared floor is now ${nextCleared}.` };
   };
 
@@ -1807,7 +2307,6 @@ export const useGameState = (): GameState => {
     const nextSequence = (classSequenceByClass[selectedClass] ?? 0) + 1;
     const created = mockGameService.createCharacter(name, selectedClass, avatarId, nextSequence);
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     setLastTowerOutcome(null);
     setLastTowerWaveOutcome(null);
     setStoryNotification(null);
@@ -1904,10 +2403,13 @@ export const useGameState = (): GameState => {
             if (quest.id === TAMSIN_QUEST_ID) {
               return storyState.thornRunnerQuestStatus === "available";
             }
+            if (quest.combatModel === "raid") {
+              return (storyState.unlockedRaidQuestIds ?? []).includes(quest.id);
+            }
             return true;
           })
         : [],
-    [character, storyState.rescueNpcStatus, storyState.lyraQuestStatus, storyState.thornRunnerQuestStatus],
+    [character, storyState.rescueNpcStatus, storyState.lyraQuestStatus, storyState.thornRunnerQuestStatus, storyState.unlockedRaidQuestIds],
   );
 
   const startQuest = (questId: string, committedItems?: Record<ItemId, number>) => {
@@ -1943,23 +2445,35 @@ export const useGameState = (): GameState => {
     setLastQuestOutcome(null);
     setLastTowerOutcome(null);
     setLastRankUpOutcome(null);
-    return { ok: true, reason: result.reason };
+    return { ok: true, reason: result.reason, activeQuest: result.activeQuest };
   };
 
-  const claimQuest = (forcedSuccess?: boolean, summaryOverride?: string) => {
+  const clearActiveQuest = () => {
+    setActiveQuest(null);
+    return { ok: true };
+  };
+
+  const claimQuest = (
+    forcedSuccess?: boolean,
+    summaryOverride?: string,
+    itemIdsUsed?: ItemId[],
+    questSnapshotOverride?: ActiveQuestState | null,
+  ) => {
     const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
     if (currentCharacter && currentCharacter !== character) {
       setCharacter(normalizeCharacterState(currentCharacter));
     }
-    const quest = availableQuests.find((item) => item.id === activeQuest?.questId);
+    const questSnapshot = questSnapshotOverride ?? activeQuest;
+    const quest = availableQuests.find((item) => item.id === questSnapshot?.questId);
     const result = mockGameService.claimQuest({
       character: currentCharacter,
-      activeQuest,
+      activeQuest: questSnapshot,
       dailies,
       quest,
       nowMs: Date.now(),
       forcedSuccess,
       summaryOverride,
+      itemIdsUsed,
     });
 
     if (!result.ok || !result.character || !result.dailies) {
@@ -1971,7 +2485,7 @@ export const useGameState = (): GameState => {
     let claimReason = result.outcome?.summary;
     let grantedFloorIntel: number | null = null;
     let floorIntelSource = "";
-    if (result.outcome?.success && activeQuest?.questId === RESCUE_QUEST_ID) {
+    if (result.outcome?.success && questSnapshot?.questId === RESCUE_QUEST_ID) {
       const alreadyAllied = (nextCharacter.alliedNpcIds ?? []).includes(ALDRIC_ALLY_ID);
       if (!alreadyAllied) {
         const rewardWeaponId = RESCUE_REWARD_WEAPON_BY_CLASS[nextCharacter.classId];
@@ -2026,7 +2540,7 @@ export const useGameState = (): GameState => {
         variant: "guild",
       });
     }
-    if (result.outcome && !result.outcome.success && activeQuest?.questId === RESCUE_QUEST_ID) {
+    if (result.outcome && !result.outcome.success && questSnapshot?.questId === RESCUE_QUEST_ID) {
       const failureSummary =
         result.outcome.successChance < 35
           ? "You pushed into Watchtrail underprepared. The bandits stripped your momentum, and by the time you forced the lane the rescue had already failed."
@@ -2074,7 +2588,7 @@ export const useGameState = (): GameState => {
         variant: "guild",
       });
     }
-    if (result.outcome?.success && activeQuest?.questId === LYRA_QUEST_ID) {
+    if (result.outcome?.success && questSnapshot?.questId === LYRA_QUEST_ID) {
       setStoryState((current) => {
         const upserted = upsertEncounteredStoryNpc(current, {
           ...LYRA_PROFILE_BASE,
@@ -2088,7 +2602,7 @@ export const useGameState = (): GameState => {
         };
       });
     }
-    if (result.outcome?.success && activeQuest?.questId === TAMSIN_QUEST_ID) {
+    if (result.outcome?.success && questSnapshot?.questId === TAMSIN_QUEST_ID) {
       setStoryState((current) => {
         const upserted = upsertEncounteredStoryNpc(current, {
           ...TAMSIN_PROFILE_BASE,
@@ -2110,8 +2624,8 @@ export const useGameState = (): GameState => {
         };
       });
     }
-    if (result.outcome?.success && activeQuest?.questId) {
-      const questIntelFloor = FLOOR_INTEL_QUEST_UNLOCKS[activeQuest.questId];
+    if (result.outcome?.success && questSnapshot?.questId) {
+      const questIntelFloor = FLOOR_INTEL_QUEST_UNLOCKS[questSnapshot.questId];
       if (questIntelFloor && !(nextCharacter.purchasedFloorIntelNumbers ?? []).includes(questIntelFloor)) {
         nextCharacter = normalizeCharacterState({
           ...nextCharacter,
@@ -2129,7 +2643,7 @@ export const useGameState = (): GameState => {
     if (nextOutcome) {
       setLastQuestOutcome({
         ...nextOutcome,
-        questId: activeQuest?.questId,
+        questId: questSnapshot?.questId,
       });
     }
     if (result.outcome?.success) {
@@ -2137,7 +2651,7 @@ export const useGameState = (): GameState => {
       applyClimberCheckpointUpdate("quest_clear", nextCharacter);
       if (grantedFloorIntel !== null) {
         setStoryNotification({
-          id: `floor-intel-quest-${activeQuest?.questId}-${grantedFloorIntel}`,
+          id: `floor-intel-quest-${questSnapshot?.questId}-${grantedFloorIntel}`,
           title: `Floor ${grantedFloorIntel} Intel Logged`,
           message:
             floorIntelSource === "board"
@@ -2148,7 +2662,9 @@ export const useGameState = (): GameState => {
         claimReason = `${claimReason ?? "Quest cleared."} Floor ${grantedFloorIntel} intel was added to your guild ledger.`;
       }
     }
-    setActiveQuest(null);
+    if (!questSnapshotOverride || activeQuest?.questId === questSnapshot?.questId) {
+      setActiveQuest(null);
+    }
     setLastRankUpOutcome(null);
     return { ok: true, reason: claimReason };
   };
@@ -2416,15 +2932,11 @@ export const useGameState = (): GameState => {
       setCharacter(normalizeCharacterState(currentCharacter));
     }
     const floor = TOWER_FLOORS.find((item) => item.floorNumber === floorNumber);
-    const mergedCommittedItems = {
-      ...(committedItems ?? {}),
-      ...Object.fromEntries(towerPreparedItemIds.map((itemId) => [itemId, Math.max(1, committedItems?.[itemId] ?? 1)])),
-    } as Record<ItemId, number>;
     const result = mockGameService.resolveTowerWave({
       character: currentCharacter,
       floor,
       wave,
-      committedItems: mergedCommittedItems,
+      committedItems,
       liveBattle,
     });
     if (!result.ok || !result.character || !result.outcome) {
@@ -2484,14 +2996,12 @@ export const useGameState = (): GameState => {
     setLastTowerWaveOutcome(outcome);
     if (collapsedInTower) {
       setTowerStatusEffects(liveBattle?.persistentStatusEffects ?? []);
-      setTowerPreparedItemIds([]);
     } else {
       setTowerStatusEffects(
         liveBattle?.persistentStatusEffects
           ? mergeTowerStatusEffects(liveBattle.persistentStatusEffects, result.outcome?.statusEffects ?? [])
           : mergeTowerStatusEffects([], result.outcome?.statusEffects ?? []),
       );
-      setTowerPreparedItemIds([]);
     }
     return { ok: true, reason: result.outcome.summary, outcome };
   };
@@ -2516,7 +3026,6 @@ export const useGameState = (): GameState => {
     setLastTowerOutcome(result.outcome ?? null);
     setLastTowerWaveOutcome(null);
     setTowerStatusEffects([]);
-    setTowerPreparedItemIds([]);
     setLastRankUpOutcome(null);
     applyClimberCheckpointUpdate("tower_clear", result.character);
     return { ok: true, reason: result.outcome?.summary ?? `Floor ${floorNumber} finalized.` };
@@ -2773,6 +3282,43 @@ export const useGameState = (): GameState => {
     return { ok: true, reason: result.outcome.summary };
   };
 
+  const resolveRankUpCombatTrial = (
+    success: boolean,
+    committedItems?: Record<ItemId, number>,
+    finalPlayerHp?: number,
+    summaryOverride?: string,
+  ) => {
+    const currentCharacter = character ? applyTimedState(character, Date.now()) : character;
+    if (currentCharacter && currentCharacter !== character) {
+      setCharacter(normalizeCharacterState(currentCharacter));
+    }
+    const trial =
+      currentCharacter
+        ? RANK_UP_TRIALS.find((entry) => entry.fromRank === currentCharacter.adventurerRank)
+        : undefined;
+    const result = mockGameService.resolveRankUpCombatTrial({
+      character: currentCharacter,
+      completedQuestCount,
+      trial,
+      committedItems,
+      nowMs: Date.now(),
+      success,
+      finalPlayerHp: finalPlayerHp ?? currentCharacter?.health ?? 1,
+      summaryOverride,
+    });
+
+    if (!result.ok || !result.character || !result.outcome) {
+      return { ok: false, reason: result.reason ?? "Unable to resolve rank trial." };
+    }
+
+    captureLevelUpEvent(currentCharacter, result.character);
+    setCharacter(normalizeCharacterState(result.character));
+    setLastRankUpOutcome(result.outcome);
+    setLastQuestOutcome(null);
+    setLastTowerOutcome(null);
+    return { ok: true, reason: result.outcome.summary };
+  };
+
   const buyGuildItem = (
     itemId: ItemId,
     unitPrice: number,
@@ -3002,7 +3548,7 @@ export const useGameState = (): GameState => {
       return { ok: false, reason: "Buff already equipped." };
     }
 
-    const slotLimit = getBuffSlotLimit(currentCharacter.adventurerRank);
+    const slotLimit = getBuffSlotLimit(currentCharacter.adventurerRank, currentCharacter.devBuffSlotLimitOverride);
     if (equipped.length >= slotLimit) {
       return { ok: false, reason: `All buff slots are filled (${slotLimit}/${slotLimit}).` };
     }
@@ -3040,6 +3586,44 @@ export const useGameState = (): GameState => {
       }),
     );
     return { ok: true };
+  };
+
+  const setSigilAppearanceMode = (mode: "dynamic" | "default_frame") => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        sigilAppearanceMode: mode,
+      }),
+    );
+    return { ok: true, reason: mode === "default_frame" ? "Sigils will keep the default portrait frame." : "Sigils will show their shell visuals again." };
+  };
+
+  const setSigilAppearanceItem = (itemId: ItemId | null) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (itemId) {
+      const item = ITEM_BY_ID[itemId];
+      if (!item || item.category !== "buff") {
+        return { ok: false, reason: "Pick a valid sigil." };
+      }
+      if ((character.inventory?.[itemId] ?? 0) <= 0) {
+        return { ok: false, reason: "You do not own that sigil." };
+      }
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...character,
+        sigilAppearanceItemId: itemId,
+      }),
+    );
+    return {
+      ok: true,
+      reason: itemId ? "Sigil appearance pinned." : "Sigil appearance returned to equipped order.",
+    };
   };
 
   const activateBuff = (itemId: ItemId) => {
@@ -3352,30 +3936,69 @@ export const useGameState = (): GameState => {
     };
   };
 
-  const useTowerConsumableItem = (itemId: ItemId) => {
+  const addCombatPouchItem = (itemId: ItemId, amount: number | "all" = 1) => {
     if (!character) {
       return { ok: false, reason: "Create your adventurer first." };
     }
-    if (!TOWER_USABLE_CONSUMABLE_IDS.includes(itemId)) {
-      return { ok: false, reason: "This item is not usable in the tower." };
+    if (!COMBAT_POUCH_USABLE_ITEM_IDS.includes(itemId)) {
+      return { ok: false, reason: "This item cannot be packed into the combat pouch." };
     }
     const currentCharacter = applyTimedState(character, Date.now());
     const owned = currentCharacter.inventory[itemId] ?? 0;
     if (owned <= 0) {
       return { ok: false, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} not in inventory.` };
     }
+    const currentPouch = { ...(currentCharacter.combatPouchItems ?? {}) };
+    const pouchCapacity = getCombatPouchCapacity(currentCharacter);
+    const hasEntry = (currentPouch[itemId] ?? 0) > 0;
+    const currentSlots = Object.keys(currentPouch).length;
+    if (!hasEntry && currentSlots >= pouchCapacity) {
+      return { ok: false, reason: `Your combat pouch is full (${currentSlots}/${pouchCapacity}).` };
+    }
+    const requested = amount === "all" ? owned : Math.max(1, Math.floor(amount));
+    const nextCount = Math.min(owned, (currentPouch[itemId] ?? 0) + requested);
     setCharacter(
       normalizeCharacterState({
         ...currentCharacter,
-        inventory: {
-          ...(currentCharacter.inventory ?? {}),
-          [itemId]: Math.max(0, owned - 1),
+        combatPouchItems: {
+          ...currentPouch,
+          [itemId]: nextCount,
         },
       }),
     );
-    setTowerPreparedItemIds((current) => (current.includes(itemId) ? current : [...current, itemId]));
-    setTowerStatusEffects((current) => clearTowerStatusesForConsumable(current, itemId));
-    return { ok: true, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} is ready for your next tower exchange.` };
+    return { ok: true, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} pouch stack is now ${nextCount}.` };
+  };
+
+  const removeCombatPouchItem = (itemId: ItemId, amount: number | "all" = 1) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    const currentCharacter = applyTimedState(character, Date.now());
+    const currentPouch = { ...(currentCharacter.combatPouchItems ?? {}) };
+    const currentCount = currentPouch[itemId] ?? 0;
+    if (currentCount <= 0) {
+      return { ok: false, reason: `${ITEM_BY_ID[itemId]?.name ?? itemId} is not in your combat pouch.` };
+    }
+    const removeCount = amount === "all" ? currentCount : Math.max(1, Math.floor(amount));
+    const nextCount = Math.max(0, currentCount - removeCount);
+    if (nextCount <= 0) {
+      delete currentPouch[itemId];
+    } else {
+      currentPouch[itemId] = nextCount;
+    }
+    setCharacter(
+      normalizeCharacterState({
+        ...currentCharacter,
+        combatPouchItems: currentPouch,
+      }),
+    );
+    return {
+      ok: true,
+      reason:
+        nextCount > 0
+          ? `${ITEM_BY_ID[itemId]?.name ?? itemId} pouch stack reduced to ${nextCount}.`
+          : `${ITEM_BY_ID[itemId]?.name ?? itemId} was removed from your combat pouch.`,
+    };
   };
 
   const dismissStoryNotification = () => setStoryNotification(null);
@@ -4057,7 +4680,8 @@ export const useGameState = (): GameState => {
     lastTowerOutcome,
     lastTowerWaveOutcome,
     towerStatusEffects,
-    towerPreparedItemIds,
+    combatPouchItems: character?.combatPouchItems ?? {},
+    combatPouchCapacity: character ? getCombatPouchCapacity(character) : DEFAULT_COMBAT_POUCH_CAPACITY,
     lastRankUpOutcome,
     levelUpEvent,
     levelDownEvent,
@@ -4079,6 +4703,16 @@ export const useGameState = (): GameState => {
     resetGame,
     resetTowerProgress,
     devIncreaseLevel,
+    devAddLevels,
+    devSetLevel,
+    devPrepareFirstRankTrial,
+    devPrepareSecondRankTrial,
+    devPrepareThirdRankTrial,
+    devPrepareFourthRankTrial,
+    devPrepareFifthRankTrial,
+    devResetRankProgression,
+    devAddSigilSlot,
+    devResetSigilSlots,
     devRestoreAdventurer,
     devFractureAdventurer,
     devAdvanceTowerFloor,
@@ -4094,6 +4728,7 @@ export const useGameState = (): GameState => {
     devSetAffinity,
     devSetupWarriorBattlePreset,
     devPreviewQuestBoardContracts,
+    unlockASRankRaidNotices,
     getQuestSuccessChance,
     getQuestAccess,
     getTowerSuccessChance,
@@ -4111,6 +4746,8 @@ export const useGameState = (): GameState => {
     unequipWeapon,
     equipBuff,
     unequipBuff,
+    setSigilAppearanceMode,
+    setSigilAppearanceItem,
     equipTitle,
     unequipTitle,
     activateBuff,
@@ -4120,14 +4757,17 @@ export const useGameState = (): GameState => {
     useSkillResourceItem,
     useHealthRecoveryItem,
     useQuestRushItem,
-    useTowerConsumableItem,
+    addCombatPouchItem,
+    removeCombatPouchItem,
     startQuest,
+    clearActiveQuest,
     claimQuest,
     resolveLyraQuestChoice,
     conquerTowerFloor,
     resolveTowerWave,
     finalizeTowerFloor,
     attemptRankUp,
+    resolveRankUpCombatTrial,
     clearLevelUpEvent,
     clearLevelDownEvent,
     dismissStoryNotification,

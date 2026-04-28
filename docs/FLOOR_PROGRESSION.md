@@ -8,6 +8,7 @@ This is the practical progression companion to:
 - `docs/MAIN_STORY_TOWER_OF_SEVEN_HEAVENS.md`
 - `docs/SEQUENTIAL_CONTENT_PLAN.md`
 - `docs/TOWER_BATTLE_PHASES.md`
+- `docs/FLOOR_LOCAL_WORLD_REWORK.md`
 
 ## Core Rule
 
@@ -39,14 +40,15 @@ If a floor does not clearly advance those six things, it is not ready.
   - `Level 1+`
 - Story role:
   - first real climb
-  - establish the guild, the tower mood, and early recurring NPC threads
+  - establish the guild floor, the tower mood, and early recurring NPC threads
 - Mechanical lesson:
   - basic counters
   - visible attrition
   - wave structure
   - first boss trophy
 - Support loop:
-  - F-rank board quests
+  - guild services on Floor 1
+  - Floor 1 local jobs
   - Bran store access
   - Lyra conditional tower encounter
   - low-cost guild intel
@@ -74,7 +76,7 @@ If a floor does not clearly advance those six things, it is not ready.
   - recovery denial
   - longer prep decisions
 - Support loop:
-  - E-rank board work
+  - Floor 2 local work
   - `Briar Resin`
   - `Thorn Salve`
   - low-cost early E-rank guild intel
@@ -98,7 +100,7 @@ Before we call Floor 2 complete, we need these in order:
    - the game should explain why Thorn Corridor matters in the climb
 
 2. `Support loop`
-   - board quests should clearly feed:
+   - floor-local work should clearly feed:
      - `Briar Resin`
      - `Thorn Salve`
      - recovery stock

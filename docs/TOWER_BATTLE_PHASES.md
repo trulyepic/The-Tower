@@ -1,17 +1,16 @@
 # Tower Battle Phases (Roadmap)
 
 This file tracks the phased battle system for tower floors.  
-Guild Quest Board and Store remain active and are part of tower prep.
+Current implementation still leans on guild-side prep, but the long-term direction is the floor-local model in [FLOOR_LOCAL_WORLD_REWORK.md](/Users/kin/web-rpg/docs/FLOOR_LOCAL_WORLD_REWORK.md).
 
 ## Implemented Base
 
 - [x] 10-floor tower data model
 - [x] Sequential floor progression
-- [x] Floor level requirements
-- [x] Item readiness effect on floor success
 - [x] Floor enemy lanes (normal, sub-boss, main boss) data
-- [x] Weapon level requirement + 25% proficiency penalty when under-leveled
-- [x] Sigil loadout + manual sigil activation for tower prep (timed effects)
+- [x] Weapon level requirement + gradual proficiency scaling when under-leveled
+- [x] Sigil loadout + defensive armor/passive identity
+- [x] Shared live turn-based combat runtime for tower encounters
 - [x] Tower tab in Guild
 
 ## Next: Floor Battle Phases
@@ -24,17 +23,18 @@ Guild Quest Board and Store remain active and are part of tower prep.
 - [x] Phase 2: Normal Enemy Wave (UI staging)
   - [x] Normal wave content now appears only after the floor-entry flow
   - [x] Wave sections now use locked progression buttons: `Normal -> Sub-Boss -> Main Boss`
-  - [x] Each wave now has its own scoped mechanic preview, recommended supplies, and drop pool panel
+  - [x] Each wave now has its own scoped mechanic preview and drop pool panel
   - [x] Conquering a wave now records a per-wave mechanic result report (countered vs triggered)
-  - [x] Conquering a wave now applies immediate HP + stamina + committed-item consumption changes
+  - [x] Conquering a wave now applies immediate HP + stamina outcome changes through the live battle result
   - [x] Enemy cards + drops shown in wave stage, not immediately on first view
-  - [x] Floor 1 now supports a first live-response battle layer:
+  - [x] Current live battle layer now supports:
     - [x] telegraphed mechanics
     - [x] position choice
     - [x] enemy-specific position advantage / blocked-lane rules
-    - [x] brace response
-    - [x] committed item timing
-    - [x] class-skill response hook
+    - [x] guard
+    - [x] combat pouch item timing
+    - [x] class skills
+    - [x] selective pressure meters for standout enemies
 
 - [x] Phase 3-4 runtime change
   - [x] Floor rewards/progression now occur on explicit floor finalization after all wave sections are cleared
@@ -57,11 +57,17 @@ Guild Quest Board and Store remain active and are part of tower prep.
 
 - [ ] Multiple main bosses on a single floor
 - [ ] Boss mechanics by class/weapon type
-- [ ] Extend the live-response battle layer beyond Floor 1
+- [x] Extend the shared live battle layer beyond Floor 1
+- [ ] Combat interaction expansion (`docs/COMBAT_INTERACTION_EXPANSION.md`)
+  - [ ] Slice 1: stronger telegraphs and enemy intent reads
+  - [ ] Slice 2: selective pressure meters on standout fights
+  - [ ] Slice 3: boss/duelist-specific interrupt frameworks
+  - [ ] Slice 4: earned finisher follow-ups
+  - [ ] Slice 5: battlefield interactions
+  - [ ] Slice 6: optional momentum layer
 - [ ] Add seal-driven live combat reactions
 - [ ] Add engraving-driven live combat modifiers
 - [ ] Floor modifiers (hazards, buffs, curses)
-- [ ] Consumable loadout selection before run
 - [ ] Team mode (optional far-future direction)
 - [x] Recurring/conditional floor encounter events framework
   - [x] Floor 1 conditional in-run NPC interaction + temporary run bonus
@@ -99,7 +105,6 @@ Goal: make Floor 1 useful as an early farm lane while tightly coupling quest far
   - `Healing Herb x2` at `58%`
   - `Health Potion x1` at `32%`
   - `Rope x1` at `45%`
-  - `Torch x1` at `40%`
   - `Antitoxin Vial x1` at `28%`
   - `Guard Tonic x1` at `22%`
   - `Training Shortsword x1` at `4.5%`
@@ -110,13 +115,13 @@ Reward teaching intent:
 - Early clears should mostly reinforce the Floor 1 loop:
   - recovery (`Healing Herb`, `Health Potion`)
   - visible counters (`Antitoxin Vial`, `Guard Tonic`)
-  - traversal/utilities (`Rope`, `Torch`)
+  - a little utility support (`Rope`)
   - basic crafting signal (`Iron Ore`)
   - exciting but low-rate starter weapon upgrades
   - one meaningful boss trophy (`Warden of Sparks Heart`)
 - High-tier chase drops have been removed from Floor 1 so the reward table teaches fundamentals before late-game rarity fantasies.
 - Floor 1 remnants should also introduce the future structure:
-  - `Sigils` as the timed player layer
+  - `Sigils` as defensive gear with passive armor and visual identity
   - `Seals` as modular inserts placed into Sigils later
   - `Engravings` as permanent weapon-bound upgrades fed by stronger remnants
 
@@ -134,12 +139,6 @@ Goal: make the second floor teach restraint, anti-attrition preparation, and cor
 - New supply family:
   - `Briar Resin`
   - `Thorn Salve`
-- Recommended prep:
-  - `Healing Herb x3`
-  - `Rope x1`
-  - `Torch x1`
-  - `Thorn Salve x2`
-  - `Guard Tonic x1`
 - Enemy roster:
   - Normal:
     - `Thorn Viper`
@@ -157,7 +156,7 @@ Goal: make the second floor teach restraint, anti-attrition preparation, and cor
   - `Briar Resin`
   - `Thorn Salve`
   - recovery/counter restocks
-  - `Embershard Sigil`
+  - `Thornward Seal`
   - first future-facing `Seal` ingredient hooks through corridor remnants
   - rare class weapon chase drops:
     - `Briarcleaver`
@@ -170,7 +169,7 @@ Reference:
 
 ## Quest <-> Tower Coupling (Current Rules)
 
-- Tower floors now read from the player's **prepared tower supplies** instead of per-wave recommended supply commit cards.
+- Tower fights now read from the player's `Combat Pouch` and equipped loadout instead of pre-run commit panels.
 - Counter-supplies now directly mitigate monster mechanics (poison/overcharge/sweep/shock effects).
 - Floors should teach through lore, weakness notes, and intel rather than visible recommended-supplies panels.
 - Enemy mechanics intel now has **discovery gating**:

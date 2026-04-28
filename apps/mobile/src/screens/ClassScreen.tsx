@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Image, ImageBackground, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
+import { AdventurerPortrait } from "../components/AdventurerPortrait";
 import { GameItemIcon } from "../components/GameItemIcon";
 import { ABILITY_BY_ID } from "../data/abilities";
 import { HUD_ASSETS } from "../data/hudAssets";
 import { TITLE_BY_ID } from "../data/titles";
-import { getAvatarSprite } from "../data/uiSprites";
 import {
   getAbilityComboProfile,
   getAbilityCooldownRemainingSeconds,
@@ -393,9 +393,9 @@ export const ClassScreen = ({
             style={styles.heroGradient}
           />
           <View style={styles.heroHeader}>
-            <ImageBackground source={HUD_ASSETS.slots.legendary} style={styles.heroPortraitFrame} resizeMode="contain">
-              <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.heroPortrait} resizeMode="cover" />
-            </ImageBackground>
+            <View style={styles.heroPortraitFrame}>
+              <AdventurerPortrait character={character} size={68} />
+            </View>
             <View style={styles.heroMeta}>
               <Text style={styles.heroName}>{activeClass?.name ?? "Unknown"}</Text>
               <Text style={styles.heroSub}>Level {character.progression.level} • {activeClass?.statFocus ?? "Core"}</Text>
@@ -412,6 +412,7 @@ export const ClassScreen = ({
             <MetricChip icon="run-fast" value={`SPD ${combat.speed}`} />
           </View>
           <View style={styles.metricRow}>
+            <MetricChip icon="shield-half-full" value={`ARM ${combat.armor}`} />
             <MetricChip icon="timer-sand" value={abilityCooldown > 0 ? `${classAbility.name} CD ${abilityCooldown}s` : `${classAbility.name} Ready`} />
             <MetricChip icon="lightning-bolt" value={`Combo ${comboProfile.stacks}`} />
           </View>

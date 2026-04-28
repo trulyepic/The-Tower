@@ -11,11 +11,11 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     staminaCost: 4,
     baseSuccessChance: 52,
     difficulty: 3,
-    requiredItems: [
-      { itemId: "torch", needed: 1 },
-      { itemId: "rope", needed: 1 },
+    requiredItems: [],
+    recommendedItems: [
+      { itemId: "healing-herb", needed: 1 },
+      { itemId: "guard-tonic", needed: 1 },
     ],
-    recommendedItems: [{ itemId: "healing-herb", needed: 2 }],
     reward: { xp: 80, masteryXp: 30, gold: 80 },
   },
   {
@@ -27,11 +27,11 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     staminaCost: 5,
     baseSuccessChance: 48,
     difficulty: 3,
-    requiredItems: [
-      { itemId: "torch", needed: 1 },
-      { itemId: "lockpick", needed: 1 },
+    requiredItems: [],
+    recommendedItems: [
+      { itemId: "antitoxin-vial", needed: 1 },
+      { itemId: "ward-charm", needed: 1 },
     ],
-    recommendedItems: [{ itemId: "ward-charm", needed: 1 }],
     reward: { xp: 110, masteryXp: 44, gold: 120 },
   },
   {
@@ -41,13 +41,13 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     minLevel: getRankUpMinLevel("D"),
     minQuestClears: 26,
     staminaCost: 6,
-    baseSuccessChance: 43,
-    difficulty: 4,
-    requiredItems: [
-      { itemId: "lockpick", needed: 1 },
-      { itemId: "ward-charm", needed: 1 },
+    baseSuccessChance: 38,
+    difficulty: 5,
+    requiredItems: [],
+    recommendedItems: [
+      { itemId: "focus-tonic", needed: 1 },
+      { itemId: "health-potion", needed: 1 },
     ],
-    recommendedItems: [{ itemId: "focus-tonic", needed: 1 }],
     reward: { xp: 150, masteryXp: 58, gold: 170 },
   },
   {
@@ -57,13 +57,14 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     minLevel: getRankUpMinLevel("C"),
     minQuestClears: 40,
     staminaCost: 7,
-    baseSuccessChance: 39,
-    difficulty: 4,
-    requiredItems: [
+    baseSuccessChance: 34,
+    difficulty: 5,
+    requiredItems: [],
+    recommendedItems: [
+      { itemId: "focus-tonic", needed: 2 },
+      { itemId: "health-potion", needed: 1 },
       { itemId: "ward-charm", needed: 1 },
-      { itemId: "ancient-core", needed: 1 },
     ],
-    recommendedItems: [{ itemId: "focus-tonic", needed: 2 }],
     reward: { xp: 190, masteryXp: 72, gold: 230 },
   },
   {
@@ -92,8 +93,9 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     baseSuccessChance: 31,
     difficulty: 5,
     requiredItems: [
-      { itemId: "ancient-core", needed: 2 },
-      { itemId: "tower-crest-fragment", needed: 1 },
+      { itemId: "proof-leviathor-scale-seal", needed: 1 },
+      { itemId: "proof-gate-tyrant-heartplate", needed: 1 },
+      { itemId: "proof-hollow-bell-core", needed: 1 },
     ],
     recommendedItems: [{ itemId: "focus-tonic", needed: 2 }],
     reward: { xp: 320, masteryXp: 108, gold: 420 },
@@ -107,6 +109,8 @@ export const RANK_UP_TRIALS: RankUpTrialDefinition[] = [
     staminaCost: 10,
     baseSuccessChance: 27,
     difficulty: 5,
+    // Temporary placeholder requirements. The intended end state is a
+    // harsher proof-based high-rank raid promotion; see docs/HIGH_RANK_RAID_SYSTEM.md.
     requiredItems: [
       { itemId: "ancient-core", needed: 2 },
       { itemId: "tower-crest-fragment", needed: 2 },

@@ -4,17 +4,23 @@ This is the master implementation tracker for the project.
 Use this file for non-tower planning, and use `docs/TOWER_BATTLE_PHASES.md` for tower combat-phase details.
 For actual playable content order, use `docs/SEQUENTIAL_CONTENT_PLAN.md`.
 For floor-by-floor build intent, use `docs/FLOOR_PROGRESSION.md`.
+For the floor-local world migration, use `docs/FLOOR_LOCAL_WORLD_REWORK.md`.
+For the floor-hub UI build order, use `docs/FLOOR_HUB_UI_TODO.md`.
 For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
+For rank advancement design, use `docs/RANK_PROGRESSION_REWORK.md`.
+For adventurer-vs-adventurer duel parity, use `docs/ADVENTURER_DUEL_PARITY_PLAN.md`.
+For live combat interaction expansion, use `docs/COMBAT_INTERACTION_EXPANSION.md`.
+For top-end raid promotion design, use `docs/HIGH_RANK_RAID_SYSTEM.md`.
+For parallel workstream ownership and review lanes, use `docs/WORKSTREAM_AGENT_MODEL.md`.
 
 ## Current Direction
 
 - Main goal: players climb and conquer a multi-floor tower.
 - Canon main story selected: `docs/MAIN_STORY_TOWER_OF_SEVEN_HEAVENS.md` (Floors 1-50, 3 endings).
-- Guild remains core support loop:
-  - Quest Board for farming items and progression resources
-  - Store for buying key supplies and weapons (tab + Bran interaction)
-  - Tower tab for floor advancement
-  - NPC Hall for rank administration and guild services
+- Guild remains core support loop, but it should be re-homed into `Floor 1` over time:
+  - Floor 1 guild services for store, rank administration, revival, and black-ledger notices
+  - floor-local work replacing the long-term role of the detached global Quest Board
+  - tower progression still handled through per-floor advancement
 - Class identity matters (current classes + future advanced jobs and additional classes).
 
 ## Game UI Guardrail
@@ -36,7 +42,7 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [x] objective journal
   - [x] story update dialog integration
 - [x] Inventory with equip flow
-- [x] Weapon level requirements + proficiency penalty (25% under required level)
+- [x] Weapon level requirements + gradual proficiency scaling up to full effectiveness at the required level
 - [x] Initial tower system with 10 floors and sequential progression
 - [x] Local persistence of game state
 - [x] Affinity system baseline:
@@ -65,6 +71,8 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
 - [x] Quest system v1 spec + baseline implementation (`docs/QUEST_SYSTEM_SPEC.md`)
 - [ ] Quest system rework spine (`docs/QUEST_SYSTEM_REWORK.md`)
   - [ ] board structure cleanup
+  - [ ] floor-local work migration away from the detached global board
+  - [ ] shared floor-hub UI shell (`docs/FLOOR_HUB_UI_TODO.md`)
   - [ ] shared quest state cleanup
   - [ ] journal rewrite
   - [ ] reusable time-sensitive quest runtime
@@ -76,7 +84,7 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [ ] move future `hunt` contracts onto named-target live combat
   - [ ] move future `wanted` contracts onto named-target live combat
 - [x] Placeholder future combat contracts documented (`docs/QUEST_PLACEHOLDER_COMBAT_CONTRACTS.md`)
-- [x] Sigil system v1: equip/unequip, timed effects, tower activation flow, active indicators
+- [x] Sigil system v1: equip/unequip, passive armor, avatar-shell identity, rarity-based bonus rules, active indicators
 - [x] Sigil control v1.1: manual deactivate/resume with saved remaining timer, visible sigil effects in Camp/Combat/Tower
 - [ ] Seals system:
   - [ ] inserts equipped into Sigils
@@ -84,8 +92,15 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [ ] battle-mechanic-focused effects and counters
 - [ ] Engravings system:
   - [ ] permanent weapon-bound enhancement layer
-  - [ ] engraving rules by weapon grade
+  - [x] engraving rules by weapon grade documented in [WEAPON_ENGRAVINGS_SYSTEM.md](/Users/kin/web-rpg/docs/WEAPON_ENGRAVINGS_SYSTEM.md)
   - [ ] engraving material + forge pipeline
+- [ ] High-rank raid system (`docs/HIGH_RANK_RAID_SYSTEM.md`)
+  - [ ] define raid notice / unlock flow
+  - [ ] define fixed raid-proof rewards
+  - [ ] define first 3 `A -> S` proof items
+  - [ ] define first playable raid-class hunt encounter
+  - [ ] define how `S -> SS` escalates beyond `A -> S`
+  - [ ] bring `Ashen Gate Tyrant` and `Bell Warden of the Hollow Choir` up to Leviathor's current live-raid standard
 - [ ] Monster Remnants system (`docs/MONSTER_REMNANTS_SYSTEM.md`)
   - [x] basic Bran workshop crafting v1
   - [x] player-facing remnants naming
@@ -94,8 +109,16 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [x] floor-by-floor remnant families
   - [ ] legendary weaponline ingredient support
 - [ ] Tower battle phase flow UI and logic (see tower phases doc)
-  - [x] Floor 1 live-response battle layer (`docs/LIVE_BATTLE_SYSTEM.md`)
-  - [ ] extend live-response combat to later floors
+  - [x] Shared live combat runtime across tower / live quest / rank (`docs/LIVE_BATTLE_SYSTEM.md`)
+  - [x] Shared combat core with source-specific aftermath for tower / live quest / rank
+  - [ ] continue extending authored live-combat identity to later floors and standout enemies
+  - [ ] add combat interaction expansion slices (`docs/COMBAT_INTERACTION_EXPANSION.md`)
+    - [ ] reaction prompts, only if a future prototype feels more cohesive than the removed baseline
+    - [ ] stronger telegraphs and enemy intent reads
+    - [ ] selective pressure meters on standout enemies
+    - [ ] enemy interrupt windows
+    - [ ] earned finisher moments
+    - [ ] stronger boss interaction identity
 - [ ] Guild floor-intel system through Floor 55
   - [x] store intel ledger baseline
   - [x] tower UI hide/reveal pass for weakness notes, optional drops, and support aids
@@ -179,6 +202,22 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [x] A -> S
   - [x] S -> SS
 - [ ] Define per-rank trial "special quest" identity (theme, enemies, mechanics, rewards).
+  - [x] Convert `F -> E` into a live combat threshold clash.
+  - [x] Convert `E -> D` into a sanctioned guild duel against Riven Hale with a second phase.
+  - [x] Convert `D -> C` into `Execution Record`, a field-audit assessment with a redline escalation and audit-pressure meter, where the target must be beaten cleanly enough to satisfy the office ledger.
+  - [x] Convert `C -> B` into `Field Command`, a field-unit assessment with support threats feeding pressure into a named B-rank captain.
+  - [x] Convert `B -> A` into `High Ascent Charter`, a sustained A-rank marshal assessment with one continuous elite opponent, multi-phase pressure, and a stricter charter review.
+  - [ ] Redesign `A -> S` around fixed high-rank raid proofs instead of generic item requirements.
+  - [ ] Redesign `S -> SS` around harsher high-rank raid proofs instead of generic item requirements.
+  - [x] Make the `E -> D` duel's second phase read through a health-color shift rather than fracture framing.
+- [ ] Keep named-duel wording explicitly sanctioned and nonlethal in all rank copy.
+- [ ] Add reusable adventurer opponent license dossiers for rank trials.
+  - [ ] use them for named duelists and named assessment targets
+  - [ ] show `ID`, `Rank`, `Level`, `Weapon`, `Sigils`, `Title`, `Skill`, `Passive`, and `Pouch`
+  - [ ] surface the dossier as a license-style duel card, not a flat stat dump
+- [ ] Add named-duel follow-up beats so the opponent remains part of the guild hall story after the promotion.
+  - [x] Track Riven Hale as a recurring hall duelist in docs.
+  - [ ] Add Nyra Sol continuity lines that reference the duel result in later rank talk.
 - [ ] Add rank-up failure consequences and retry policy (cooldown/stamina/item loss).
 - [x] Add UI explainers so players can see exact requirements before starting a trial.
 - [x] Route rank-up through examiner NPC interactions (instead of standalone rank-tab flow).
@@ -186,12 +225,52 @@ For title rarity consistency, use `docs/TITLE_RARITY_RULES.md`.
   - [ ] damage-check trials vs higher-rank adventurer NPCs
   - [ ] timed performance objectives
   - [ ] class-path specific assessment goals
+- [ ] Adventurer duel parity follow-up:
+  - [ ] true single-opponent phased duel as the next target
+  - [x] phase-led health presentation for named duelists
+  - [ ] enemy pouch use parity
+  - [ ] sigil parity
+  - [ ] archetype-based duel AI
+  - [ ] distinct second-phase escalation
+  - [x] first selective special-attack pressure meter under enemy HP (`Riven Hale` phase two)
+  - [x] extend the pressure-meter system to one live quest elite after Riven proves out
+  - [ ] extend the pressure-meter system to one tower boss or sub-boss after the current rollout is verified in tower play
+- [ ] Next concrete rank-trial slices after `E -> D`:
+  - [x] `D -> C` - `Execution Record`
+    - clean results over simple survival
+    - one named assessment target with stricter discipline
+  - [x] `C -> B` - `Field Command`
+    - multiple active threats
+    - lane control and pace control under pressure
+  - [x] `B -> A` - `High Ascent Charter`
+    - elite-grade responsibility
+    - long-form single-witness assessment with stronger punishment for bad reads
 - [ ] Tie rank-up unlocks to systems:
   - [ ] Sigil slot increases
   - [ ] Title slot increases
   - [ ] New quest visibility tiers
   - [ ] Tower access expectations
 - [ ] Add tests for rank gate logic and rank transition integrity.
+- [x] Create dedicated rank progression design spine in [RANK_PROGRESSION_REWORK.md](/Users/kin/web-rpg/docs/RANK_PROGRESSION_REWORK.md).
+- [ ] Ongoing rule: whenever we add or revise a promotion, update its live combat encounter, examiner copy, and prep UI together.
+- [ ] Ongoing rule: whenever we add or revise live combat, keep the shared combat pouch updated too.
+- [ ] Ongoing rule: rank-duel changes should be routed through the duel-parity plan before code changes land.
+- [ ] Ongoing rule: whenever we add or revise live combat, review whether that enemy or floor should also gain:
+  - [ ] a clearer telegraph
+  - [ ] a reaction/interrupt moment
+  - [ ] a stronger positional puzzle
+- [ ] Ongoing rule: named duelists and standout enemies should prefer icon-first build/effect presentation over text-heavy summaries.
+- [ ] Add combat pouch progression:
+  - [ ] level-based pouch size increases
+  - [ ] NPC-based pouch upgrade path
+  - [ ] clearer pouch management/readiness messaging across inventory and combat
+- [ ] Parallel workstream model:
+  - [ ] combat/rank lane
+  - [ ] story/NPC lane
+  - [ ] progression/economy lane
+  - [ ] review lane A for gameplay consistency
+  - [ ] review lane B for docs/roadmap sync
+  - [ ] require two review passes on substantive combat changes
 
 ## Content Expansion
 

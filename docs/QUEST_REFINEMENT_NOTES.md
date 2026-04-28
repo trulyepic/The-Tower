@@ -45,7 +45,7 @@ Final quest chance is deterministic with explicit parts.
   - `optional = round(optionalReadiness * 10)` (small bonus only)
 - `weapon`:
   - class-valid weapon rarity + proficiency contribution
-  - proficiency behavior: 100% at required level, otherwise 25%
+  - proficiency behavior: scales upward as the player approaches the required level, reaching 100% at the requirement
 - `buff`:
   - active buff bonus to success
 

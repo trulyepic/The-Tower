@@ -4,12 +4,15 @@ import { useEffect, useState } from "react";
 import { Image, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
+import { AdventurerPortrait } from "../components/AdventurerPortrait";
 import { GameItemIcon } from "../components/GameItemIcon";
 import { HealthMeter } from "../components/HealthMeter";
 import { IconTooltip } from "../components/IconTooltip";
 import { ProgressBar } from "../components/ProgressBar";
 import { StatGlyphBars } from "../components/StatGlyphBars";
 import { StaminaMeter } from "../components/StaminaMeter";
+import { WeaponRecordPanel } from "../components/WeaponRecordPanel";
+import { EquippedWeaponCard } from "../components/EquippedWeaponCard";
 import { ABILITY_BY_ID } from "../data/abilities";
 import { HUD_ASSETS } from "../data/hudAssets";
 import { ITEM_BY_ID } from "../data/items";
@@ -33,7 +36,7 @@ import {
 import { getBuffRemainingSeconds, getBuffSlotLimit, getEquippedBuffItems, isBuffActive } from "../lib/buffs";
 import { getCharacterCombatStats, getScaledCoreAttributes } from "../lib/combat";
 import { getTitleSlotLimit } from "../lib/titles";
-import { BaseClassDefinition, CharacterState, DailyTask, HelpfulNpcAlly } from "../types/game";
+import { BaseClassDefinition, CharacterState, DailyTask, HelpfulNpcAlly, ItemRarity } from "../types/game";
 import { colors } from "../theme/colors";
 
 interface HomeScreenProps {
@@ -49,6 +52,7 @@ interface HomeScreenProps {
   onDeactivateClassAbility: (abilityId?: string) => { ok: boolean; reason?: string };
   onSetActiveClassSkill: (abilityId: string) => { ok: boolean; reason?: string };
   onTogglePassiveAbility: (abilityId: string) => { ok: boolean; reason?: string };
+  onOpenSigilInventory?: () => void;
 }
 
 const STAMINA_REGEN_INTERVAL_MS = 5 * 60 * 1000;
@@ -58,6 +62,13 @@ const titleRarityThemeMap = {
   epic: { border: "#9a6de0", bg: "rgba(94, 64, 145, 0.37)", text: "#d7b2ff" },
   legendary: { border: "#cb8e44", bg: "rgba(126, 76, 28, 0.42)", text: "#ffd08c" },
 } as const;
+
+const rarityColorMap: Record<ItemRarity, string> = {
+  common: "#b9ac92",
+  rare: "#ff78c9",
+  epic: "#c48dff",
+  legendary: "#ffbf6a",
+};
 
 const getAffinityTitle = (affinity: number): string => {
   if (affinity >= 35) return "Aetherbound Grace";
@@ -123,6 +134,7 @@ export const HomeScreen = ({
   onDeactivateClassAbility,
   onSetActiveClassSkill,
   onTogglePassiveAbility,
+  onOpenSigilInventory,
 }: HomeScreenProps) => {
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"ok" | "error">("ok");
@@ -172,7 +184,7 @@ export const HomeScreen = ({
         );
   const regenMinutes = Math.floor(regenRemainingSeconds / 60);
   const regenSeconds = regenRemainingSeconds % 60;
-  const buffSlotLimit = getBuffSlotLimit(character.adventurerRank);
+  const buffSlotLimit = getBuffSlotLimit(character.adventurerRank, character.devBuffSlotLimitOverride);
   const equippedBuffs = getEquippedBuffItems(character);
   const activeBuffs = equippedBuffs.filter((buff) => isBuffActive(character, buff.id, pageNowMs));
   const titleSlotLimit = getTitleSlotLimit(character.progression.level);
@@ -307,11 +319,7 @@ export const HomeScreen = ({
 
             <View style={styles.licenseBody}>
               <View style={styles.avatar}>
-                <Image
-                  source={getAvatarSprite(character.avatarId, character.classId)}
-                  style={styles.avatarPortrait}
-                  resizeMode="cover"
-                />
+                <AdventurerPortrait character={character} size={86} />
               </View>
               <View style={styles.heroText}>
                 <Text style={styles.heroName}>{character.name}</Text>
@@ -344,8 +352,31 @@ export const HomeScreen = ({
                   <Text style={styles.licenseSectionTitle}>Weapon</Text>
                   <View style={styles.licenseWeaponMetaRow}>
                     {equippedWeapon ? (
-                      <View style={styles.licenseWeaponGradePill}>
-                        <Text style={styles.licenseWeaponGradeText}>{equippedWeapon.rarity.toUpperCase()}</Text>
+                      <View
+                        style={[
+                          styles.licenseWeaponGradePill,
+                          {
+                            backgroundColor:
+                              equippedWeapon.rarity === "legendary"
+                                ? "rgba(86, 62, 16, 0.92)"
+                                : equippedWeapon.rarity === "epic"
+                                  ? "rgba(72, 37, 109, 0.9)"
+                                  : equippedWeapon.rarity === "rare"
+                                    ? "rgba(30, 64, 108, 0.9)"
+                                    : "rgba(67, 67, 74, 0.9)",
+                            borderColor: rarityColorMap[equippedWeapon.rarity],
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.licenseWeaponGradeText,
+                            { color: rarityColorMap[equippedWeapon.rarity] },
+                            equippedWeapon.rarity === "legendary" ? styles.legendaryTextGlow : null,
+                          ]}
+                        >
+                          {equippedWeapon.rarity.toUpperCase()}
+                        </Text>
                       </View>
                     ) : null}
                     {equippedWeapon ? (
@@ -353,68 +384,41 @@ export const HomeScreen = ({
                     ) : null}
                   </View>
                 </View>
-                <Pressable
-                  disabled={!equippedWeapon}
-                  onPress={() => setWeaponDetailsOpen(true)}
-                  style={[styles.mainWeaponCard, styles.licenseWeaponCard]}
-                >
-                  <View style={styles.mainWeaponIconWrap}>
-                    {equippedWeapon ? (
-                      equippedWeapon.image ? (
-                        <Image source={equippedWeapon.image} style={styles.mainWeaponImage} resizeMode="contain" />
-                      ) : (
-                        <GameItemIcon itemId={equippedWeapon.id} size={54} />
-                      )
-                    ) : (
+                {equippedWeapon ? (
+                  <EquippedWeaponCard
+                    item={equippedWeapon}
+                    proficiencyPercent={combat.weaponProficiencyPercent}
+                    effectiveAttack={weaponBonusAttack}
+                    effectiveCrit={weaponBonusCrit}
+                    effectiveSpeed={weaponBonusSpeed}
+                    onPress={() => setWeaponDetailsOpen(true)}
+                    onUnequip={handleUnequip}
+                  />
+                ) : (
+                  <Pressable
+                    disabled
+                    style={[
+                      styles.mainWeaponCard,
+                      styles.licenseWeaponCard,
+                    ]}
+                  >
+                    <View style={styles.mainWeaponIconWrap}>
                       <View style={styles.emptyWeaponSlotLarge} />
-                    )}
-                  </View>
-                  <View style={styles.mainWeaponText}>
-                    <Text
-                      style={styles.mainWeaponName}
-                      numberOfLines={2}
-                      ellipsizeMode="tail"
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.82}
-                    >
-                      {equippedWeapon ? equippedWeapon.name : "No Weapon Equipped"}
-                    </Text>
-                    <Text style={styles.mainWeaponMeta}>
-                      {equippedWeapon
-                        ? `${combat.weaponProficiencyPercent}% proficiency`
-                        : "Visit Guild Store to buy one"}
-                    </Text>
-                    {equippedWeapon ? (
-                      <View style={styles.weaponBonusRow}>
-                        <View style={styles.weaponBonusChip}>
-                          <GameItemIcon itemId="weapon-warrior-training-blade" size={12} />
-                          <Text style={styles.weaponBonusText}>+{weaponBonusAttack} ATK</Text>
-                        </View>
-                        <View style={styles.weaponBonusChip}>
-                          <GameItemIcon itemId="buff-arcane-sigil" size={12} />
-                          <Text style={styles.weaponBonusText}>+{weaponBonusCrit}% CRIT</Text>
-                        </View>
-                        <View style={styles.weaponBonusChip}>
-                          <GameItemIcon itemId="buff-gale-feather" size={12} />
-                          <Text style={styles.weaponBonusText}>+{weaponBonusSpeed} SPD</Text>
-                        </View>
-                      </View>
-                    ) : null}
-                  </View>
-                  {equippedWeapon ? (
-                    <Pressable onPress={handleUnequip} style={styles.unequipWrap}>
-                      <View style={styles.unequipButton}>
-                        <MaterialCommunityIcons name="sword-cross" size={14} color="#fff1cf" />
-                        <MaterialCommunityIcons
-                          name="close"
-                          size={11}
-                          color="#fff1cf"
-                          style={styles.unequipOverlayIcon}
-                        />
-                      </View>
-                    </Pressable>
-                  ) : null}
-                </Pressable>
+                    </View>
+                    <View style={styles.mainWeaponText}>
+                      <Text
+                        style={styles.mainWeaponName}
+                        numberOfLines={2}
+                        ellipsizeMode="tail"
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.82}
+                      >
+                        No Weapon Equipped
+                      </Text>
+                      <Text style={styles.mainWeaponMeta}>Visit Guild Store to buy one</Text>
+                    </View>
+                  </Pressable>
+                )}
               </View>
             </View>
 
@@ -433,6 +437,7 @@ export const HomeScreen = ({
                 return (
                   <Pressable
                     key={`buff-slot-${index}`}
+                    onPress={!buff ? onOpenSigilInventory : undefined}
                     style={[
                       styles.licenseSigilSlot,
                       buffAccent ? { backgroundColor: buffAccent.softBg } : null,
@@ -478,7 +483,9 @@ export const HomeScreen = ({
                           <MaterialCommunityIcons name="close" size={10} color="#ffe8bf" />
                         </Pressable>
                       </>
-                    ) : null}
+                    ) : (
+                      <Text style={styles.licenseSigilEmptyHint}>Add Sigil</Text>
+                    )}
                   </Pressable>
                 );
               })}
@@ -844,6 +851,16 @@ export const HomeScreen = ({
                   WPN +{weaponBonusSpeed} | SKILL +{pendingAbilityBonuses.speedFlat} | PASSIVE +{combat.passiveAbilityBonuses.speedFlat} | COMBO +{combat.comboBonuses.speedFlat} | SIGIL +{combat.buffBonuses.speedFlat} | TITLE +{combat.titleBonuses.speedFlat}
                 </Text>
               </View>
+              <View style={styles.combatMetricCard}>
+                <View style={styles.combatMetricTop}>
+                  <MaterialCommunityIcons name="shield-half-full" size={16} color="#f6d08a" />
+                  <Text style={styles.combatMetricLabel}>Armor</Text>
+                </View>
+                <Text style={styles.combatMetricValue}>{combat.armor}</Text>
+                <Text style={styles.combatMetricBonus}>
+                  SIGIL ARMOR +{combat.buffBonuses.armorFlat}
+                </Text>
+              </View>
             </View>
             <View style={styles.combatStatRow}>
               <View style={styles.combatMetricCardWide}>
@@ -864,7 +881,7 @@ export const HomeScreen = ({
             <View style={styles.weaponImpactRow}>
               <View style={styles.weaponImpactLabelWrap}>
                 <Text style={styles.weaponImpactTitle}>Active Sigil Effects</Text>
-                <IconTooltip text="Only active sigils affect combat and tower success." />
+                <IconTooltip text="Equipped sigils always grant armor. Only active sigils grant their timed combat and tower bonuses." />
               </View>
               {activeBuffs.length > 0 ? (
                 <View style={styles.weaponImpactChips}>
@@ -879,7 +896,7 @@ export const HomeScreen = ({
                   ))}
                 </View>
               ) : (
-                <Text style={styles.weaponImpactEmpty}>No active sigils</Text>
+                <Text style={styles.weaponImpactEmpty}>No active sigils. Equipped sigils still grant armor while worn.</Text>
               )}
             </View>
 
@@ -938,6 +955,10 @@ export const HomeScreen = ({
                 <View style={styles.weaponImpactChip}>
                   <GameItemIcon itemId="ward-charm" size={12} />
                   <Text style={styles.weaponImpactText}>SIGIL +{combat.buffBonuses.questSuccessFlat}%</Text>
+                </View>
+                <View style={styles.weaponImpactChip}>
+                  <MaterialCommunityIcons name="shield-half-full" size={12} color="#f6d08a" />
+                  <Text style={styles.weaponImpactText}>ARMOR +{combat.buffBonuses.armorFlat}</Text>
                 </View>
                 <View style={styles.weaponImpactChip}>
                   <Image source={HUD_ASSETS.badges.rank} style={styles.weaponImpactBadgeIcon} resizeMode="contain" />
@@ -1099,76 +1120,23 @@ export const HomeScreen = ({
               end={{ x: 1, y: 1 }}
               style={styles.cardGradient}
             />
-            {equippedWeapon ? (
-              <>
-                <View style={styles.abilityBanner}>
-                  <View style={styles.abilityBannerLeft}>
-                    <MaterialCommunityIcons name="sword-cross" size={14} color="#ffe0a4" />
-                    <Text style={styles.abilityBannerText}>Weapon Record</Text>
-                  </View>
-                  <Pressable
-                    onPress={() => {
-                      setWeaponArtExpanded(false);
-                      setWeaponDetailsOpen(false);
-                    }}
-                  >
-                    <MaterialCommunityIcons name="close-circle" size={20} color="#f1d8a8" />
-                  </Pressable>
-                </View>
-                <View style={styles.weaponDialogHead}>
-                  <Text style={styles.weaponDialogTitle}>{equippedWeapon.name}</Text>
-                  <View style={styles.weaponDialogGradePill}>
-                    <Text style={styles.weaponDialogGradeText}>{equippedWeapon.rarity.toUpperCase()}</Text>
-                  </View>
-                </View>
-                <View style={styles.weaponDialogHero}>
-                  <Pressable
-                    style={styles.weaponDialogArtFrame}
-                    onPress={() => {
-                      if (equippedWeapon.image) {
-                        setWeaponArtExpanded(true);
-                      }
-                    }}
-                  >
-                    {equippedWeapon.image ? (
-                      <Image source={equippedWeapon.image} style={styles.weaponDialogArt} resizeMode="contain" />
-                    ) : (
-                      <GameItemIcon itemId={equippedWeapon.id} size={72} />
-                    )}
-                  </Pressable>
-                  <View style={styles.weaponDialogMetaCol}>
-                    <Text style={styles.weaponDialogMeta}>Required Level {equippedWeapon.requiredLevel ?? 1}</Text>
-                    <Text style={styles.weaponDialogMeta}>Proficiency {combat.weaponProficiencyPercent}%</Text>
-                    {equippedWeapon.description ? (
-                      <Text style={styles.weaponDialogDesc}>{equippedWeapon.description}</Text>
-                    ) : null}
-                  </View>
-                </View>
-                <View style={styles.weaponDialogStatsRow}>
-                  <View style={styles.weaponDialogStatCard}>
-                    <MaterialCommunityIcons name="sword-cross" size={16} color="#ffd786" />
-                    <Text style={styles.weaponDialogStatLabel}>Attack</Text>
-                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.attack ?? 0}</Text>
-                  </View>
-                  <View style={styles.weaponDialogStatCard}>
-                    <MaterialCommunityIcons name="star-four-points-outline" size={16} color="#ff78c9" />
-                    <Text style={styles.weaponDialogStatLabel}>Critical</Text>
-                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.crit ?? 0}%</Text>
-                  </View>
-                  <View style={styles.weaponDialogStatCard}>
-                    <MaterialCommunityIcons name="run-fast" size={16} color="#8de9a8" />
-                    <Text style={styles.weaponDialogStatLabel}>Speed</Text>
-                    <Text style={styles.weaponDialogStatValue}>+{equippedWeapon.weaponStats?.speed ?? 0}</Text>
-                  </View>
-                </View>
-                {equippedWeapon.lore ? (
-                  <View style={styles.weaponLorePanel}>
-                    <Text style={styles.weaponLoreTitle}>Lore</Text>
-                    <Text style={styles.weaponLoreText}>{equippedWeapon.lore}</Text>
-                  </View>
-                ) : null}
-              </>
-            ) : null}
+            <ScrollView style={styles.weaponRecordScroll} contentContainerStyle={styles.weaponRecordScrollContent} showsVerticalScrollIndicator={false}>
+              {equippedWeapon ? (
+                <WeaponRecordPanel
+                  item={equippedWeapon}
+                  proficiencyPercent={combat.weaponProficiencyPercent}
+                  onClose={() => {
+                    setWeaponArtExpanded(false);
+                    setWeaponDetailsOpen(false);
+                  }}
+                  onPressArt={() => {
+                    if (equippedWeapon.image) {
+                      setWeaponArtExpanded(true);
+                    }
+                  }}
+                />
+              ) : null}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1517,15 +1485,10 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   avatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 13,
-    backgroundColor: "rgba(26, 20, 35, 0.95)",
-    borderWidth: 1,
-    borderColor: "#9a7b48",
+    width: 86,
+    height: 86,
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden",
   },
   avatarPortrait: {
     width: "100%",
@@ -1770,6 +1733,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
     elevation: 5,
+  },
+  licenseSigilEmptyHint: {
+    marginTop: 4,
+    color: "#c9b089",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   licenseSigilIconShell: {
     width: 46,
@@ -2048,9 +2018,9 @@ const styles = StyleSheet.create({
   mainWeaponCard: {
     flex: 1,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#9a7a45",
-    backgroundColor: "rgba(58, 43, 23, 0.94)",
+    borderWidth: 1.5,
+    borderColor: "rgba(144, 132, 110, 0.42)",
+    backgroundColor: "rgba(36, 32, 46, 0.9)",
     padding: 8,
     flexDirection: "row",
     alignItems: "center",
@@ -2061,8 +2031,8 @@ const styles = StyleSheet.create({
     width: 106,
     height: 106,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#aa8650",
+    borderWidth: 1.5,
+    borderColor: "rgba(144, 132, 110, 0.34)",
     backgroundColor: "rgba(28, 20, 39, 0.88)",
     alignItems: "center",
     justifyContent: "center",
@@ -2088,6 +2058,56 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 11,
     fontWeight: "700",
+  },
+  mainWeaponMarkPreview: {
+    marginTop: 6,
+    gap: 4,
+  },
+  mainWeaponMarkLabel: {
+    color: "#f4d79e",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  mainWeaponMarkEntry: {
+    gap: 2,
+  },
+  mainWeaponMarkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  mainWeaponMarkDiamond: {
+    width: 14,
+    height: 14,
+    borderRadius: 3,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ rotate: "45deg" }],
+  },
+  mainWeaponMarkDiamondEmpty: {
+    borderColor: "#8f7a62",
+    backgroundColor: "rgba(76, 58, 40, 0.35)",
+  },
+  mainWeaponMarkDiamondCore: {
+    width: 6,
+    height: 6,
+    borderRadius: 2,
+  },
+  mainWeaponMarkText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  mainWeaponMarkEffect: {
+    marginLeft: 22,
+    color: "#dbc9a7",
+    fontSize: 10,
+    fontWeight: "700",
+    lineHeight: 14,
+  },
+  mainWeaponMarkTextEmpty: {
+    color: "#b79f7c",
   },
   weaponBonusRow: {
     flexDirection: "row",
@@ -2581,6 +2601,45 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: "700",
   },
+  weaponMarkPanel: {
+    marginTop: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#7e6751",
+    backgroundColor: "rgba(35, 26, 46, 0.9)",
+    padding: 10,
+    gap: 6,
+  },
+  weaponMarkPanelTitle: {
+    color: "#ffe5b9",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.55,
+  },
+  weaponMarkEntry: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 214, 134, 0.14)",
+    gap: 4,
+  },
+  weaponMarkName: {
+    color: "#fff2d4",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  weaponMarkEffect: {
+    color: "#ffe1a3",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  weaponMarkFlavor: {
+    color: "#d8c8af",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
   abilityHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -2747,6 +2806,7 @@ const styles = StyleSheet.create({
   skillModalCard: {
     width: "100%",
     maxWidth: 460,
+    maxHeight: "86%",
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "#58adff",
@@ -2754,6 +2814,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 7,
+  },
+  weaponRecordScroll: {
+    flexGrow: 0,
+  },
+  weaponRecordScrollContent: {
+    paddingBottom: 10,
   },
   abilityTitle: {
     color: "#d8f1ff",

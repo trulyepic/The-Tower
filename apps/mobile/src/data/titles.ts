@@ -105,6 +105,54 @@ export const TITLES: TitleDefinition[] = [
       questSuccessFlat: 6,
     },
   },
+  {
+    id: "title-high-ward-linekeeper",
+    name: "High-Ward Linekeeper",
+    icon: "shield-check-outline",
+    rarity: "epic",
+    minLevel: 18,
+    classRestriction: "warrior",
+    flavor:
+      "Granted to the climber who held a failing High-Ward post long enough for the guild to take it back. It is a title for steadiness when others would have broken.",
+    abilityLabel: "Wardfast",
+    bonuses: {
+      damageFlat: 3,
+      speedFlat: 2,
+      questSuccessFlat: 3,
+    },
+  },
+  {
+    id: "title-cellbreaker-captain",
+    name: "Cellbreaker Captain",
+    icon: "sword-cross",
+    rarity: "epic",
+    minLevel: 20,
+    classRestriction: "warrior",
+    flavor:
+      "Granted to captains who broke an enemy formation and kept their own people together through the counterattack. It marks command proven in a hard fight, not merely survived.",
+    abilityLabel: "Captain's Hand",
+    bonuses: {
+      damageFlat: 4,
+      critFlat: 3,
+      questSuccessFlat: 3,
+    },
+  },
+  {
+    id: "title-charter-bearer",
+    name: "Charter Bearer",
+    icon: "scroll-text-outline",
+    rarity: "legendary",
+    minLevel: 40,
+    flavor:
+      "Granted to climbers the guild trusts to carry a high-ascent writ, make hard calls far from the desk, and bring both the writ and the people under it back alive.",
+    abilityLabel: "Writ Authority",
+    bonuses: {
+      damageFlat: 6,
+      critFlat: 4,
+      speedFlat: 3,
+      questSuccessFlat: 5,
+    },
+  },
 ];
 
 export const TITLE_BY_ID: Record<TitleId, TitleDefinition> = Object.fromEntries(

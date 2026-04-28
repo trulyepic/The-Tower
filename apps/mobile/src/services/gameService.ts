@@ -38,6 +38,8 @@ const KEY_PENALTY_BY_TYPE: Record<QuestType, number> = {
   adventure: 1,
   dungeon: 1.2,
 };
+const isStaminaFreeRaidHunt = (quest: QuestDefinition): boolean =>
+  quest.combatModel === "raid" && quest.boardCategory === "hunt";
 
 export interface StartQuestResult {
   ok: boolean;
@@ -103,6 +105,7 @@ export interface GameService {
     nowMs: number;
     forcedSuccess?: boolean;
     summaryOverride?: string;
+    itemIdsUsed?: ItemId[];
   }) => ClaimQuestResult;
   buyGuildItem: (input: {
     character: CharacterState | null;
@@ -130,6 +133,16 @@ export interface GameService {
     trial: RankUpTrialDefinition | undefined;
     committedItems?: Record<ItemId, number>;
     nowMs: number;
+  }) => AttemptRankUpResult;
+  resolveRankUpCombatTrial: (input: {
+    character: CharacterState | null;
+    completedQuestCount: number;
+    trial: RankUpTrialDefinition | undefined;
+    committedItems?: Record<ItemId, number>;
+    nowMs: number;
+    success: boolean;
+    finalPlayerHp: number;
+    summaryOverride?: string;
   }) => AttemptRankUpResult;
   resolveTowerWave: (input: {
     character: CharacterState | null;
@@ -839,6 +852,45 @@ export const calculateRankUpSuccessChance = (
   return finalChance;
 };
 
+const validateRankTrialCommittedItems = (
+  inventory: Partial<Record<ItemId, number>>,
+  trial: RankUpTrialDefinition,
+  committedItems?: Record<ItemId, number>,
+): { ok: true; selectedItems: Record<ItemId, number> } | { ok: false; reason: string } => {
+  const selectedItems = committedItems ?? {};
+  const requirementNeedByItem: Record<ItemId, number> = {};
+  for (const requirement of trial.requiredItems) {
+    requirementNeedByItem[requirement.itemId] = requirement.needed;
+  }
+  for (const requirement of trial.recommendedItems ?? []) {
+    requirementNeedByItem[requirement.itemId] = Math.max(
+      requirementNeedByItem[requirement.itemId] ?? 0,
+      requirement.needed,
+    );
+  }
+  for (const [itemId, amount] of Object.entries(selectedItems)) {
+    const count = Math.max(0, Math.floor(amount));
+    if (count <= 0) {
+      continue;
+    }
+    const typedItemId = itemId as ItemId;
+    const needed = requirementNeedByItem[typedItemId];
+    if (!needed) {
+      return { ok: false, reason: "That item cannot be brought into this trial." };
+    }
+    if (count > needed) {
+      return {
+        ok: false,
+        reason: `You can only bring up to ${needed} of ${ITEM_BY_ID[typedItemId]?.name ?? itemId} into this trial.`,
+      };
+    }
+    if ((inventory[typedItemId] ?? 0) < count) {
+      return { ok: false, reason: `Not enough ${ITEM_BY_ID[typedItemId]?.name ?? itemId}.` };
+    }
+  }
+  return { ok: true, selectedItems };
+};
+
 export const mockGameService: GameService = {
   createCharacter: (name, classId, avatarId, classSequence) => {
     const progression = createInitialProgress();
@@ -880,6 +932,8 @@ export const mockGameService: GameService = {
         torch: 1,
         "healing-herb": 1,
       },
+      combatPouchItems: { "healing-herb": 1 },
+      combatPouchCapacity: 3,
       knownTowerEnemyIds: [],
       towerProgress: {
         highestFloorCleared: 0,
@@ -914,7 +968,9 @@ export const mockGameService: GameService = {
       return { ok: false, reason: access.reason };
     }
 
-    if (character.stamina < quest.staminaCost) {
+    const effectiveStaminaCost = isStaminaFreeRaidHunt(quest) ? 0 : quest.staminaCost;
+
+    if (character.stamina < effectiveStaminaCost) {
       return { ok: false, reason: "Not enough stamina." };
     }
     if (character.health <= 1) {
@@ -944,10 +1000,10 @@ export const mockGameService: GameService = {
       }
       const needed = requirementNeedByItem[itemId];
       if (!needed) {
-        return { ok: false, reason: "Selected item is not valid for this quest." };
+        return { ok: false, reason: "That item cannot be brought on this quest." };
       }
       if (count > needed) {
-        return { ok: false, reason: `You can only commit up to ${needed} of ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
+        return { ok: false, reason: `You can only bring up to ${needed} of ${ITEM_BY_ID[itemId]?.name ?? itemId} on this quest.` };
       }
       if ((inventory[itemId] ?? 0) < count) {
         return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
@@ -1014,7 +1070,7 @@ export const mockGameService: GameService = {
       ok: true,
       character: {
         ...character,
-        stamina: character.stamina - quest.staminaCost,
+        stamina: character.stamina - effectiveStaminaCost,
         inventory: nextInventory,
         discoveredTitleIds,
         ownedTitleIds,
@@ -1026,7 +1082,7 @@ export const mockGameService: GameService = {
       reason: startNoticeParts.join(" "),
       dailies: dailies.map((daily) =>
         daily.id === "d2"
-          ? { ...daily, progress: Math.min(daily.target, daily.progress + quest.staminaCost) }
+          ? { ...daily, progress: Math.min(daily.target, daily.progress + effectiveStaminaCost) }
           : daily,
       ),
       activeQuest: {
@@ -1039,7 +1095,7 @@ export const mockGameService: GameService = {
     };
   },
 
-  claimQuest: ({ character, activeQuest, dailies, quest, nowMs, forcedSuccess, summaryOverride }) => {
+  claimQuest: ({ character, activeQuest, dailies, quest, nowMs, forcedSuccess, summaryOverride, itemIdsUsed }) => {
     if (!character || !activeQuest) {
       return { ok: false, reason: "No quest is ready to claim." };
     }
@@ -1057,9 +1113,19 @@ export const mockGameService: GameService = {
       activeQuest.chanceBreakdownSnapshot ?? calculateQuestChanceBreakdown(character, quest);
     const success = typeof forcedSuccess === "boolean" ? forcedSuccess : Math.random() * 100 <= successChance;
 
+    const nextInventory = { ...(character.inventory ?? {}) };
+    for (const itemId of itemIdsUsed ?? []) {
+      const owned = nextInventory[itemId] ?? 0;
+      if (owned <= 0) {
+        return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
+      }
+      nextInventory[itemId] = owned - 1;
+    }
+
     const baseCharacter = {
       ...character,
       stamina: Math.min(character.staminaCap, character.stamina + STAMINA_RECOVERY_PER_CLAIM),
+      inventory: nextInventory,
     };
 
     if (!success) {
@@ -1115,9 +1181,9 @@ export const mockGameService: GameService = {
       .filter((itemReward) => Math.random() <= itemReward.chance)
       .map((itemReward) => ({ itemId: itemReward.itemId, amount: itemReward.amount }));
 
-    const nextInventory = { ...(baseCharacter.inventory ?? {}) };
+    const rewardedInventory = { ...(baseCharacter.inventory ?? {}) };
     for (const gainedItem of gainedItems) {
-      nextInventory[gainedItem.itemId] = (nextInventory[gainedItem.itemId] ?? 0) + gainedItem.amount;
+      rewardedInventory[gainedItem.itemId] = (rewardedInventory[gainedItem.itemId] ?? 0) + gainedItem.amount;
     }
 
     const healthDelta = calculateQuestHealthDelta(quest, chanceBreakdown, true);
@@ -1142,7 +1208,7 @@ export const mockGameService: GameService = {
       health: clamp(baseCharacter.health + healthDelta, 0, nextHealthCap),
       focusCap: nextFocusCap,
       focus: Math.min(baseCharacter.focus, nextFocusCap),
-      inventory: nextInventory,
+      inventory: rewardedInventory,
     };
     const summaryParts = [`Quest cleared (${successChance}%).`];
     if (gainedItems.length > 0) {
@@ -1248,34 +1314,8 @@ export const mockGameService: GameService = {
       return { ok: false, reason: access.reason };
     }
 
-    const selectedItems = committedItems ?? {};
     const inventory = character.inventory ?? {};
-    const requirementNeedByItem: Record<ItemId, number> = {};
-    for (const requirement of trial.requiredItems) {
-      requirementNeedByItem[requirement.itemId] = requirement.needed;
-    }
-    for (const requirement of trial.recommendedItems ?? []) {
-      requirementNeedByItem[requirement.itemId] = Math.max(
-        requirementNeedByItem[requirement.itemId] ?? 0,
-        requirement.needed,
-      );
-    }
-    for (const [itemId, amount] of Object.entries(selectedItems)) {
-      const count = Math.max(0, Math.floor(amount));
-      if (count <= 0) {
-        continue;
-      }
-      const needed = requirementNeedByItem[itemId];
-      if (!needed) {
-        return { ok: false, reason: "Selected item is not valid for this trial." };
-      }
-      if (count > needed) {
-        return { ok: false, reason: `You can only commit up to ${needed} of ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
-      }
-      if ((inventory[itemId] ?? 0) < count) {
-        return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
-      }
-    }
+    const selectedItems = committedItems ?? {};
 
     const pendingAbilityIds = character.pendingAbilityIds ?? (character.pendingAbilityId ? [character.pendingAbilityId] : []);
     const pendingAbilities = pendingAbilityIds
@@ -1295,7 +1335,7 @@ export const mockGameService: GameService = {
       if (count <= 0) {
         continue;
       }
-      nextInventory[itemId] = Math.max(0, (nextInventory[itemId] ?? 0) - count);
+      nextInventory[itemId as ItemId] = Math.max(0, (nextInventory[itemId as ItemId] ?? 0) - count);
     }
 
     const baseCharacter: CharacterState = {
@@ -1348,6 +1388,109 @@ export const mockGameService: GameService = {
                 ? `${pendingAbilities.map((entry) => entry.ability.name).join(", ")} consumed. `
                 : ""
             }Rank trial failed at ${successChance}%. Recover and try again.`,
+      },
+    };
+  },
+  resolveRankUpCombatTrial: ({
+    character,
+    completedQuestCount,
+    trial,
+    committedItems,
+    nowMs,
+    success,
+    finalPlayerHp,
+    summaryOverride,
+  }) => {
+    if (!character) {
+      return { ok: false, reason: "Create your adventurer first." };
+    }
+    if (!trial) {
+      return { ok: false, reason: "No rank trial available." };
+    }
+
+    const access = hasRankUpAccess(character, trial, completedQuestCount);
+    if (!access.allowed) {
+      return { ok: false, reason: access.reason };
+    }
+
+    const inventory = character.inventory ?? {};
+    const itemValidation = validateRankTrialCommittedItems(inventory, trial, committedItems);
+    if (!itemValidation.ok) {
+      return { ok: false, reason: itemValidation.reason };
+    }
+    const { selectedItems } = itemValidation;
+
+    const pendingAbilityIds = character.pendingAbilityIds ?? (character.pendingAbilityId ? [character.pendingAbilityId] : []);
+    const pendingAbilities = pendingAbilityIds
+      .map((abilityId) => ({ abilityId, ability: ABILITY_BY_ID[abilityId] }))
+      .filter((entry): entry is { abilityId: string; ability: NonNullable<typeof entry.ability> } => Boolean(entry.ability));
+    const abilityCooldownsUntilMs = { ...(character.abilityCooldownsUntilMs ?? {}) };
+    for (const entry of pendingAbilities) {
+      abilityCooldownsUntilMs[entry.abilityId] = nowMs + entry.ability.cooldownSeconds * 1000;
+    }
+
+    const readiness = calculateRankUpSuccessChance(character, trial, selectedItems);
+    const nextInventory = { ...inventory };
+    for (const [itemId, amount] of Object.entries(selectedItems)) {
+      const count = Math.max(0, Math.floor(amount));
+      if (count <= 0) {
+        continue;
+      }
+      const owned = nextInventory[itemId as ItemId] ?? 0;
+      if (owned < count) {
+        return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId as ItemId]?.name ?? itemId}.` };
+      }
+      nextInventory[itemId as ItemId] = Math.max(0, (nextInventory[itemId as ItemId] ?? 0) - count);
+    }
+
+    const baseCharacter: CharacterState = {
+      ...character,
+      stamina: character.stamina - trial.staminaCost,
+      inventory: nextInventory,
+      pendingAbilityId: null,
+      pendingAbilityIds: [],
+      abilityCooldownsUntilMs,
+    };
+    const progressed = applyProgressGain(
+      baseCharacter.progression,
+      success ? trial.reward.xp : Math.max(8, Math.round(trial.reward.xp * 0.3)),
+      success ? trial.reward.masteryXp : Math.max(4, Math.round(trial.reward.masteryXp * 0.3)),
+    );
+    const nextHealthCap = getDerivedHealthCap({ ...baseCharacter, progression: progressed });
+    const nextFocusCap = getDerivedSkillResourceCap({ ...baseCharacter, progression: progressed });
+    const nextCharacter: CharacterState = {
+      ...baseCharacter,
+      progression: progressed,
+      adventurerRank: success ? trial.toRank : baseCharacter.adventurerRank,
+      gold: baseCharacter.gold + (success ? trial.reward.gold : Math.max(10, Math.round(trial.reward.gold * 0.3))),
+      healthCap: nextHealthCap,
+      health: clamp(Math.max(1, finalPlayerHp), 1, nextHealthCap),
+      focusCap: nextFocusCap,
+      focus: Math.min(baseCharacter.focus, nextFocusCap),
+    };
+
+    return {
+      ok: true,
+      character: nextCharacter,
+      outcome: {
+        success,
+        fromRank: trial.fromRank,
+        toRank: trial.toRank,
+        successChance: readiness,
+        healthDelta: nextCharacter.health - character.health,
+        summary:
+          summaryOverride ??
+          (success
+            ? `${
+                pendingAbilities.length > 0
+                  ? `${pendingAbilities.map((entry) => entry.ability.name).join(", ")} consumed. `
+                  : ""
+              }You cleared the live rank trial and were promoted ${trial.fromRank} -> ${trial.toRank}.`
+            : `${
+                pendingAbilities.length > 0
+                  ? `${pendingAbilities.map((entry) => entry.ability.name).join(", ")} consumed. `
+                  : ""
+              }You were beaten back in the live rank trial. Recover and try again.`),
       },
     };
   },
@@ -1954,7 +2097,7 @@ export const mockGameService: GameService = {
         return { ok: false, reason: "Selected supply is not valid for this floor." };
       }
       if (count > needed) {
-        return { ok: false, reason: `You can only commit up to ${needed} of ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };
+        return { ok: false, reason: `You can only bring up to ${needed} of ${ITEM_BY_ID[itemId]?.name ?? itemId} into this floor run.` };
       }
       if ((inventory[itemId] ?? 0) < count) {
         return { ok: false, reason: `Not enough ${ITEM_BY_ID[itemId]?.name ?? itemId}.` };

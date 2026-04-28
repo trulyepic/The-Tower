@@ -215,5 +215,81 @@ export const RANK_EXAMINERS_BY_FROM_RANK: Record<AdventurerRank, GuildNpcProfile
   },
 };
 
+export const E_RANK_DUELIST_PROFILE: GuildNpcProfile = {
+  id: "npc-riven-hale",
+  name: "Riven Hale",
+  title: "Hall Duelist",
+  role: "E-Rank Trial Challenger",
+  level: 12,
+  avatarId: "warrior-4",
+  classId: "warrior",
+  sequenceId: 6.5,
+  department: "story",
+  licenseLabel: "Sanctioned Duelist License",
+  authBody: "Rank Office • Vanguard Duel Circuit",
+  signature: "R. Hale",
+  avatarOverride: s3AssetWithFallback(
+    "game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00200.png",
+    require("../../assets/game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00200.png"),
+  ),
+};
+
+export const C_RANK_AUDITOR_PROFILE: GuildNpcProfile = {
+  id: "npc-kestrel-marr",
+  name: "Kestrel Marr",
+  title: "Field Auditor",
+  role: "D -> C Assessment Target",
+  level: 18,
+  avatarId: "ranger-2",
+  classId: "ranger",
+  sequenceId: 7.5,
+  department: "story",
+  licenseLabel: "Field Audit License",
+  authBody: "Rank Office • Contract Audit Circuit",
+  signature: "K. Marr",
+  avatarOverride: s3AssetWithFallback(
+    "game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00186.png",
+    require("../../assets/game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00186.png"),
+  ),
+};
+
+export const B_RANK_FIELD_CAPTAIN_PROFILE: GuildNpcProfile = {
+  id: "npc-sable-renn",
+  name: "Sable Renn",
+  title: "Field Captain",
+  role: "C -> B Command Assessment Lead",
+  level: 24,
+  avatarId: "warrior-1",
+  classId: "warrior",
+  sequenceId: 8.5,
+  department: "story",
+  licenseLabel: "Field Command License",
+  authBody: "Rank Office • High-Ward Field Circuit",
+  signature: "S. Renn",
+  avatarOverride: s3AssetWithFallback(
+    "game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00182.png",
+    require("../../assets/game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00182.png"),
+  ),
+};
+
+export const A_RANK_CHARTER_WITNESS_PROFILE: GuildNpcProfile = {
+  id: "npc-serin-vael",
+  name: "Serin Vael",
+  title: "Ascent Marshal",
+  role: "High Ascent Witness",
+  level: 42,
+  avatarId: "warrior-1",
+  classId: "warrior",
+  sequenceId: 9.5,
+  department: "story",
+  licenseLabel: "High Ascent License",
+  authBody: "Rank Office • Charter Route Authority",
+  signature: "S. Vael",
+  avatarOverride: s3AssetWithFallback(
+    "game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00195.png",
+    require("../../assets/game/characters/source/epicfantasy/pack-151-300/Tex_EFHaV1_00195.png"),
+  ),
+};
+
 export const getExaminerForRank = (rank: AdventurerRank): GuildNpcProfile =>
   RANK_EXAMINERS_BY_FROM_RANK[rank] ?? RANK_EXAMINERS_BY_FROM_RANK.F;

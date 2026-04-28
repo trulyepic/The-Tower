@@ -6,6 +6,21 @@ Use this file when assigning or reviewing title grades.
 
 Title rarity should follow `milestone weight`, not raw loot power.
 
+## Title Definition Rule
+
+Titles are not generic trait labels.
+
+They should read like names the guild or the world would actually give someone after a concrete deed, lane, contract, or climb event.
+
+- good title logic:
+  - reflects something the character actually did
+  - sounds like guild recognition or living-world reputation
+  - flavor text explains the deed or record behind it
+- weak title logic:
+  - generic personality labels
+  - abstract traits with no deed behind them
+  - flavor that could fit anyone without saying what they earned
+
 - items:
   - judged more by scarcity, combat value, economy, and drop excitement
 - titles:

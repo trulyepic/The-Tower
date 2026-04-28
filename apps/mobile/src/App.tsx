@@ -19,6 +19,7 @@ import { getAssetBaseUrl } from "./lib/assetSource";
 export default function App() {
   const game = useGameState();
   const [activeTab, setActiveTab] = useState<AppTabId>("home");
+  const [inventoryRequestedTab, setInventoryRequestedTab] = useState<"all" | "weapons" | "sigils" | "materials" | "titles" | null>(null);
   const [showTempCreation, setShowTempCreation] = useState(false);
   const [showDevMenu, setShowDevMenu] = useState(false);
   const [showAssetDebugChip, setShowAssetDebugChip] = useState(__DEV__);
@@ -75,6 +76,10 @@ export default function App() {
             onDeactivateClassAbility={game.deactivateClassAbility}
             onSetActiveClassSkill={game.setActiveClassSkill}
             onTogglePassiveAbility={game.togglePassiveAbility}
+            onOpenSigilInventory={() => {
+              setInventoryRequestedTab("sigils");
+              setActiveTab("inventory");
+            }}
           />
         </View>
         <View
@@ -107,11 +112,14 @@ export default function App() {
             onDeactivateBuff={game.deactivateBuff}
             onUseQuestRushItem={game.useQuestRushItem}
             onStartQuest={game.startQuest}
+            onClearActiveQuest={game.clearActiveQuest}
             onClaimQuest={game.claimQuest}
             onResolveLyraQuestChoice={game.resolveLyraQuestChoice}
             onResolveTowerWave={game.resolveTowerWave}
             onFinalizeTowerFloor={game.finalizeTowerFloor}
             onAttemptRankUp={game.attemptRankUp}
+            onResolveRankUpCombatTrial={game.resolveRankUpCombatTrial}
+            onUnlockASRankRaidNotices={game.unlockASRankRaidNotices}
             storyState={game.storyState}
             onRecordNpcInteraction={game.recordNpcInteraction}
             rescueNpcStatus={game.storyState.rescueNpcStatus}
@@ -129,7 +137,7 @@ export default function App() {
             onRespondTowerConditionalEncounter={game.respondTowerConditionalEncounter}
             encounteredNpcProfiles={game.encounteredNpcProfiles}
             towerStatusEffects={game.towerStatusEffects}
-            towerPreparedItemIds={game.towerPreparedItemIds}
+            combatPouchItems={game.combatPouchItems}
             onTowerModeChange={setTowerModeActive}
           />
         </View>
@@ -156,15 +164,21 @@ export default function App() {
           <InventoryScreen
             character={game.character}
             towerModeActive={towerModeActive}
-            towerPreparedItemIds={game.towerPreparedItemIds}
+            combatPouchItems={game.combatPouchItems}
+            combatPouchCapacity={game.combatPouchCapacity}
+            requestedTab={inventoryRequestedTab}
+            onRequestedTabHandled={() => setInventoryRequestedTab(null)}
             onEquipWeapon={game.equipWeapon}
             onEquipBuff={game.equipBuff}
             onUnequipBuff={game.unequipBuff}
+            onSetSigilAppearanceMode={game.setSigilAppearanceMode}
+            onSetSigilAppearanceItem={game.setSigilAppearanceItem}
             onEquipTitle={game.equipTitle}
             onUnequipTitle={game.unequipTitle}
             onUseSkillResourceItem={game.useSkillResourceItem}
             onUseHealthRecoveryItem={game.useHealthRecoveryItem}
-            onUseTowerConsumableItem={game.useTowerConsumableItem}
+            onAddCombatPouchItem={game.addCombatPouchItem}
+            onRemoveCombatPouchItem={game.removeCombatPouchItem}
           />
         </View>
         <View
@@ -404,6 +418,141 @@ export default function App() {
                       style={[styles.devMenuButton, styles.devMenuButtonPurple]}
                     >
                       <Text style={styles.devMenuButtonText}>Reset Appraisals</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.devMenuSection}>
+                    <Text style={styles.devMenuSectionLabel}>Rank Trials</Text>
+                    <View style={styles.devMenuRow}>
+                      <Pressable
+                        onPress={() => {
+                          game.devSetLevel(5);
+                          setShowDevMenu(false);
+                        }}
+                        style={[styles.devMenuButton, styles.devMenuButtonBlue, styles.devMenuButtonHalf]}
+                      >
+                        <Text style={styles.devMenuButtonText}>Set Level 5</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          game.devSetLevel(10);
+                          setShowDevMenu(false);
+                        }}
+                        style={[styles.devMenuButton, styles.devMenuButtonTeal, styles.devMenuButtonHalf]}
+                      >
+                        <Text style={styles.devMenuButtonText}>Set Level 10</Text>
+                      </Pressable>
+                    </View>
+                    <View style={styles.devMenuRow}>
+                      <Pressable
+                        onPress={() => {
+                          game.devSetLevel(15);
+                          setShowDevMenu(false);
+                        }}
+                        style={[styles.devMenuButton, styles.devMenuButtonPurple, styles.devMenuButtonHalf]}
+                      >
+                        <Text style={styles.devMenuButtonText}>Set Level 15</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          game.devSetLevel(20);
+                          setShowDevMenu(false);
+                        }}
+                        style={[styles.devMenuButton, styles.devMenuButtonGold, styles.devMenuButtonHalf]}
+                      >
+                        <Text style={styles.devMenuButtonText}>Set Level 20</Text>
+                      </Pressable>
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        game.devAddLevels(10);
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGold]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Level +10</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devPrepareFirstRankTrial();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGold]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Prep F to E Trial</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devPrepareSecondRankTrial();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Prep E to D Trial</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devPrepareThirdRankTrial();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonTeal]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Prep D to C Trial</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devPrepareFourthRankTrial();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonGold]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Prep C to B Trial</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devPrepareFifthRankTrial();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Prep B to A Trial</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devResetRankProgression();
+                        setActiveTab("quests");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonRed]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Reset Rank To F</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devAddSigilSlot();
+                        setActiveTab("inventory");
+                        setInventoryRequestedTab("sigils");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonTeal]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Add Sigil Slot</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        game.devResetSigilSlots();
+                        setActiveTab("inventory");
+                        setInventoryRequestedTab("sigils");
+                        setShowDevMenu(false);
+                      }}
+                      style={[styles.devMenuButton, styles.devMenuButtonPurple]}
+                    >
+                      <Text style={styles.devMenuButtonText}>Reset Sigil Slots</Text>
                     </Pressable>
                   </View>
 
@@ -905,6 +1054,10 @@ const styles = StyleSheet.create({
   devMenuSection: {
     gap: 5,
   },
+  devMenuRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
   devMenuSectionLabel: {
     color: "#d9bf8b",
     fontSize: 9,
@@ -917,6 +1070,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: 10,
     paddingVertical: 7,
+  },
+  devMenuButtonHalf: {
+    flex: 1,
   },
   devMenuButtonBlue: {
     borderColor: "#7cb2ff",

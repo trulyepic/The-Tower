@@ -1,20 +1,32 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Image, ImageBackground, ImageSourcePropType, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AtmosphereBackdrop } from "../components/AtmosphereBackdrop";
+import { AdventurerPortrait } from "../components/AdventurerPortrait";
 import { GameItemIcon } from "../components/GameItemIcon";
 import { HealthMeter } from "../components/HealthMeter";
 import { IconTooltip } from "../components/IconTooltip";
 import { ProgressBar } from "../components/ProgressBar";
 import { StaminaMeter } from "../components/StaminaMeter";
+import { WeaponRecordPanel } from "../components/WeaponRecordPanel";
 import { GUILD_STORE_ITEMS } from "../data/guildStore";
 import { CRAFT_RECIPES } from "../data/crafting";
+import { BASE_CLASSES } from "../data/classes";
 import { FLOOR_INTEL } from "../data/floorIntel";
 import { HUD_ASSETS } from "../data/hudAssets";
 import { ITEM_BY_ID } from "../data/items";
-import { GUILD_CORE_NPCS, getExaminerForRank, GuildNpcProfile } from "../data/guildPersonnel";
+import { A_TO_S_RAID_NOTICE_IDS } from "../data/quests";
+import {
+  A_RANK_CHARTER_WITNESS_PROFILE,
+  B_RANK_FIELD_CAPTAIN_PROFILE,
+  C_RANK_AUDITOR_PROFILE,
+  E_RANK_DUELIST_PROFILE,
+  GUILD_CORE_NPCS,
+  getExaminerForRank,
+  GuildNpcProfile,
+} from "../data/guildPersonnel";
 import { QUEST_BACKGROUND_ART } from "../data/questVisuals";
 import { getMaxRankForLevel } from "../data/rankProgression";
 import { TITLES, TITLE_BY_ID } from "../data/titles";
@@ -31,11 +43,12 @@ import {
   getUnlockedActiveSkills,
 } from "../lib/abilities";
 import type { LiveBattleSkillProfile } from "../lib/abilities";
-import { isBuffActive } from "../lib/buffs";
+import { getBuffSlotLimit, isBuffActive } from "../lib/buffs";
 import { isChoiceAllowedByAffinity } from "../lib/affinity";
 import { s3AssetWithFallback } from "../lib/assetSource";
 import { getAbilityAccent, getAbilityArtSource, getAbilityKindAccent } from "../lib/abilityVisuals";
-import { getCharacterCombatStats } from "../lib/combat";
+import { getCharacterCombatStats, getDerivedHealthCap, getDerivedSkillResourceCap, getWeaponProficiencyForItem } from "../lib/combat";
+import { getTitleSlotLimit } from "../lib/titles";
 import { calculateTowerMechanicPressure } from "../services/gameService";
 import {
   ActiveQuestState,
@@ -46,6 +59,7 @@ import {
   ClimberEntry,
   FloorEncounterEventDefinition,
   FloorIntelDefinition,
+  ItemDefinition,
   ItemId,
   ItemRarity,
   QuestDefinition,
@@ -55,6 +69,7 @@ import {
   RescueNpcStatus,
   StoryState,
   StoryNpcProfile,
+  TowerEnemySpecialMeterProfile,
   TowerBattlePosition,
   TowerFloorDefinition,
   TowerEnemyUnit,
@@ -94,8 +109,14 @@ interface QuestsScreenProps {
   onActivateBuff: (itemId: string) => { ok: boolean; reason?: string };
   onDeactivateBuff: (itemId: string) => { ok: boolean; reason?: string };
   onUseQuestRushItem: (itemId?: ItemId) => { ok: boolean; reason?: string };
-  onStartQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
-  onClaimQuest: (forcedSuccess?: boolean, summaryOverride?: string) => { ok: boolean; reason?: string };
+  onStartQuest: (questId: string, committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string; activeQuest?: ActiveQuestState | null };
+  onClearActiveQuest: () => { ok: boolean };
+  onClaimQuest: (
+    forcedSuccess?: boolean,
+    summaryOverride?: string,
+    itemIdsUsed?: ItemId[],
+    questSnapshotOverride?: ActiveQuestState | null,
+  ) => { ok: boolean; reason?: string };
   onResolveLyraQuestChoice: (choice: "returned" | "kept" | "reported") => { ok: boolean; reason?: string };
   onResolveTowerWave: (
     floorNumber: number,
@@ -105,6 +126,13 @@ interface QuestsScreenProps {
   ) => { ok: boolean; reason?: string; outcome?: TowerWaveOutcome };
   onFinalizeTowerFloor: (floorNumber: number) => { ok: boolean; reason?: string };
   onAttemptRankUp: (committedItems?: Record<ItemId, number>) => { ok: boolean; reason?: string };
+  onResolveRankUpCombatTrial: (
+    success: boolean,
+    committedItems?: Record<ItemId, number>,
+    finalPlayerHp?: number,
+    summaryOverride?: string,
+  ) => { ok: boolean; reason?: string };
+  onUnlockASRankRaidNotices: () => { ok: boolean; reason?: string };
   storyState: StoryState;
   onRecordNpcInteraction: (npcId: string, dispositionDelta?: number, interactionDelta?: number) => void;
   rescueNpcStatus: RescueNpcStatus;
@@ -130,7 +158,7 @@ interface QuestsScreenProps {
   ) => { ok: boolean; reason?: string };
   encounteredNpcProfiles: StoryNpcProfile[];
   towerStatusEffects: NonNullable<TowerWaveOutcome["statusEffects"]>;
-  towerPreparedItemIds: ItemId[];
+  combatPouchItems: Record<ItemId, number>;
   onTowerModeChange: (active: boolean) => void;
 }
 
@@ -159,16 +187,34 @@ type LiveBattleStatusFx = {
   detail?: string;
   expiresAtMs?: number;
   stacks?: number;
+  sourceType?: "weaponMark";
+  sourceId?: string;
+  armorFlatBonus?: number;
+  damageFlatBonus?: number;
+  critFlatBonus?: number;
+  speedFlatBonus?: number;
+  mitigationFlatBonus?: number;
+  extraTurnFlatBonus?: number;
+  hitNegationCharges?: number;
+  consumeOnTurn?: boolean;
+};
+type BattleLogTone = "good" | "bad" | "neutral" | "warn" | "offense";
+type BattleLogVisual = {
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  tone: BattleLogTone;
 };
 type LiveTowerBattleSession = {
-  source: "tower" | "quest";
+  source: "tower" | "quest" | "rank";
   floorNumber: number;
   wave: TowerWaveKey;
   questId?: string;
+  questSnapshot?: ActiveQuestState | null;
+  rankTrialId?: string;
   encounterTitle?: string;
   encounterSummary?: string;
   enemies: TowerEnemyUnit[];
-  committedItems: Record<ItemId, number>;
+  pouchItems: Record<ItemId, number>;
+  usedPouchItemCounts: Record<ItemId, number>;
   telegraphs: LiveBattleTelegraph[];
   activeIndex: number;
   position: TowerBattlePosition;
@@ -182,12 +228,16 @@ type LiveTowerBattleSession = {
     damage: number;
     critChance: number;
     speed: number;
+    armor: number;
   };
-  enemyStatsById: Record<string, { damage: number; critChance: number; speed: number; role: TowerEnemyUnit["role"] }>;
+  enemyStatsById: Record<string, { damage: number; critChance: number; speed: number; armor: number; role: TowerEnemyUnit["role"] }>;
   playerHp: number;
   enemyHpById: Record<string, number>;
   playerStatusFx: LiveBattleStatusFx[];
   enemyStatusFxById: Record<string, LiveBattleStatusFx[]>;
+  enemySpecialMeterById: Record<string, number>;
+  triggeredWeaponMarkKeys: string[];
+  fieldCommandBreaches: number;
   effectClockElapsedMs: number;
   effectClockStartedAtMs: number | null;
   initiativeHistory: Array<"player" | "enemy">;
@@ -198,6 +248,14 @@ type LiveTowerBattleSession = {
   lastEnemyDamage?: number;
   lastCrit?: boolean;
 };
+type EnemySpecialMeterPreview = {
+  label: string;
+  triggerLabel: string;
+  current: number;
+  max: number;
+  ready: boolean;
+};
+type WeaponMarkDefinition = NonNullable<ItemDefinition["weaponMarks"]>[number];
 type TowerWaveReport = {
   wave: TowerWaveKey;
   title: string;
@@ -205,6 +263,34 @@ type TowerWaveReport = {
   triggered: number;
   lines: string[];
   statusEffects?: NonNullable<TowerWaveOutcome["statusEffects"]>;
+};
+type TrialAdventurerProfile = {
+  id: string;
+  name: string;
+  licenseId: string;
+  licenseLabel: string;
+  authBody: string;
+  classId: BaseClassId;
+  classSequence: number;
+  avatarId: CharacterState["avatarId"];
+  avatarOverride?: ImageSourcePropType;
+  adventurerRank: AdventurerRank;
+  level: number;
+  towerFloor: number;
+  warriorPathChoice?: CharacterState["warriorPathChoice"];
+  weaponId: ItemId;
+  sigilIds: ItemId[];
+  titleIds: string[];
+  activeSkillId: AbilityId | null;
+  passiveIds: AbilityId[];
+  pouchItems: Record<ItemId, number>;
+  bioLines?: string[];
+  pendingAbilityIds?: AbilityId[];
+  healthOverride?: number;
+};
+type RaidSuggestedSupply = {
+  itemId: ItemId;
+  note: string;
 };
 
 const RANK_ORDER: AdventurerRank[] = ["F", "E", "D", "C", "B", "A", "S", "SS"];
@@ -221,6 +307,26 @@ const getVisibleQuestRanks = (rank: AdventurerRank): AdventurerRank[] => {
     return [RANK_ORDER[index - 1], RANK_ORDER[index]];
   }
   return [RANK_ORDER[index - 1], RANK_ORDER[index], RANK_ORDER[index + 1]];
+};
+const isStaminaFreeRaidHunt = (quest: QuestDefinition): boolean =>
+  quest.combatModel === "raid" && quest.boardCategory === "hunt";
+
+const getRaidSuggestedSupplies = (quest: QuestDefinition): RaidSuggestedSupply[] => {
+  switch (quest.id) {
+    case "hunt-leviathor-coiling-deep":
+      return [
+        {
+          itemId: "ward-charm",
+          note: "Blunts Brinefire Exhalation and Brinefire Wake so the boiling pressure does not land at full strength.",
+        },
+        {
+          itemId: "guard-tonic",
+          note: "Best answer when Leviathor turns into Covenant-Breaker Roar or Abyssal Coil Crush and you need to survive the whole exchange.",
+        },
+      ];
+    default:
+      return [];
+  }
 };
 
 const getItemRarityAccent = (itemId: ItemId): { border: string; background: string; glow: string } => {
@@ -344,6 +450,138 @@ const pickEscalatingDialog = (lines: string[], interactionCount: number): string
   return lines[idx] ?? lines[0];
 };
 
+type RankTrialPresentation = {
+  title: string;
+  guildTest: string;
+  readyLine: string;
+  notReadyLine: string;
+  failureLine: string;
+  unlocks: string[];
+  resultIcon: keyof typeof MaterialCommunityIcons.glyphMap;
+  resultAccent: string;
+  resultHeroLabelSuccess: string;
+  resultHeroLabelFailure: string;
+  recordLabelSuccess: string;
+  recordLabelFailure: string;
+  examinerSuccessLine: string;
+  examinerFailureLine: string;
+};
+
+const RANK_TRIAL_PRESENTATION: Record<string, RankTrialPresentation> = {
+  "rank-trial-f-e": {
+    title: "First Field Trial",
+    guildTest: "The guild is testing whether you can hold yourself together in a live sanctioned clash, use your prep intelligently, and finish the lane without falling apart.",
+    readyLine: "Your file is ready. First Field Trial is a live combat exam, not a desk favor. Step in and prove you can survive the first real push on command.",
+    notReadyLine: "First Field Trial is not a favor. Finish the record first, then ask me to put your name on the desk again.",
+    failureLine: "Failure costs any supplies you carried in, the stamina, and the bruising. The guild does not strip your license, but it does not advance you for trying.",
+    unlocks: ["Formal E-rank recognition", "Stronger guild trust", "Broader board visibility", "Cleaner Floor 2-facing support"],
+    resultIcon: "shield-crown",
+    resultAccent: "#7fd9a2",
+    resultHeroLabelSuccess: "First Promotion Recorded",
+    resultHeroLabelFailure: "First Trial Recorded",
+    recordLabelSuccess: "Guild Crest Record",
+    recordLabelFailure: "Filed Trial Record",
+    examinerSuccessLine: "Good. The field answered, and you did not fold. I'll sign the promotion record myself.",
+    examinerFailureLine: "The field turned you back this time. Read the failure, steady yourself, and return when you can finish cleanly.",
+  },
+  "rank-trial-e-d": {
+    title: "Earn The D-Mark",
+    guildTest: "The guild is testing whether you can hold a real duel against another trained adventurer instead of relying on the habits you learned from beasts and drills.",
+    readyLine: "You are cleared for Earn The D-Mark. Nyra will put you in the ring with Riven Hale under full guild watch. Beat him cleanly and the hall will mark you for D-rank.",
+    notReadyLine: "You are not cleared for this bout yet. Build the record Nyra asked for, then step into the ring.",
+    failureLine: "Failure still costs the stamina, any pouch items you actually spent, and your health. At this rank the office expects you to learn from a trained duelist, not complain that he answered you cleanly.",
+    unlocks: ["D-rank standing", "Formal guild respect beyond novice floors", "More serious contract scrutiny", "Recognition from the hall duel circuit"],
+    resultIcon: "sword-cross",
+    resultAccent: "#8fc3ff",
+    resultHeroLabelSuccess: "D-Mark Earned",
+    resultHeroLabelFailure: "Duel Lost On Record",
+    recordLabelSuccess: "Sanctioned Duel Record",
+    recordLabelFailure: "Filed Duel Failure",
+    examinerSuccessLine: "Good. Riven was there to take away easy habits, and you still took the mark. That's D-rank work.",
+    examinerFailureLine: "A real adventurer took the pace away from you. Build cleaner habits and come back ready to take the ring for yourself.",
+  },
+  "rank-trial-d-c": {
+    title: "Execution Record",
+    guildTest: "The guild is testing whether you can deliver clean work, not just crawl out alive.",
+    readyLine: "Execution Record is authorized. Thorne is opening the ledger to see whether your work is clean enough for C-rank.",
+    notReadyLine: "Execution Record does not open for half-built records. Bring Thorne a cleaner file first.",
+    failureLine: "The office records failure, but it does not end your climb. It means your execution was not clean enough this time.",
+    unlocks: ["C-rank professional standing", "Higher-quality guild trust", "Stronger system unlock pacing"],
+    resultIcon: "file-document-check-outline",
+    resultAccent: "#d6b07a",
+    resultHeroLabelSuccess: "Execution Confirmed",
+    resultHeroLabelFailure: "Execution Rejected",
+    recordLabelSuccess: "Professional Record",
+    recordLabelFailure: "Filed Failure Record",
+    examinerSuccessLine: "Clean work. That's the kind of record I can file twice without finding waste in it.",
+    examinerFailureLine: "You finished the fight, but not the record. Come back when your hand is clean enough for C-rank scrutiny.",
+  },
+  "rank-trial-c-b": {
+    title: "Field Command",
+    guildTest: "The guild is testing whether you can read a layered fight and control the field instead of reacting late.",
+    readyLine: "Field Command is posted. B-rank means the guild expects you to shape the fight, not merely answer it.",
+    notReadyLine: "Field Command is not granted to uncertain records. Return when the file proves you can control the field.",
+    failureLine: "Failure marks the record and spends the preparation, but the office expects you to learn from it, not hide from it.",
+    unlocks: ["B-rank standing", "Public guild confidence", "Broader elite-facing support systems"],
+    resultIcon: "chess-king",
+    resultAccent: "#c49cff",
+    resultHeroLabelSuccess: "Field Command Proven",
+    resultHeroLabelFailure: "Command Denied",
+    recordLabelSuccess: "Command Record",
+    recordLabelFailure: "Filed Command Failure",
+    examinerSuccessLine: "You controlled the fight instead of asking permission from it. That's B-rank work.",
+    examinerFailureLine: "You reacted too late and lost control of the field. Come back when your command is sharper.",
+  },
+  "rank-trial-b-a": {
+    title: "High Ascent Charter",
+    guildTest: "The guild is testing whether you can carry serious ascent responsibility without breaking the run or the people depending on it.",
+    readyLine: "High Ascent Charter is ready. Lyss Argent is placing your file under Marshal Serin Vael to see whether the guild can truly trust your name with A-rank authority.",
+    notReadyLine: "High Ascent Charter remains sealed. Bring the kind of record Serin Vael can sign, not merely admire.",
+    failureLine: "At this level the failure is still survivable, but it is no longer forgettable. The office will remember the attempt.",
+    unlocks: ["A-rank elite recognition", "Higher institutional trust", "Stronger access to rare guild support"],
+    resultIcon: "castle",
+    resultAccent: "#ffd07a",
+    resultHeroLabelSuccess: "Charter Granted",
+    resultHeroLabelFailure: "Charter Withheld",
+    recordLabelSuccess: "High Ascent Charter",
+    recordLabelFailure: "Withheld Charter Record",
+    examinerSuccessLine: "Now the guild can plan around your movement instead of merely hoping you return from it.",
+    examinerFailureLine: "Not enough. At A-rank, the guild has to trust more than your nerve.",
+  },
+  "rank-trial-a-s": {
+    title: "Recorded Ascent",
+    guildTest: "The guild is testing whether your climb belongs in formal record as exceptional, not simply impressive.",
+    readyLine: "Recorded Ascent is open. If you clear it, your climb stops being hall talk and becomes a matter of record.",
+    notReadyLine: "Recorded Ascent is not opened early. Exceptional rank requires exceptional proof.",
+    failureLine: "Failure costs the run and the supplies, and the office will treat the retry with colder eyes.",
+    unlocks: ["S-rank recognition", "Record-tier guild status", "High-end contract visibility"],
+    resultIcon: "book-open-page-variant-outline",
+    resultAccent: "#92e0ff",
+    resultHeroLabelSuccess: "Ascent Entered Into Record",
+    resultHeroLabelFailure: "Record Attempt Denied",
+    recordLabelSuccess: "Formal Ascent Record",
+    recordLabelFailure: "Rejected Record Entry",
+    examinerSuccessLine: "This is no longer hall rumor. The office will keep your name in formal record from here on.",
+    examinerFailureLine: "You aimed for formal record and missed. The next attempt will be read more harshly.",
+  },
+  "rank-trial-s-ss": {
+    title: "Uncommon Measure",
+    guildTest: "The guild is testing whether it can still measure you with the same tools it uses on everyone else.",
+    readyLine: "Uncommon Measure is the last desk this office can offer you. Clear it and rank becomes something the guild struggles to define around you.",
+    notReadyLine: "Uncommon Measure is not a courtesy promotion. Bring the impossible record or do not ask again yet.",
+    failureLine: "Failure here does not make you ordinary. It only proves the office was right to make the attempt severe.",
+    unlocks: ["SS-rank recognition", "Mythic guild standing", "Endgame institutional reaction"],
+    resultIcon: "star-four-points-circle-outline",
+    resultAccent: "#ff9cd6",
+    resultHeroLabelSuccess: "Measure Broken",
+    resultHeroLabelFailure: "Measure Unmet",
+    recordLabelSuccess: "Uncommon Measure Record",
+    recordLabelFailure: "Severe Trial Record",
+    examinerSuccessLine: "There isn't a cleaner category left for this office to put you in. We'll write the record anyway.",
+    examinerFailureLine: "You didn't clear it, but no one mistakes this for an ordinary failure.",
+  },
+};
+
 const TOWER_ENEMY_ROLE_ART: Record<TowerEnemyUnit["role"], ImageSourcePropType> = {
   normal: s3AssetWithFallback("ui/source/vol6/Combo Objects/Combo Objects_10.png", require("../../assets/ui/source/vol6/Combo Objects/Combo Objects_10.png")),
   subBoss: s3AssetWithFallback("ui/source/vol6/Combo Objects/Combo Objects_05.png", require("../../assets/ui/source/vol6/Combo Objects/Combo Objects_05.png")),
@@ -354,6 +592,28 @@ const TOWER_ENEMY_ART: Partial<Record<string, ImageSourcePropType>> = {
   "f1-ash-rat": s3AssetWithFallback("game/tower/enemies/ash-rat-v3.png", require("../../assets/game/tower/enemies/ash-rat-v3.png")),
   "f1-gate-sentinel": s3AssetWithFallback("game/tower/enemies/gate-sentinel-v2.png", require("../../assets/game/tower/enemies/gate-sentinel-v2.png")),
   "f1-warden-of-sparks": s3AssetWithFallback("game/tower/enemies/warden-of-sparks-v3.png", require("../../assets/game/tower/enemies/warden-of-sparks-v3.png")),
+  "raid-leviathor-phase1": s3AssetWithFallback(
+    "game/quests/hunts/leviathor-coiling-deep-square-v1.png",
+    require("../../assets/game/quests/hunts/leviathor-coiling-deep-square-v1.png"),
+  ),
+  "raid-leviathor-phase2": s3AssetWithFallback(
+    "game/quests/hunts/leviathor-coiling-deep-square-v1.png",
+    require("../../assets/game/quests/hunts/leviathor-coiling-deep-square-v1.png"),
+  ),
+  "raid-leviathor-phase3": s3AssetWithFallback(
+    "game/quests/hunts/leviathor-coiling-deep-square-v1.png",
+    require("../../assets/game/quests/hunts/leviathor-coiling-deep-square-v1.png"),
+  ),
+  "raid-leviathor-phase4": s3AssetWithFallback(
+    "game/quests/hunts/leviathor-coiling-deep-square-v1.png",
+    require("../../assets/game/quests/hunts/leviathor-coiling-deep-square-v1.png"),
+  ),
+  "rank-duelist-riven-phase1": E_RANK_DUELIST_PROFILE.avatarOverride,
+  "rank-duelist-riven-phase2": E_RANK_DUELIST_PROFILE.avatarOverride,
+  "rank-auditor-kestrel": C_RANK_AUDITOR_PROFILE.avatarOverride,
+  "rank-charter-serin-phase1": A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
+  "rank-charter-serin-phase2": A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
+  "rank-charter-serin-phase3": A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
 };
 
 const TOWER_ENEMY_ART_BY_NAME: Partial<Record<string, ImageSourcePropType>> = {
@@ -391,6 +651,7 @@ const WARRIOR_PATH_GUIDE_NPC_PROFILE: GuildNpcProfile = {
   signature: "I. Vale",
   avatarOverride: s3AssetWithFallback("game/characters/source/epicfantasy/pack-1-150/Tex_EFHaV1_00031.png", require("../../assets/game/characters/source/epicfantasy/pack-1-150/Tex_EFHaV1_00031.png")),
 };
+const E_RANK_TRIAL_CHALLENGER_ID = E_RANK_DUELIST_PROFILE.id;
 const SPECIAL_RESCUE_QUEST_ID = "quest-aldric-child-rescue";
 const SPECIAL_NPC_QUEST_IDS = new Set([
   "quest-aldric-child-rescue",
@@ -436,6 +697,18 @@ const describePositionRead = (enemy: TowerEnemyUnit | undefined, position: Tower
 };
 const getLiveBattleSuggestion = (mechanic: string): Omit<LiveBattleTelegraph, "id" | "enemyId" | "enemyName" | "mechanic"> => {
   const keyword = mechanic.toLowerCase();
+  if (keyword.includes("brinefire")) {
+    return { recommendedItemId: "ward-charm", suggestedPosition: "rear", suggestedSkillClass: "mage", suggestedBrace: true };
+  }
+  if (keyword.includes("covenant-breaker roar")) {
+    return { recommendedItemId: "guard-tonic", suggestedPosition: "mid", suggestedSkillClass: "warrior", suggestedBrace: true };
+  }
+  if (keyword.includes("scalewake shedding")) {
+    return { suggestedPosition: "front", suggestedSkillClass: "warrior" };
+  }
+  if (keyword.includes("abyssal coil crush")) {
+    return { recommendedItemId: "guard-tonic", suggestedPosition: "front", suggestedSkillClass: "warrior", suggestedBrace: true };
+  }
   if (keyword.includes("poison bite")) {
     return { recommendedItemId: "antitoxin-vial", suggestedPosition: "rear", suggestedSkillClass: "ranger" };
   }
@@ -463,7 +736,10 @@ const getLiveBattleSuggestion = (mechanic: string): Omit<LiveBattleTelegraph, "i
 const buildLiveBattleTelegraphs = (enemies: TowerEnemyUnit[], estimatedTurnDamage: number): LiveBattleTelegraph[] =>
   enemies.flatMap((enemy) => {
     const mechanics = enemy.mechanics?.length ? enemy.mechanics : ["Direct Clash: standard enemy pressure."];
-    const turnsNeeded = Math.max(1, Math.ceil((enemy.health ?? 1) / Math.max(1, estimatedTurnDamage)));
+    const turnsNeeded = Math.max(
+      mechanics.length,
+      Math.max(1, Math.ceil((enemy.health ?? 1) / Math.max(1, estimatedTurnDamage))),
+    );
     return Array.from({ length: turnsNeeded }, (_, index) => {
       const mechanic = mechanics[index % mechanics.length];
       const suggestion = getLiveBattleSuggestion(mechanic);
@@ -594,6 +870,168 @@ const LIVE_QUEST_ENCOUNTERS: Record<
     failureSummary: string;
   }
 > = {
+  "hunt-leviathor-coiling-deep": {
+    title: "Black Ledger Raid: Leviathor of the Coiling Deep",
+    summary:
+      "The black-ledger record opens under live sanction. Leviathor rises in four measures, keeps catastrophe building, and only leaves proof behind if you survive the whole hunt.",
+    enemies: [
+      {
+        id: "raid-leviathor-phase1",
+        name: "Leviathor",
+        role: "boss",
+        level: 60,
+        health: 236,
+        icon: "wave",
+        phaseLabel: "Scalewake Rise",
+        roleTag: "BLACK LEDGER RAID",
+        description:
+          "Leviathor rises out of broken surf with its outer shell still whole. The first measure is about getting through the scales before the deeper ruin comes up behind them.",
+        lore:
+          "Old ledger lines describe Leviathor as a twisting deep remnant that takes whole ascent parties without leaving wreckage behind. The first rise is usually the last thing lesser climbers ever see of it.",
+        weaknessNotes: ["Break the outer shell quickly. If you let it settle, the deeper measures arrive with too much of the beast still intact."],
+        mechanics: [
+          "Scalewake Shedding: Leviathor sloughs broken scales and restores its outer guard.",
+          "Breaker Surge: a body-turn strike that punishes anyone standing too honestly in front of it.",
+          "Undertow Drag: the wake steals your footing and leaves you pressured.",
+        ],
+        combatStats: {
+          damage: 58,
+          critChance: 16,
+          speed: 20,
+          armor: 10,
+        },
+        positioning: {
+          advantagePositions: ["mid", "rear"],
+          blockedPositions: ["front"],
+          note: "The first rise is worst straight in front of the jawline. Work from the wake, not the mouth.",
+        },
+      },
+      {
+        id: "raid-leviathor-phase2",
+        name: "Leviathor",
+        role: "boss",
+        level: 60,
+        health: 278,
+        icon: "fire-water",
+        phaseLabel: "Furnace Maw",
+        roleTag: "FURNACE MAW",
+        description:
+          "The maw opens hot and the water starts burning around the teeth. This is the measure where Leviathor stops feeling like a giant beast and starts feeling like a disaster with a face.",
+        lore:
+          "The black-ledger notes that survived call this the furnace rise: the part where boiling brine and scale-heat turn the whole field into a killing waterline.",
+        weaknessNotes: ["Catastrophe builds fast once the furnace maw opens. Break the pace early or be ready to wear the whole exhalation."],
+        mechanics: [
+          "Scaldwake Turn: Leviathor sweeps the boiling waterline back through the safer angle.",
+          "Furnace Bite: a close snap that punishes anyone who drifts too near the jaw.",
+          "Scalewake Shedding: Leviathor sloughs the cracked shell and hardens again before the next answer lands.",
+        ],
+        specialMeter: {
+          label: "Catastrophe",
+          triggerLabel: "Brinefire Exhalation",
+          startValue: 22,
+          maxValue: 100,
+          fillPerEnemyTurn: 34,
+          interruptPerTurn: 16,
+          resetValue: 12,
+        },
+        combatStats: {
+          damage: 72,
+          critChance: 20,
+          speed: 23,
+          armor: 12,
+        },
+        positioning: {
+          advantagePositions: ["rear"],
+          blockedPositions: ["front"],
+          note: "Once the furnace maw opens, the front line becomes the worst place to answer from.",
+        },
+      },
+      {
+        id: "raid-leviathor-phase3",
+        name: "Leviathor",
+        role: "boss",
+        level: 60,
+        health: 320,
+        icon: "weather-windy",
+        phaseLabel: "Crooked Tide",
+        roleTag: "CROOKED TIDE",
+        description:
+          "The whole body starts moving like the sea has decided to fight beside it. The waterline bends, the safer ground disappears, and every answer comes through a worse angle than the one before.",
+        lore:
+          "Surviving records say Crooked Tide is where Leviathor stops meeting a climber head-on and starts making the whole field lie to them.",
+        weaknessNotes: ["Do not let the tide settle. If the roar and the waterline both land cleanly, the last measure opens with too much of the fight already gone."],
+        mechanics: [
+          "Covenant-Breaker Roar: the sound alone breaks rhythm and leaves you fighting from the back foot.",
+          "Crooked Tide: the waterline twists the honest answer out of the field.",
+          "Undertow Drag: the pull steals your footing and makes the next exchange costlier.",
+        ],
+        specialMeter: {
+          label: "Catastrophe",
+          triggerLabel: "Covenant-Breaker Roar",
+          startValue: 30,
+          maxValue: 100,
+          fillPerEnemyTurn: 40,
+          interruptPerTurn: 14,
+          resetValue: 16,
+        },
+        combatStats: {
+          damage: 86,
+          critChance: 25,
+          speed: 26,
+          armor: 14,
+        },
+        positioning: {
+          advantagePositions: ["mid"],
+          blockedPositions: ["front", "rear"],
+          note: "Crooked Tide steals the cleaner edges and forces the whole answer back through the center.",
+        },
+      },
+      {
+        id: "raid-leviathor-phase4",
+        name: "Leviathor",
+        role: "boss",
+        level: 60,
+        health: 380,
+        icon: "snake",
+        phaseLabel: "Judgment Coil",
+        roleTag: "JUDGMENT COIL",
+        description:
+          "The last measure pulls the whole body tight for the kill. Leviathor stops circling and starts trying to crush the raid record out of you before you can finish what the guild sent you here to prove.",
+        lore:
+          "Judgment Coil is the ending black-ledger survivors fear most: the point where Leviathor commits to one final whole-body crush and the field stops forgiving anything.",
+        weaknessNotes: ["If the last catastrophe cashes in cleanly, it will break most runs outright. Interrupt early or finish the record before the coil closes."],
+        mechanics: [
+          "Judgment Coil: Leviathor winds the body tight and turns the whole field into a killing ring.",
+          "Brinefire Wake: boiling spray strips comfort away from the space you thought was safe.",
+          "Scalewake Shedding: even this late, the shell can harden again if you let it breathe.",
+        ],
+        specialMeter: {
+          label: "Catastrophe",
+          triggerLabel: "Abyssal Coil Crush",
+          startValue: 40,
+          maxValue: 100,
+          fillPerEnemyTurn: 44,
+          interruptPerTurn: 12,
+          resetValue: 18,
+        },
+        combatStats: {
+          damage: 104,
+          critChance: 31,
+          speed: 29,
+          armor: 17,
+        },
+        positioning: {
+          advantagePositions: ["front", "mid"],
+          blockedPositions: ["rear"],
+          note: "Judgment Coil closes the easy retreat. Either stand into it or let the whole run get swallowed.",
+        },
+      },
+    ],
+    successSummary:
+      "Leviathor finally breaks under a full black-ledger raid record. The guild cannot call it rumor anymore, and the Scale Seal comes back as proof of a hunt ordinary high-rank climbers do not finish.",
+    failureSummary:
+      "Leviathor drags the whole raid under its measures and the black ledger stays open. The guild records another failed hunt and leaves the notice posted for anyone reckless enough to try again.",
+  },
   "quest-cinder-vulture-cull": {
     title: "Live Contract: Cull the Cinder Vulture Brood",
     summary: "Ash-caked carrion birds are swarming the ridge. Break the brood line before they can pin the trail in burning feathers.",
@@ -628,12 +1066,905 @@ const LIVE_QUEST_ENCOUNTERS: Record<
           "Shriek of the Brood: pressure howl that throws off follow-up strikes.",
           "Scorch Talons: heavy rake that can snowball if you surrender tempo.",
         ],
+        specialMeter: {
+          label: "Brood Pressure",
+          triggerLabel: "Scorchfall Dive",
+          startValue: 12,
+          maxValue: 100,
+          fillPerEnemyTurn: 26,
+          interruptPerTurn: 18,
+          resetValue: 0,
+        },
       },
     ],
     successSummary:
       "You cut the brood out of Ashwind Ridge and the guild marks the route passable again. The carcasses leave enough remnant feather and ashbone to prove the kill.",
     failureSummary:
       "The ridge turns against you under circling wings and ember grit. The brood holds the air lane, forcing the guild to post the contract again.",
+  },
+};
+const TRIAL_ADVENTURER_PROFILES: Record<string, TrialAdventurerProfile> = {
+  "rank-auditor-kestrel": {
+    id: "kestrel-marr-audit",
+    name: "Kestrel Marr",
+    licenseId: "C-RNG-018-KES",
+    licenseLabel: "Field Audit License",
+    authBody: "Rank Office • Contract Audit Circuit",
+    classId: "ranger",
+    classSequence: 2,
+    avatarId: "ranger-2",
+    avatarOverride: C_RANK_AUDITOR_PROFILE.avatarOverride,
+    adventurerRank: "C",
+    level: 18,
+    towerFloor: 3,
+    weaponId: "weapon-ranger-windlance",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-arcane-sigil"],
+    titleIds: ["title-forest-strider", "title-tower-trailblazer"],
+    activeSkillId: "ability-ranger-scout-path",
+    passiveIds: [],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+      "focus-tonic": 1,
+    },
+    bioLines: [
+      "Kestrel Marr works the contract audit circuit for Thorne Veld's office and is known for turning messy kills into ugly paperwork.",
+      "She is not there to overpower hopeful promotions. She is there to show whether they waste motion, bleed too much, and lose the lane once the work stops looking clean.",
+      "Guild runners say Kestrel almost never raises her voice. She just keeps the record tight until the other climber proves they were never as disciplined as they claimed.",
+    ],
+    healthOverride: 128,
+  },
+  "rank-auditor-kestrel-phase2": {
+    id: "kestrel-marr-audit-phase2",
+    name: "Kestrel Marr",
+    licenseId: "C-RNG-018-KES",
+    licenseLabel: "Field Audit License",
+    authBody: "Rank Office • Contract Audit Circuit",
+    classId: "ranger",
+    classSequence: 2,
+    avatarId: "ranger-2",
+    avatarOverride: C_RANK_AUDITOR_PROFILE.avatarOverride,
+    adventurerRank: "C",
+    level: 18,
+    towerFloor: 3,
+    weaponId: "weapon-ranger-windlance",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-royal-crest"],
+    titleIds: ["title-forest-strider", "title-tower-trailblazer"],
+    activeSkillId: "ability-ranger-scout-path",
+    passiveIds: [],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+      "focus-tonic": 1,
+    },
+    bioLines: [
+      "Kestrel Marr works the contract audit circuit for Thorne Veld's office and is known for turning messy kills into ugly paperwork.",
+      "When the audit turns red, she sharpens instead of panicking. That is why the office trusts her to show whether a climber can stay clean after the easy rhythm is gone.",
+      "Her second read is what the guild actually wants to see: not whether you can start well, but whether you can finish without letting the work come apart.",
+    ],
+    pendingAbilityIds: ["ability-ranger-scout-path"],
+    healthOverride: 176,
+  },
+  "rank-field-captain-sable": {
+    id: "sable-renn-command",
+    name: "Sable Renn",
+    licenseId: "B-WAR-031-SAB",
+    licenseLabel: "Field Command License",
+    authBody: "Rank Office • High-Ward Field Circuit",
+    classId: "warrior",
+    classSequence: 1,
+    avatarId: "warrior-1",
+    avatarOverride: B_RANK_FIELD_CAPTAIN_PROFILE.avatarOverride,
+    adventurerRank: "B",
+    level: 24,
+    towerFloor: 4,
+    warriorPathChoice: "knight",
+    weaponId: "weapon-warrior-highward-centerbreaker",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-arcane-sigil", "buff-royal-crest"],
+    titleIds: ["title-iron-oath", "title-high-ward-linekeeper", "title-cellbreaker-captain"],
+    activeSkillId: "ability-warrior-steel-rhythm",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "Sable Renn earned her captain's file in the High-Ward after standing in a breach until the ward was won back.",
+      "Virel Dawn uses her for B-rank certification because Sable does not test a clean duel. She tests whether you can keep your feet when the line starts to go against you under a captain who knows how to turn it.",
+      "Inside the guild, Sable's name is attached to climbers who looked ready for command until the whole fight bent to another captain's hand.",
+    ],
+    pendingAbilityIds: ["ability-warrior-steel-rhythm"],
+    healthOverride: 188,
+  },
+  "rank-duelist-riven-phase1": {
+    id: "riven-hale-phase1",
+    name: "Riven Hale",
+    licenseId: "D-WAR-011-RIV",
+    licenseLabel: "Sanctioned Duelist License",
+    authBody: "Rank Office • Vanguard Duel Circuit",
+    classId: "warrior",
+    classSequence: 3,
+    avatarId: "warrior-3",
+    avatarOverride: E_RANK_DUELIST_PROFILE.avatarOverride,
+    adventurerRank: "D",
+    level: 12,
+    towerFloor: 2,
+    warriorPathChoice: "knight",
+    weaponId: "weapon-warrior-briarcleaver",
+    sigilIds: ["buff-embershard-charm", "buff-thornward-seal", "buff-gale-feather"],
+    titleIds: ["title-iron-oath", "title-first-snare"],
+    activeSkillId: "ability-warrior-steel-rhythm",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "Riven Hale, hall duelist of Nyra Sol's office, is the guild's standing E-rank promotion challenger.",
+      "Nyra uses him because he fights like a seasoned adventurer, not a training dummy. He carries his own tonics, trusts his sigils, and punishes anyone who loses their nerve once the ring turns hard.",
+      "He is trusted with promotion trials because he makes disorder obvious without needing to posture about it.",
+    ],
+    healthOverride: 124,
+  },
+  "rank-duelist-riven-phase2": {
+    id: "riven-hale-phase2",
+    name: "Riven Hale",
+    licenseId: "D-WAR-011-RIV",
+    licenseLabel: "Sanctioned Duelist License",
+    authBody: "Rank Office • Vanguard Duel Circuit",
+    classId: "warrior",
+    classSequence: 3,
+    avatarId: "warrior-3",
+    avatarOverride: E_RANK_DUELIST_PROFILE.avatarOverride,
+    adventurerRank: "D",
+    level: 12,
+    towerFloor: 2,
+    warriorPathChoice: "knight",
+    weaponId: "weapon-warrior-briarcleaver",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-royal-crest"],
+    titleIds: ["title-iron-oath", "title-first-snare"],
+    activeSkillId: "ability-warrior-steel-rhythm",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "Riven Hale, hall duelist of Nyra Sol's office, is the guild's standing E-rank promotion challenger.",
+      "When the bout sharpens, he does not become theatrical. He becomes harder to move, harder to read, and harder to finish cleanly.",
+      "That is the guild's point with him: if your hand comes apart once the ring tightens, the rank was not yours yet.",
+    ],
+    pendingAbilityIds: ["ability-warrior-steel-rhythm"],
+    healthOverride: 164,
+  },
+  "rank-charter-serin-phase1": {
+    id: "serin-vael-phase1",
+    name: "Serin Vael",
+    licenseId: "A-WAR-042-SER",
+    licenseLabel: "High Ascent License",
+    authBody: "Rank Office • Charter Route Authority",
+    classId: "warrior",
+    classSequence: 1,
+    avatarId: "warrior-1",
+    avatarOverride: A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
+    adventurerRank: "A",
+    level: 42,
+    towerFloor: 6,
+    weaponId: "weapon-warrior-oathwarden-blade",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-arcane-sigil", "buff-royal-crest"],
+    titleIds: ["title-iron-oath", "title-tower-trailblazer", "title-crown-aspirant", "title-charter-bearer"],
+    activeSkillId: "ability-warrior-steel-rhythm",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "Serin Vael serves Lyss Argent's office as one of the charter witnesses trusted to decide whether a climber is ready to carry A-rank responsibility.",
+      "He is the kind of ascent marshal the guild sends when strength alone is no longer enough proof.",
+      "If Serin signs your climb, the office treats you as someone who can be trusted far above the routine floors with lives, writs, and hard calls under your name.",
+    ],
+    healthOverride: 154,
+  },
+  "rank-charter-serin-phase2": {
+    id: "serin-vael-phase2",
+    name: "Serin Vael",
+    licenseId: "A-WAR-042-SER",
+    licenseLabel: "High Ascent License",
+    authBody: "Rank Office • Charter Route Authority",
+    classId: "warrior",
+    classSequence: 1,
+    avatarId: "warrior-1",
+    avatarOverride: A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
+    adventurerRank: "A",
+    level: 42,
+    towerFloor: 6,
+    weaponId: "weapon-warrior-oathwarden-blade",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-arcane-sigil", "buff-royal-crest"],
+    titleIds: ["title-iron-oath", "title-tower-trailblazer", "title-crown-aspirant", "title-charter-bearer"],
+    activeSkillId: "ability-warrior-steel-rhythm",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "Once the charter tightens, Serin stops reading your opening and starts reading what kind of authority you still have left once the cost of the run is real.",
+      "This is where B-rank climbers usually find out whether their neat control survives a longer, uglier exchange.",
+      "The office trusts Serin because he does not confuse a strong beginning with a trustworthy ascent.",
+    ],
+    pendingAbilityIds: ["ability-warrior-steel-rhythm"],
+    healthOverride: 182,
+  },
+  "rank-charter-serin-phase3": {
+    id: "serin-vael-phase3",
+    name: "Serin Vael",
+    licenseId: "A-WAR-042-SER",
+    licenseLabel: "High Ascent License",
+    authBody: "Rank Office • Charter Route Authority",
+    classId: "warrior",
+    classSequence: 1,
+    avatarId: "warrior-1",
+    avatarOverride: A_RANK_CHARTER_WITNESS_PROFILE.avatarOverride,
+    adventurerRank: "A",
+    level: 42,
+    towerFloor: 6,
+    weaponId: "weapon-warrior-oathwarden-blade",
+    sigilIds: ["buff-thornward-seal", "buff-gale-feather", "buff-arcane-sigil", "buff-royal-crest"],
+    titleIds: ["title-iron-oath", "title-tower-trailblazer", "title-crown-aspirant", "title-charter-bearer"],
+    activeSkillId: "ability-warrior-bulwark-oath",
+    passiveIds: ["ability-warrior-combat-discipline", "ability-warrior-shield-doctrine"],
+    pouchItems: {
+      "guard-tonic": 1,
+      "health-potion": 1,
+    },
+    bioLines: [
+      "The last measure is not about flair. It is about whether the guild can still trust your judgment once you are tired, marked, and one bad answer away from losing the charter.",
+      "Serin's final phase is the part older climbers talk about quietly, because it exposes whether a person merely climbed high or can actually be leaned on there.",
+      "This is the witness the office remembers when it decides whether your name belongs in A-rank trust.",
+    ],
+    pendingAbilityIds: ["ability-warrior-bulwark-oath"],
+    healthOverride: 214,
+  },
+};
+
+const getTrialAdventurerEquippedSigilIds = (profile: TrialAdventurerProfile) =>
+  profile.sigilIds.slice(0, getBuffSlotLimit(profile.adventurerRank));
+
+const getTrialAdventurerEquippedTitleIds = (profile: TrialAdventurerProfile) =>
+  profile.titleIds.slice(0, getTitleSlotLimit(profile.level));
+
+const buildTrialAdventurerState = (profile: TrialAdventurerProfile): CharacterState => {
+  const equippedSigilIds = getTrialAdventurerEquippedSigilIds(profile);
+  const equippedTitleIds = getTrialAdventurerEquippedTitleIds(profile);
+  const baseState: CharacterState = {
+    id: profile.id,
+    name: profile.name,
+    classId: profile.classId,
+    classSequence: profile.classSequence,
+    avatarId: profile.avatarId,
+    progression: {
+      level: profile.level,
+      xpInLevel: 0,
+      xpToNextLevel: 100,
+      masteryLevel: profile.level,
+      masteryXpInLevel: 0,
+      masteryXpToNextLevel: 100,
+    },
+    stamina: 12,
+    staminaCap: 12,
+    staminaLastTickAtMs: 0,
+    gold: 0,
+    health: 1,
+    healthCap: 1,
+    focus: 1,
+    focusCap: 1,
+    focusLastTickAtMs: 0,
+    noviceEmergencyReviveAvailableAtMs: 0,
+    adventurerRank: profile.adventurerRank,
+    equippedWeaponId: profile.weaponId,
+    ownedTitleIds: equippedTitleIds,
+    discoveredTitleIds: equippedTitleIds,
+    titleProgressById: Object.fromEntries(equippedTitleIds.map((titleId) => [titleId, 1])),
+    equippedBuffIds: equippedSigilIds,
+    equippedTitleIds: equippedTitleIds,
+    activeBuffExpiresAtMs: {},
+    pausedBuffRemainingMs: {},
+    pendingAbilityId: null,
+    pendingAbilityIds: profile.pendingAbilityIds ?? [],
+    abilityCooldownsUntilMs: {},
+    warriorPathChoice: profile.warriorPathChoice ?? null,
+    activeClassSkillId: profile.activeSkillId,
+    equippedPassiveAbilityIds: profile.passiveIds,
+    affinity: 0,
+    inventory: {},
+    combatPouchItems: profile.pouchItems,
+    combatPouchCapacity: 3,
+    sigilAppearanceMode: "dynamic",
+    sigilAppearanceItemId: null,
+    towerProgress: {
+      highestFloorCleared: profile.towerFloor,
+    },
+  };
+  const healthCap = profile.healthOverride ?? getDerivedHealthCap(baseState);
+  const focusCap = getDerivedSkillResourceCap(baseState);
+  return {
+    ...baseState,
+    health: healthCap,
+    healthCap,
+    focus: focusCap,
+    focusCap,
+  };
+};
+
+const getTrialAdventurerProfile = (enemyId: string) => TRIAL_ADVENTURER_PROFILES[enemyId] ?? null;
+
+const getTrialAdventurerLoadoutNotes = (enemyId: string) => {
+  const profile = getTrialAdventurerProfile(enemyId);
+  if (!profile) {
+    return null;
+  }
+  const equippedSigilIds = getTrialAdventurerEquippedSigilIds(profile);
+  const equippedTitleIds = getTrialAdventurerEquippedTitleIds(profile);
+  const weaponName = ITEM_BY_ID[profile.weaponId]?.name ?? profile.weaponId;
+  const sigilNames = equippedSigilIds.map((itemId) => ITEM_BY_ID[itemId]?.name ?? itemId).join(" • ");
+  const titleNames = equippedTitleIds.map((titleId) => TITLE_BY_ID[titleId]?.name ?? titleId).join(" • ");
+  const skillName = profile.activeSkillId ? ABILITY_BY_ID[profile.activeSkillId]?.name ?? profile.activeSkillId : "None";
+  const passiveNames = profile.passiveIds.map((abilityId) => ABILITY_BY_ID[abilityId]?.name ?? abilityId).join(" • ");
+  const pouchNames = Object.entries(profile.pouchItems)
+    .map(([itemId, count]) => `${ITEM_BY_ID[itemId]?.name ?? itemId} x${count}`)
+    .join(" • ");
+  return [
+    `Weapon: ${weaponName}`,
+    `Sigils: ${sigilNames}`,
+    `Title: ${titleNames}`,
+    `Skill: ${skillName}`,
+    `Passives: ${passiveNames}`,
+    `Pouch: ${pouchNames}`,
+  ];
+};
+
+const getTrialAdventurerCombatStats = (enemyId: string) => {
+  const profile = getTrialAdventurerProfile(enemyId);
+  if (!profile) {
+    return null;
+  }
+  const simulated = buildTrialAdventurerState(profile);
+  const pending = getPendingAbilityBonuses(simulated);
+  const combat = getCharacterCombatStats(simulated);
+  return {
+    damage: combat.damage + pending.damageFlat,
+    critChance: Math.min(65, combat.critChance + pending.critFlat),
+    speed: combat.speed + pending.speedFlat,
+    armor: combat.armor,
+    character: simulated,
+  };
+};
+const getTrialAdventurerCombatStatsFromProfile = (profile: TrialAdventurerProfile | null) => {
+  if (!profile) {
+    return null;
+  }
+  const simulated = buildTrialAdventurerState(profile);
+  const pending = getPendingAbilityBonuses(simulated);
+  const combat = getCharacterCombatStats(simulated);
+  return {
+    damage: combat.damage + pending.damageFlat,
+    critChance: Math.min(65, combat.critChance + pending.critFlat),
+    speed: combat.speed + pending.speedFlat,
+    armor: combat.armor,
+    character: simulated,
+  };
+};
+
+const LIVE_RANK_TRIAL_ENCOUNTERS: Record<
+  string,
+  {
+    title: string;
+    summary: string;
+    enemies: TowerEnemyUnit[];
+    successSummary: string;
+    failureSummary: string;
+  }
+> = {
+  "rank-trial-f-e": {
+    title: "First Field Trial: Guild Sanctioned Clash",
+    summary:
+      "Examiner Cyrus sends you into a live threshold ring under guild watch. The test is simple on paper: keep your footing, answer the opening pressure, and finish the lane cleanly enough to be trusted past beginner luck.",
+    enemies: [
+      {
+        id: "rank-threshold-rat",
+        name: "Skitter Rat",
+        role: "normal",
+        level: 5,
+        health: 44,
+        icon: "rat",
+        description: "A nasty fast vermin the guild uses to force a recruit into a real opening exchange.",
+        lore: "Threshold pens are stocked with live vermin because the office wants to see how a novice reacts when a moving target stops being theory.",
+        weaknessNotes: ["It folds fastest if you get behind it before it can skid away again."],
+        mechanics: [
+          "Skitter Lunge: a quick opening bite meant to steal the first breath of the trial.",
+          "Panic Dart: it jerks across the ring and punishes lazy footing.",
+        ],
+        positioning: {
+          advantagePositions: ["rear"],
+          note: "It is easiest to finish once you slip behind it.",
+        },
+      },
+      {
+        id: "rank-threshold-sentry",
+        name: "Shield Sentry",
+        role: "subBoss",
+        level: 6,
+        health: 72,
+        icon: "shield-sword-outline",
+        description: "A battered guild training construct built to test whether a novice can read a guarded frontal exchange.",
+        lore: "The examiner's sentries are not elegant. They are built to punish sloppy swings and reward anyone who actually reads the lane.",
+        weaknessNotes: ["Front pressure breaks it cleanly once you stand your ground instead of drifting."],
+        mechanics: [
+          "Ledger Crash: a heavy sanctioned strike that hits harder if you panic out of position.",
+          "Shield Line: a pressure check that forces you to choose whether to guard or commit.",
+        ],
+        positioning: {
+          advantagePositions: ["front"],
+          blockedPositions: ["rear"],
+          note: "Its backline is screened off. The clean answer is to hold the front and break through it.",
+        },
+      },
+    ],
+    successSummary:
+      "You held the threshold ring together under guild watch, answered the opening pressure, and finished the sanctioned clash cleanly enough for Cyrus to record you as ready for E-rank.",
+    failureSummary:
+      "The threshold ring got away from you. Cyrus records the failed read, the guild keeps your rank where it is, and you are sent back to rebuild your record before trying again.",
+  },
+  "rank-trial-e-d": {
+    title: "Earn The D-Mark: Sanctioned Duel",
+    summary:
+      "Examiner Nyra Sol puts you across from Riven Hale, the guild's standing E-rank duelist. This is a sanctioned bout against another adventurer, not another beast in a pen. He carries a real blade, fights under sigil cover, and knows how to drag a sloppy climber out of position.",
+    enemies: [
+      {
+        id: "rank-duelist-riven-phase1",
+        name: "Riven Hale",
+        role: "subBoss",
+        level: 12,
+        health: 124,
+        icon: "account-sword-outline",
+        phaseLabel: "Opening Exchange",
+        roleTag: "E-RANK DUELIST",
+        description: "Riven enters the ring with a falchion in hand and a guard tonic ready at his belt. He fights with the patience of someone paid to expose every lazy habit a climber still carries.",
+        lore: "Riven Hale serves as Nyra Sol's hall duelist. The guild sends D-rank hopefuls against him because another adventurer can punish hesitation, bad footing, and false confidence in ways a tower beast never will.",
+        weaknessNotes: ["Do not give him the middle of the ring. Once he owns the center, he starts setting the pace."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-duelist-riven-phase1") ?? undefined,
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-duelist-riven-phase1");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Measured Cut: a disciplined opening strike that punishes lazy guard checks.",
+          "Guard Tonic: Riven hardens his stance and forces you to cut through protection before he yields ground.",
+          "Step-In Feint: he shows one lane, then cuts the other the moment your footing slips.",
+        ],
+        positioning: {
+          advantagePositions: ["mid"],
+          note: "Riven wants the center of the ring. If you give it to him, the whole bout starts moving on his terms.",
+        },
+      },
+      {
+        id: "rank-duelist-riven-phase2",
+        name: "Riven Hale",
+        role: "boss",
+        level: 12,
+        health: 164,
+        icon: "shield-star-outline",
+        phaseLabel: "Reserve Sigil Drawn",
+        roleTag: "SIGIL DRAWN",
+        description: "When you break his first guard, Riven tears open the reserve sigil at his shoulder and steps back in harder, faster, and far less willing to yield ground.",
+        lore: "Nyra's office lets Riven draw on a reserve sigil because D-rank is not about beating one clean pattern. It is about holding yourself together when a trained fighter comes back sharper than before.",
+        weaknessNotes: ["His surge is worst if you panic and let him settle into his new pace. Meet it early and break it before it hardens."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-duelist-riven-phase2") ?? undefined,
+        specialMeter: {
+          label: "Tempo",
+          triggerLabel: "Execution Rush",
+          startValue: 18,
+          maxValue: 100,
+          fillPerEnemyTurn: 34,
+          interruptPerTurn: 26,
+          resetValue: 0,
+        },
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-duelist-riven-phase2");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Health Potion: Riven tears open a reserve draught and refuses to stay down.",
+          "Steel Rhythm: ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage while it lasts.",
+          "Execution Rush: a committed finishing sequence that punishes weak footing and slow answers.",
+        ],
+        positioning: {
+          advantagePositions: ["front"],
+          blockedPositions: ["rear"],
+          note: "Once the reserve sigil is drawn, the back line closes. Meet him directly or lose the ring under your feet.",
+        },
+      },
+    ],
+    successSummary:
+      "You beat Riven Hale under guild watch, cut through his sigils, and proved to Nyra Sol that you can stand your ground against a trained adventurer. The guild records you for D-rank.",
+    failureSummary:
+      "Riven kept the bout on his terms, punished every loose answer, and sent you back across the ring without the D-mark. The guild records the loss and tells you to return cleaner.",
+  },
+  "rank-trial-d-c": {
+    title: "Execution Record: Field Audit",
+    summary:
+      "Thorne Veld opens a live field audit and uses Kestrel Marr as the moving line he trusts for C-rank certification. This is the first promotion where the office expects you to finish live work under pressure, hold the field clean, and still have a record worth signing after the line turns hard.",
+    enemies: [
+      {
+        id: "rank-auditor-kestrel",
+        name: "Kestrel Marr",
+        role: "subBoss",
+        level: 18,
+        health: 128,
+        icon: "crosshairs-gps",
+        phaseLabel: "Audit Line",
+        roleTag: "AUDIT LINE",
+        description: "Kestrel is the line Thorne uses to measure waste. She does not come to win a spectacle. She comes to make every loose turn, bad lane, and wasted answer show up in the file.",
+        lore: "Thorne Veld uses Kestrel Marr for C-rank audits because she does not hand climbers a heroic duel. She gives them contract pressure: the kind that keeps getting worse if you fail to close the work cleanly the first time.",
+        weaknessNotes: [
+          "If you take the center early and keep her from settling into the audit line, the file stays in your hands instead of turning against you.",
+        ],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-auditor-kestrel") ?? undefined,
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-auditor-kestrel");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Measured Cut: a disciplined strike that punishes loose footing and aimless trading.",
+          "Guard Tonic: Kestrel hardens the audit line and forces you to chew through real protection.",
+          "Focus Tonic: she sharpens the pace and starts reading wasted movement harder.",
+          "Snapline Feint: she drags your read off the honest lane and punishes the recovery.",
+        ],
+        positioning: {
+          advantagePositions: ["mid"],
+          blockedPositions: ["rear"],
+          note: "Kestrel keeps the audit on the center line. If you keep conceding it, she starts closing your safer angles before the real review begins.",
+        },
+      },
+      {
+        id: "rank-auditor-kestrel-phase2",
+        name: "Kestrel Marr",
+        role: "boss",
+        level: 18,
+        health: 176,
+        icon: "file-document-alert-outline",
+        phaseLabel: "Redline Audit",
+        roleTag: "REDLINE FILE",
+        description: "Once the first line breaks, Kestrel stops measuring and starts redlining the file in real time. The audit turns faster, narrower, and much less forgiving.",
+        lore: "C-rank is where the office stops praising clean starts and starts asking what you look like when the work refuses to stay solved. Kestrel's redline pass is the part that drives hopefuls out of the ledger.",
+        weaknessNotes: [
+          "If you let her redline meter finish building, the file closes hard. Break the build early or she will cash it in for a finishing sequence.",
+        ],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-auditor-kestrel-phase2") ?? undefined,
+        specialMeter: {
+          label: "Audit Pressure",
+          triggerLabel: "Final Citation",
+          startValue: 24,
+          maxValue: 100,
+          fillPerEnemyTurn: 38,
+          interruptPerTurn: 20,
+          resetValue: 8,
+        },
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-auditor-kestrel-phase2");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Health Potion: if you let the audit drag, she resets the line and makes you pay for the waste.",
+          "Focus Tonic: she locks the pace down and makes every slow answer more expensive.",
+          "Final Citation: the closing sequence Thorne uses to see whether you can survive work that has turned fully against you.",
+        ],
+        positioning: {
+          advantagePositions: ["front"],
+          blockedPositions: ["mid", "rear"],
+          note: "Once the file turns red, Kestrel closes the safe lanes and forces the whole audit into direct pressure. Meet it or get buried under it.",
+        },
+      },
+    ],
+    successSummary:
+      "Thorne Veld signs the ledger. You finished the audit inside the office standard, and the guild records the work as fit for C-rank.",
+    failureSummary:
+      "The office rejects the record. Whether Kestrel turned you back outright or your work simply went sloppy, Thorne marks the audit as unfit for C-rank and sends you back to build a cleaner hand.",
+  },
+  "rank-trial-c-b": {
+    title: "Field Command: Broken Spear",
+    summary:
+      "Virel Dawn does not send you into a ring or a clean audit. She puts you into Broken Spear, a live field-command certification under Captain Sable Renn. B-rank is where the guild stops asking whether you can win a duel and starts asking whether you can keep the line from breaking around you.",
+    enemies: [
+      {
+        id: "rank-field-anchor-post",
+        name: "Anchor Post",
+        role: "subBoss",
+        level: 22,
+        health: 136,
+        icon: "flag-variant-outline",
+        phaseLabel: "Holding Line",
+        roleTag: "ANCHOR POST",
+        description: "The first line is not here to kill you quickly. It is here to hold you in place long enough for the captain's people to gather around you.",
+        lore: "The High-Ward office uses Anchor Posts to teach one hard lesson: if you let the enemy set itself and breathe, the captain reaches you with the whole line already behind her.",
+        weaknessNotes: ["Break the anchor quickly. Every extra turn you give it is another turn the rest of the unit gets to gather itself."],
+        mechanics: [
+          "Ward Brace: the anchor line stiffens and forces you to chew through real protection.",
+          "Line Seal: if the post finishes the cast, it tightens the captain's grip on the fight behind it.",
+          "Pike Check: a blunt line-hit that punishes careless footing.",
+        ],
+        specialMeter: {
+          label: "Anchor Lock",
+          triggerLabel: "Line Seal",
+          startValue: 12,
+          maxValue: 100,
+          fillPerEnemyTurn: 30,
+          interruptPerTurn: 18,
+          resetValue: 0,
+        },
+        combatStats: {
+          damage: 24,
+          critChance: 9,
+          speed: 15,
+          armor: 7,
+        },
+        positioning: {
+          advantagePositions: ["mid"],
+          blockedPositions: ["rear"],
+          note: "The anchor plants itself in the heart of the fight and robs you of room to fall back while it still stands.",
+        },
+      },
+      {
+        id: "rank-field-pursuit-hound",
+        name: "Pursuit Hound",
+        role: "subBoss",
+        level: 22,
+        health: 144,
+        icon: "dog-side",
+        phaseLabel: "Running Pressure",
+        roleTag: "HUNTING PACK",
+        description: "The second line does not hold ground. It hunts down retreats, cuts off easy escapes, and makes the whole fight feel tighter than it is.",
+        lore: "Virel uses pursuit teams because B-rank climbers are expected to choose what matters while the fight is still moving, not only after everything has slowed into something easy to read.",
+        weaknessNotes: ["Do not let the hunting pack keep running. If it marks you cleanly, the captain arrives with the whole certification already leaning her way."],
+        mechanics: [
+          "Focus Tonic: the pack sharpens the pace and starts punishing hesitation harder.",
+          "Kill Mark: if the hound finishes the read, the captain reaches you with a cleaner opening.",
+          "Needle Rush: a fast cut that punishes slow answers.",
+        ],
+        specialMeter: {
+          label: "Pursuit Mark",
+          triggerLabel: "Kill Mark",
+          startValue: 18,
+          maxValue: 100,
+          fillPerEnemyTurn: 32,
+          interruptPerTurn: 18,
+          resetValue: 0,
+        },
+        combatStats: {
+          damage: 26,
+          critChance: 12,
+          speed: 19,
+          armor: 5,
+        },
+        positioning: {
+          advantagePositions: ["rear"],
+          blockedPositions: ["front"],
+          note: "The pack wants room to circle. Give it that and it starts deciding where the captain gets to close on you.",
+        },
+      },
+      {
+        id: "rank-field-captain-sable",
+        name: "Sable Renn",
+        role: "boss",
+        level: 24,
+        health: 188,
+        icon: "chess-king",
+        phaseLabel: "Command Finish",
+        roleTag: "FIELD LEAD",
+        description: "Captain Sable Renn is the one waiting to see whether your earlier choices actually held. If her line reaches her intact, she ends it fast. If you broke it on the way in, she has to win every step herself.",
+        lore: "Virel Dawn uses Sable Renn when she wants the B-rank file to answer one question clearly: can this climber keep a hard fight from breaking under a captain who knows how to turn every opening against them?",
+        weaknessNotes: ["Every breach you allowed earlier puts more of the fight in Sable's hands. If you let her finish what her people started, the whole certification closes on you at once."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-field-captain-sable") ?? undefined,
+        specialMeter: {
+          label: "Field Collapse",
+          triggerLabel: "Break Order",
+          startValue: 24,
+          maxValue: 100,
+          fillPerEnemyTurn: 40,
+          interruptPerTurn: 18,
+          resetValue: 10,
+        },
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-field-captain-sable");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Guard Tonic: Sable settles behind command-grade protection and makes you work through a real line.",
+          "Steel Rhythm: ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage while it lasts.",
+          "Health Potion: if you drag the finish out, she resets her footing and wins back the ground you took.",
+          "Break Order: the closing sequence that lands when you let the whole unit settle around you.",
+        ],
+        positioning: {
+          advantagePositions: ["mid", "front"],
+          blockedPositions: ["rear"],
+          note: "Once the captain takes hold of the fight, there is no safe way out. She drives straight at you and punishes anything less than a committed answer.",
+        },
+      },
+    ],
+    successSummary:
+      "Virel Dawn closes Broken Spear and records that you broke Sable Renn's line without losing your own. The guild marks the result as fit for B-rank.",
+    failureSummary:
+      "The line gave way around you, Sable's people held longer than you did, and Virel Dawn refused the B-rank record. The office does not promote climbers who lose the fight once the fighting turns hard.",
+  },
+  "rank-trial-b-a": {
+    title: "High Ascent Charter",
+    summary:
+      "Lyss Argent does not hand A-rank to anyone who only looks strong in a clean fight. She places your file under Marshal Serin Vael, a charter witness the guild trusts to decide whether a climber can carry elite ascent responsibility once the run turns long, costly, and unforgiving.",
+    enemies: [
+      {
+        id: "rank-charter-serin-phase1",
+        name: "Serin Vael",
+        role: "subBoss",
+        level: 42,
+        health: 154,
+        icon: "shield-crown-outline",
+        phaseLabel: "Opening Measure",
+        roleTag: "A-RANK MARSHAL",
+        description: "Serin opens with the calm of someone who has signed more hard returns than most climbers have even seen. He is not chasing a quick finish. He is measuring what holds up once the climb stops flattering you.",
+        lore: "Lyss Argent uses Serin Vael because he does not mistake nerve for trustworthiness. High ascent work is full of runs that stay ugly for too long, and Serin is there to see what remains of you when that happens.",
+        weaknessNotes: ["If you give him too much room early, he settles the pace into something expensive and drags the whole charter onto his terms."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-charter-serin-phase1") ?? undefined,
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-charter-serin-phase1");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Measured Cut: a disciplined opening cut that punishes loose answers without wasting motion.",
+          "Guard Tonic: Serin hardens his line and strips easy comfort out of the exchange.",
+          "Writ Cut: he takes the line you were relying on and forces you to answer from worse footing.",
+        ],
+        positioning: {
+          advantagePositions: ["front", "mid"],
+          blockedPositions: ["rear"],
+          note: "Serin prefers to take the ground in front of him and make you answer his blade directly. If you let him own that space, the whole run starts getting more expensive.",
+        },
+      },
+      {
+        id: "rank-charter-serin-phase2",
+        name: "Serin Vael",
+        role: "boss",
+        level: 42,
+        health: 182,
+        icon: "script-text-outline",
+        phaseLabel: "Charter Tightened",
+        roleTag: "CHARTER WITNESS",
+        description: "Once the first measure breaks, Serin tightens the charter instead of retreating. The exchange grows narrower, harsher, and much less willing to forgive wasted motion.",
+        lore: "This is the part of the run where the guild stops admiring strength and starts deciding whether it can trust your name on a costly ascent writ.",
+        weaknessNotes: ["If you let Serin close the charter on his own terms, the office marks the run against you and the last measure becomes much harder to survive."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-charter-serin-phase2") ?? undefined,
+        specialMeter: {
+          label: "Charter Pressure",
+          triggerLabel: "Seal Of Denial",
+          startValue: 20,
+          maxValue: 100,
+          fillPerEnemyTurn: 36,
+          interruptPerTurn: 18,
+          resetValue: 10,
+        },
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-charter-serin-phase2");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Steel Rhythm: ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage while it lasts.",
+          "Seal Of Denial: if the charter pressure tops out, he closes the safe answer and drives the whole run toward failure.",
+          "Guard Tonic: he keeps the pace hard enough that lazy exchanges stop existing.",
+        ],
+        positioning: {
+          advantagePositions: ["front", "mid"],
+          blockedPositions: ["rear"],
+          note: "Once the charter tightens, Serin stops giving you easy resets and forces the whole run back through his guard.",
+        },
+      },
+      {
+        id: "rank-charter-serin-phase3",
+        name: "Serin Vael",
+        role: "boss",
+        level: 42,
+        health: 214,
+        icon: "castle",
+        phaseLabel: "Final Measure",
+        roleTag: "LAST WITNESS",
+        description: "Serin carries the charter into its final measure with the same steady hand he opened with, only now every exchange comes with the weight of the guild deciding whether your name is safe to lean on above the routine floors.",
+        lore: "A-rank is where the office starts planning around you, not merely approving you. Serin's last measure exists to keep that trust out of the wrong hands.",
+        weaknessNotes: ["If you let the last measure settle fully, he closes the charter with a sequence that can break the whole run in one answer."],
+        loadoutNotes: getTrialAdventurerLoadoutNotes("rank-charter-serin-phase3") ?? undefined,
+        specialMeter: {
+          label: "Final Measure",
+          triggerLabel: "Ascent Sentence",
+          startValue: 28,
+          maxValue: 100,
+          fillPerEnemyTurn: 40,
+          interruptPerTurn: 16,
+          resetValue: 12,
+        },
+        combatStats: (() => {
+          const stats = getTrialAdventurerCombatStats("rank-charter-serin-phase3");
+          return stats
+            ? {
+                damage: stats.damage,
+                critChance: stats.critChance,
+                speed: stats.speed,
+                armor: stats.armor,
+              }
+            : undefined;
+        })(),
+        mechanics: [
+          "Health Potion: if you fail to finish the run, Serin steadies and makes you earn the ground all over again.",
+          "Bulwark Oath: Serin turns the charter into a wall and the whole witness gets harder to break.",
+          "Ascent Sentence: the final sequence Lyss uses to see whether a climber can still be trusted once the cost of the run is fully real.",
+        ],
+        positioning: {
+          advantagePositions: ["front", "mid"],
+          blockedPositions: ["rear"],
+          note: "By the last measure, Serin stops yielding the honest lane and starts forcing every answer through the worst possible angle for you.",
+        },
+      },
+    ],
+    successSummary:
+      "Lyss Argent signs the charter. You stayed whole through Serin Vael's full witness, finished the run without losing the office's trust, and the guild records you for A-rank.",
+    failureSummary:
+      "The charter was not granted. Whether Serin turned the run against you outright or the attempt cost too much to trust, Lyss Argent keeps the ascent authority sealed and sends you back for a stronger record.",
   },
 };
 const GUILD_MAGE_NPC_ID = "npc-mage-seraphine";
@@ -673,11 +2004,14 @@ export const QuestsScreen = ({
   onDeactivateBuff,
   onUseQuestRushItem,
   onStartQuest,
+  onClearActiveQuest,
   onClaimQuest,
   onResolveLyraQuestChoice,
   onResolveTowerWave,
   onFinalizeTowerFloor,
   onAttemptRankUp,
+  onResolveRankUpCombatTrial,
+  onUnlockASRankRaidNotices,
   storyState,
   onRecordNpcInteraction,
   rescueNpcStatus,
@@ -695,7 +2029,7 @@ export const QuestsScreen = ({
   onRespondTowerConditionalEncounter,
   encounteredNpcProfiles,
   towerStatusEffects,
-  towerPreparedItemIds,
+  combatPouchItems,
   onTowerModeChange,
 }: QuestsScreenProps) => {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -740,6 +2074,9 @@ export const QuestsScreen = ({
   const [lastCraftedItemId, setLastCraftedItemId] = useState<ItemId | null>(null);
   const [questResultOpen, setQuestResultOpen] = useState(false);
   const [pendingQuestResultOpen, setPendingQuestResultOpen] = useState(false);
+  const [rankTrialResultOpen, setRankTrialResultOpen] = useState(false);
+  const [rankTrialAssessmentSummary, setRankTrialAssessmentSummary] = useState<RankTrialAssessmentSummary | null>(null);
+  const [pendingRankTrialResultOpen, setPendingRankTrialResultOpen] = useState(false);
   const [towerEncounterOpen, setTowerEncounterOpen] = useState(false);
   const [pendingTowerEncounterOpen, setPendingTowerEncounterOpen] = useState(false);
   const [revealedTowerPhases, setRevealedTowerPhases] = useState(0);
@@ -749,10 +2086,9 @@ export const QuestsScreen = ({
   const [guildTab, setGuildTab] = useState<GuildTab>("npc");
   const [storeSubTab, setStoreSubTab] = useState<StoreSubTab>("shop");
   const [selectedItemsByQuest, setSelectedItemsByQuest] = useState<Record<string, Record<ItemId, number>>>({});
-  const [selectedItemsForRankTrial, setSelectedItemsForRankTrial] = useState<Record<ItemId, number>>({});
-  const [selectedItemsForTower, setSelectedItemsForTower] = useState<Record<string, Record<ItemId, number>>>({});
   const [selectedTowerEnemy, setSelectedTowerEnemy] = useState<TowerEnemyUnit | null>(null);
   const [towerEnemyArtExpanded, setTowerEnemyArtExpanded] = useState(false);
+  const [expandedTrialEnemy, setExpandedTrialEnemy] = useState<TowerEnemyUnit | null>(null);
   const [towerRunStageByFloor, setTowerRunStageByFloor] = useState<Record<number, TowerRunStage>>({});
   const [towerWaveProgressByFloor, setTowerWaveProgressByFloor] = useState<
     Record<number, Record<TowerWaveKey, "locked" | "available" | "cleared">>
@@ -766,6 +2102,7 @@ export const QuestsScreen = ({
   const [enemyTurnAnimating, setEnemyTurnAnimating] = useState(false);
   const [battleEffectHint, setBattleEffectHint] = useState<string | null>(null);
   const [battleStatusHint, setBattleStatusHint] = useState<string | null>(null);
+  const [hoveredEffectBadgeKey, setHoveredEffectBadgeKey] = useState<string | null>(null);
   const [towerCollapseAftermath, setTowerCollapseAftermath] = useState<{
     title: string;
     message: string;
@@ -779,17 +2116,31 @@ export const QuestsScreen = ({
   const [aldricBattleRevealCount, setAldricBattleRevealCount] = useState(0);
   const [aldricBattleAutoResolving, setAldricBattleAutoResolving] = useState(false);
   const [guildDialog, setGuildDialog] = useState<
-    "bran-store" | "examiner-rank" | "tamsin-floor2" | "tamsin-followup" | "tamsin-corridor-report" | "tamsin-deep-warning" | "tamsin-floor2-aftermath" | null
+    "bran-store" | "examiner-rank" | "rank-duelist" | "tamsin-floor2" | "tamsin-followup" | "tamsin-corridor-report" | "tamsin-deep-warning" | "tamsin-floor2-aftermath" | null
   >(null);
   const [branSpeakCount, setBranSpeakCount] = useState(0);
   const [examinerSpeakCount, setExaminerSpeakCount] = useState(0);
   const [branDialogLine, setBranDialogLine] = useState(BRAN_STORE_DIALOG_LINES[0]);
   const [examinerDialogLine, setExaminerDialogLine] = useState(EXAMINER_NOT_READY_DIALOG_LINES[0]);
-  const [infoPanel, setInfoPanel] = useState<{ title: string; body: string; rarity?: ItemRarity; itemId?: ItemId } | null>(null);
+  const [infoPanel, setInfoPanel] = useState<{ title: string; body: string; rarity?: ItemRarity; itemId?: ItemId; artSource?: ImageSourcePropType } | null>(null);
+  const [huntDossierPanel, setHuntDossierPanel] = useState<{
+    title: string;
+    artSource?: ImageSourcePropType;
+    loreSummary: string;
+    encounterStages: string[];
+    signatureMechanics: string[];
+    suggestedSupplies: RaidSuggestedSupply[];
+    proofItemIds: ItemId[];
+  } | null>(null);
+  const [huntArtExpandedPanel, setHuntArtExpandedPanel] = useState<{
+    title: string;
+    artSource?: ImageSourcePropType;
+  } | null>(null);
   const [infoArtExpanded, setInfoArtExpanded] = useState(false);
   const [boardRankFilter, setBoardRankFilter] = useState<BoardRankFilter>("all");
   const [boardTypeFilter, setBoardTypeFilter] = useState<BoardTypeFilter>("all");
   const [collapsedBoardSections, setCollapsedBoardSections] = useState<Record<string, boolean>>({});
+  const combatPouchEntries = Object.entries(combatPouchItems).filter(([, count]) => count > 0);
   const lyraChoicePending =
     lastQuestOutcome?.questId === "quest-lyra-ember-maps" &&
     lastQuestOutcome.success &&
@@ -797,7 +2148,10 @@ export const QuestsScreen = ({
   const lyraDecisionOutstanding = storyState.lyraQuestResolution === "unresolved";
 
   const getTowerEnemyArt = (enemy: TowerEnemyUnit): ImageSourcePropType | undefined =>
-    TOWER_ENEMY_ART[enemy.id] ?? TOWER_ENEMY_ART_BY_NAME[enemy.name.trim().toLowerCase()] ?? TOWER_ENEMY_ROLE_ART[enemy.role];
+    getTrialAdventurerProfile(enemy.id)?.avatarOverride ??
+    TOWER_ENEMY_ART[enemy.id] ??
+    TOWER_ENEMY_ART_BY_NAME[enemy.name.trim().toLowerCase()] ??
+    TOWER_ENEMY_ROLE_ART[enemy.role];
   const rescueNpcVisible =
     rescueNpcStatus === "available" ||
     rescueNpcStatus === "refused_once" ||
@@ -808,10 +2162,18 @@ export const QuestsScreen = ({
     character.classId === "warrior" &&
     character.progression.level >= 15 &&
     !character.warriorPathChoice;
+  const eRankDuelistVisible = character.adventurerRank !== "F" || lastRankUpOutcome?.fromRank === "E";
+  const aRankWitnessVisible = character.adventurerRank === "B" || lastRankUpOutcome?.fromRank === "B";
   const rankExaminerProfile = getExaminerForRank(character.adventurerRank);
   const npcProfiles = useMemo(
     () => {
       const profiles: GuildNpcProfile[] = [...GUILD_CORE_NPCS, rankExaminerProfile];
+      if (eRankDuelistVisible) {
+        profiles.push(E_RANK_DUELIST_PROFILE);
+      }
+      if (aRankWitnessVisible) {
+        profiles.push(A_RANK_CHARTER_WITNESS_PROFILE);
+      }
       if (warriorPathGuideVisible) {
         profiles.push(WARRIOR_PATH_GUIDE_NPC_PROFILE);
       }
@@ -843,15 +2205,373 @@ export const QuestsScreen = ({
       }
       return profiles.sort((a, b) => a.sequenceId - b.sequenceId);
     },
-    [rankExaminerProfile, rescueNpcVisible, warriorPathGuideVisible, encounteredNpcProfiles, storyState.aldricQuestPath],
+    [aRankWitnessVisible, eRankDuelistVisible, rankExaminerProfile, rescueNpcVisible, warriorPathGuideVisible, encounteredNpcProfiles, storyState.aldricQuestPath],
   );
 
-const getLiveEnemyCombatStats = (enemy: TowerEnemyUnit) => ({
-  damage: Math.max(6, Math.round(enemy.level * 2 + (enemy.role === "boss" ? 10 : enemy.role === "subBoss" ? 6 : 2))),
-  critChance: enemy.role === "boss" ? 20 : enemy.role === "subBoss" ? 14 : 8,
-  speed: Math.max(5, Math.round(enemy.level * 1.9 + (enemy.role === "boss" ? 6 : enemy.role === "subBoss" ? 3 : 0))),
-  role: enemy.role,
-});
+const getLiveEnemyCombatStats = (enemy: TowerEnemyUnit) => {
+  const profileStats = getTrialAdventurerCombatStats(enemy.id);
+  if (profileStats) {
+    return {
+      damage: profileStats.damage,
+      critChance: profileStats.critChance,
+      speed: profileStats.speed,
+      armor: profileStats.armor,
+      role: enemy.role,
+    };
+  }
+  return {
+    damage: enemy.combatStats?.damage ?? Math.max(6, Math.round(enemy.level * 2 + (enemy.role === "boss" ? 10 : enemy.role === "subBoss" ? 6 : 2))),
+    critChance: enemy.combatStats?.critChance ?? (enemy.role === "boss" ? 20 : enemy.role === "subBoss" ? 14 : 8),
+    speed: enemy.combatStats?.speed ?? Math.max(5, Math.round(enemy.level * 1.9 + (enemy.role === "boss" ? 6 : enemy.role === "subBoss" ? 3 : 0))),
+    armor: enemy.combatStats?.armor ?? 0,
+    role: enemy.role,
+  };
+};
+const getEnemyHealthTheme = (enemy: TowerEnemyUnit | null) => {
+  if (!enemy) {
+    return undefined;
+  }
+  if (enemy.id === "rank-duelist-riven-phase1") {
+    return {
+      label: "",
+      icon: "#b9b0ff",
+      titleColor: "#efe9ff",
+      valueColor: "#f7f2ff",
+      metaColor: "#d4c9f6",
+      fillColor: "#8b6bff",
+      underlayFillColor: "#4fd29a",
+      trackColor: "rgba(9, 36, 28, 0.8)",
+      trackBorderColor: "rgba(106, 216, 170, 0.42)",
+      containerColor: "rgba(45, 28, 76, 0.94)",
+      containerBorderColor: "#8a6bc3",
+      pillColor: "rgba(85, 55, 130, 0.84)",
+      pillBorderColor: "rgba(198, 180, 255, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "rank-duelist-riven-phase2") {
+    return {
+      label: "",
+      icon: "#99f2c7",
+      titleColor: "#d8fff0",
+      valueColor: "#ecfff7",
+      metaColor: "#bdebd6",
+      fillColor: "#4fd29a",
+      trackColor: "rgba(9, 36, 28, 0.8)",
+      trackBorderColor: "rgba(106, 216, 170, 0.42)",
+      containerColor: "rgba(18, 49, 39, 0.92)",
+      containerBorderColor: "#5db38e",
+      pillColor: "rgba(36, 87, 67, 0.84)",
+      pillBorderColor: "rgba(132, 237, 196, 0.48)",
+    } as const;
+  }
+  if (enemy.id === "rank-auditor-kestrel") {
+    return {
+      label: "",
+      icon: "#b9b0ff",
+      titleColor: "#efe9ff",
+      valueColor: "#f7f2ff",
+      metaColor: "#d4c9f6",
+      fillColor: "#8b6bff",
+      underlayFillColor: "#4fd29a",
+      trackColor: "rgba(9, 36, 28, 0.8)",
+      trackBorderColor: "rgba(106, 216, 170, 0.42)",
+      containerColor: "rgba(45, 28, 76, 0.94)",
+      containerBorderColor: "#8a6bc3",
+      pillColor: "rgba(85, 55, 130, 0.84)",
+      pillBorderColor: "rgba(198, 180, 255, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "rank-auditor-kestrel-phase2") {
+    return {
+      label: "",
+      icon: "#99f2c7",
+      titleColor: "#d8fff0",
+      valueColor: "#ecfff7",
+      metaColor: "#bdebd6",
+      fillColor: "#4fd29a",
+      trackColor: "rgba(9, 36, 28, 0.8)",
+      trackBorderColor: "rgba(106, 216, 170, 0.42)",
+      containerColor: "rgba(18, 49, 39, 0.92)",
+      containerBorderColor: "#5db38e",
+      pillColor: "rgba(36, 87, 67, 0.84)",
+      pillBorderColor: "rgba(132, 237, 196, 0.48)",
+    } as const;
+  }
+  if (enemy.id === "rank-charter-serin-phase1") {
+    return {
+      label: "",
+      icon: "#c9b4ff",
+      titleColor: "#f1eaff",
+      valueColor: "#faf6ff",
+      metaColor: "#ddd2fb",
+      fillColor: "#8b6bff",
+      underlayFillColor: "#d9a24b",
+      trackColor: "rgba(32, 16, 53, 0.82)",
+      trackBorderColor: "rgba(216, 169, 86, 0.4)",
+      containerColor: "rgba(47, 26, 83, 0.94)",
+      containerBorderColor: "#8e6bc7",
+      pillColor: "rgba(90, 56, 132, 0.84)",
+      pillBorderColor: "rgba(207, 188, 255, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "rank-charter-serin-phase2") {
+    return {
+      label: "",
+      icon: "#ffe2a0",
+      titleColor: "#fff3d4",
+      valueColor: "#fff8e8",
+      metaColor: "#efddb1",
+      fillColor: "#d9a24b",
+      underlayFillColor: "#4fd29a",
+      trackColor: "rgba(44, 30, 12, 0.84)",
+      trackBorderColor: "rgba(226, 191, 118, 0.42)",
+      containerColor: "rgba(74, 48, 16, 0.94)",
+      containerBorderColor: "#d1a45a",
+      pillColor: "rgba(110, 74, 28, 0.84)",
+      pillBorderColor: "rgba(255, 223, 160, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "rank-charter-serin-phase3") {
+    return {
+      label: "",
+      icon: "#99f2c7",
+      titleColor: "#d8fff0",
+      valueColor: "#ecfff7",
+      metaColor: "#bdebd6",
+      fillColor: "#4fd29a",
+      trackColor: "rgba(9, 36, 28, 0.8)",
+      trackBorderColor: "rgba(106, 216, 170, 0.42)",
+      containerColor: "rgba(18, 49, 39, 0.92)",
+      containerBorderColor: "#5db38e",
+      pillColor: "rgba(36, 87, 67, 0.84)",
+      pillBorderColor: "rgba(132, 237, 196, 0.48)",
+    } as const;
+  }
+  if (enemy.id === "raid-leviathor-phase1") {
+    return {
+      label: "",
+      icon: "#99d9ff",
+      titleColor: "#dff5ff",
+      valueColor: "#f3fbff",
+      metaColor: "#c6e6f7",
+      fillColor: "#59b9ff",
+      underlayFillColor: "#ffac5f",
+      trackColor: "rgba(15, 32, 54, 0.86)",
+      trackBorderColor: "rgba(110, 182, 231, 0.44)",
+      containerColor: "rgba(17, 35, 64, 0.94)",
+      containerBorderColor: "#5b8fc8",
+      pillColor: "rgba(33, 60, 95, 0.84)",
+      pillBorderColor: "rgba(160, 221, 255, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "raid-leviathor-phase2") {
+    return {
+      label: "",
+      icon: "#ffd7a3",
+      titleColor: "#fff0d7",
+      valueColor: "#fff7ea",
+      metaColor: "#efd9b0",
+      fillColor: "#ffac5f",
+      underlayFillColor: "#67d8c2",
+      trackColor: "rgba(62, 31, 8, 0.84)",
+      trackBorderColor: "rgba(255, 185, 104, 0.42)",
+      containerColor: "rgba(76, 40, 15, 0.94)",
+      containerBorderColor: "#d29b54",
+      pillColor: "rgba(105, 63, 24, 0.84)",
+      pillBorderColor: "rgba(255, 220, 170, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "raid-leviathor-phase3") {
+    return {
+      label: "",
+      icon: "#a7fff2",
+      titleColor: "#e3fffa",
+      valueColor: "#f4fffd",
+      metaColor: "#c6efe9",
+      fillColor: "#67d8c2",
+      underlayFillColor: "#ffe39d",
+      trackColor: "rgba(10, 40, 44, 0.84)",
+      trackBorderColor: "rgba(114, 231, 211, 0.42)",
+      containerColor: "rgba(14, 56, 58, 0.94)",
+      containerBorderColor: "#63b8ab",
+      pillColor: "rgba(25, 81, 83, 0.84)",
+      pillBorderColor: "rgba(181, 255, 242, 0.5)",
+    } as const;
+  }
+  if (enemy.id === "raid-leviathor-phase4") {
+    return {
+      label: "",
+      icon: "#fff0af",
+      titleColor: "#fff7d9",
+      valueColor: "#fffcef",
+      metaColor: "#f0e3b9",
+      fillColor: "#ffe39d",
+      trackColor: "rgba(54, 42, 11, 0.84)",
+      trackBorderColor: "rgba(244, 223, 144, 0.42)",
+      containerColor: "rgba(78, 58, 18, 0.94)",
+      containerBorderColor: "#d8bc67",
+      pillColor: "rgba(115, 89, 31, 0.84)",
+      pillBorderColor: "rgba(255, 244, 185, 0.5)",
+    } as const;
+  }
+  return undefined;
+};
+
+const getEnemySpecialMeterProfile = (enemy: TowerEnemyUnit | null): TowerEnemySpecialMeterProfile | null => {
+  if (!enemy?.specialMeter) {
+    return null;
+  }
+  return {
+    maxValue: 100,
+    startValue: 0,
+    resetValue: 0,
+    ...enemy.specialMeter,
+  };
+};
+
+const buildEnemySpecialMeterState = (enemies: TowerEnemyUnit[]): Record<string, number> =>
+  Object.fromEntries(
+    enemies
+      .filter((enemy) => Boolean(enemy.specialMeter))
+      .map((enemy) => [enemy.id, Math.max(0, Math.min(getEnemySpecialMeterProfile(enemy)?.maxValue ?? 100, getEnemySpecialMeterProfile(enemy)?.startValue ?? 0))]),
+  );
+
+const getEnemySpecialMeterPreview = (
+  session: LiveTowerBattleSession,
+  enemy: TowerEnemyUnit | null,
+): EnemySpecialMeterPreview | null => {
+  const profile = getEnemySpecialMeterProfile(enemy);
+  if (!profile || !enemy) {
+    return null;
+  }
+  const current = Math.max(0, Math.min(profile.maxValue ?? 100, session.enemySpecialMeterById[enemy.id] ?? profile.startValue ?? 0));
+  const max = profile.maxValue ?? 100;
+  return {
+    label: profile.label,
+    triggerLabel: profile.triggerLabel,
+    current,
+    max,
+    ready: current >= max,
+  };
+};
+
+const getEnemyPhaseIdentityKey = (enemy: TowerEnemyUnit | null): string | null => {
+  if (!enemy) {
+    return null;
+  }
+  const trialProfile = getTrialAdventurerProfile(enemy.id);
+  if (trialProfile?.licenseId) {
+    return `license:${trialProfile.licenseId}`;
+  }
+  return enemy.name ? `name:${enemy.name}` : null;
+};
+
+const getQueuedPhaseShiftState = (
+  battle: LiveTowerBattleSession | null,
+  enemy: TowerEnemyUnit | null,
+): { currentEnemy: TowerEnemyUnit; nextEnemy: TowerEnemyUnit; buttonText: string; forcedLabel: string } | null => {
+  if (!battle || !enemy || battle.queuedEnemyIndex == null) {
+    return null;
+  }
+  const nextEnemyId = battle.telegraphs[battle.queuedEnemyIndex]?.enemyId;
+  const nextEnemy = nextEnemyId ? battle.enemies.find((entry) => entry.id === nextEnemyId) ?? null : null;
+  if (!nextEnemy) {
+    return null;
+  }
+  const currentKey = getEnemyPhaseIdentityKey(enemy);
+  const nextKey = getEnemyPhaseIdentityKey(nextEnemy);
+  if (!currentKey || !nextKey || currentKey !== nextKey) {
+    return null;
+  }
+  return {
+    currentEnemy: enemy,
+    nextEnemy,
+    buttonText: nextEnemy.phaseLabel ? `Face ${nextEnemy.phaseLabel}` : "Face Next Phase",
+    forcedLabel: `${enemy.name} Forces The Next Phase`,
+  };
+};
+
+const getSpecialMeterInterruptAmount = (
+  baseAmount: number,
+  playerLevel: number,
+  enemyLevel: number,
+): number => {
+  const levelGap = playerLevel - enemyLevel;
+  const levelFactor = levelGap < 0
+    ? 1 / (1 + Math.abs(levelGap) * 0.22)
+    : Math.min(1.2, 1 + levelGap * 0.03);
+  return Math.max(1, Math.round(baseAmount * levelFactor));
+};
+
+const getSpecialMeterResponseAdjustment = ({
+  responseType,
+  success,
+  baseInterruptAmount,
+  playerDamage,
+  critTriggered,
+}: {
+  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass" | "interrupt";
+  success: boolean;
+  baseInterruptAmount: number;
+  playerDamage: number;
+  critTriggered: boolean;
+}): number => {
+  if (responseType === "interrupt") {
+    return baseInterruptAmount;
+  }
+  if (responseType === "attack") {
+    const base = Math.max(4, Math.round(baseInterruptAmount * 0.45));
+    const damagePressure = Math.min(Math.max(2, Math.round(playerDamage * 0.12)), Math.max(6, Math.round(baseInterruptAmount * 0.35)));
+    const readBonus = success ? 3 : 0;
+    const critBonus = critTriggered ? 4 : 0;
+    return Math.max(0, base + damagePressure + readBonus + critBonus);
+  }
+  if (responseType === "skill") {
+    return success ? Math.max(5, Math.round(baseInterruptAmount * 0.5)) : Math.max(2, Math.round(baseInterruptAmount * 0.2));
+  }
+  if (responseType === "item") {
+    return success ? Math.max(4, Math.round(baseInterruptAmount * 0.4)) : 0;
+  }
+  if (responseType === "move") {
+    return success ? Math.max(3, Math.round(baseInterruptAmount * 0.28)) : 0;
+  }
+  if (responseType === "brace") {
+    return success ? Math.max(3, Math.round(baseInterruptAmount * 0.26)) : Math.max(1, Math.round(baseInterruptAmount * 0.1));
+  }
+  if (responseType === "pass") {
+    return 0;
+  }
+  return 0;
+};
+
+const getEnemyDisplayTelegraph = (
+  session: LiveTowerBattleSession,
+  enemy: TowerEnemyUnit | null,
+  activeTelegraph: LiveBattleTelegraph | null,
+): { title: string; body: string } | null => {
+  if (!enemy || !activeTelegraph) {
+    return null;
+  }
+  const specialMeter = getEnemySpecialMeterPreview(session, enemy);
+  if (specialMeter?.ready) {
+    return {
+      title: `${enemy.name}: ${specialMeter.triggerLabel}`,
+      body:
+        session.source === "rank"
+          ? `${enemy.name} is lining up a full finishing rush. Interrupt is the strongest answer, but hard hits and clean reads can still knock the build back.`
+          : `${enemy.name} is about to cash in a special strike. Interrupt is the strongest answer, but hard hits and clean reads can still knock the build back before it lands.`,
+    };
+  }
+  const queuedPhaseShift = getQueuedPhaseShiftState(session, enemy);
+  return {
+    title: `${activeTelegraph.enemyName}: ${activeTelegraph.mechanic.split(":")[0]}`,
+    body: session.queuedEnemyIndex != null
+      ? queuedPhaseShift
+        ? `${activeTelegraph.enemyName} is not finished. The next measure is already rising behind the shell.`
+        : `${activeTelegraph.enemyName} is down. Read the lane, then advance when you're ready.`
+      : "Choose your turn. If your read is wrong, you eat the consequence.",
+  };
+};
 
 const getTurnBurst = (actorSpeed: number, opposingSpeed: number): number => {
   const speedGap = actorSpeed - opposingSpeed;
@@ -933,8 +2653,76 @@ const getNextTelegraphIndexForEnemy = (session: LiveTowerBattleSession, enemyId:
   }
   return currentIndex;
 };
+const isPureEnemySelfUseMechanic = (mechanic: string): boolean => {
+  const keyword = mechanic.toLowerCase();
+  return keyword.includes("health potion") || keyword.includes("guard tonic") || keyword.includes("steel rhythm") || keyword.includes("focus tonic");
+};
+const isEnemyMechanicUsable = (
+  enemy: TowerEnemyUnit,
+  mechanic: string,
+  currentHp: number,
+  maxHp: number,
+  currentStatusFx: LiveBattleStatusFx[],
+): boolean => {
+  const keyword = mechanic.toLowerCase();
+  const missingHp = Math.max(0, maxHp - currentHp);
+  const hpRatio = currentHp / Math.max(1, maxHp);
+  const statusSnapshot = getEnemyStatusSnapshot(currentStatusFx);
+  if (keyword.includes("health potion")) {
+    return missingHp >= 20 && hpRatio <= 0.65;
+  }
+  if (keyword.includes("guard tonic")) {
+    return statusSnapshot.fortifiedStacks <= 0;
+  }
+  if (keyword.includes("focus tonic")) {
+    return statusSnapshot.sigilRaisedStacks <= 0;
+  }
+  if (keyword.includes("steel rhythm")) {
+    return statusSnapshot.sigilRaisedStacks <= 0;
+  }
+  return true;
+};
+const getNextUsableTelegraphIndexForEnemy = (
+  session: LiveTowerBattleSession,
+  enemyId: string,
+  currentIndex: number,
+  enemyHpById?: Record<string, number>,
+  enemyStatusFxById?: Record<string, LiveBattleStatusFx[]>,
+  nowMs?: number,
+): number => {
+  if (session.telegraphs.length <= 0) {
+    return currentIndex;
+  }
+  const hpById = enemyHpById ?? session.enemyHpById;
+  const statusById = enemyStatusFxById ?? session.enemyStatusFxById;
+  const effectNowMs = nowMs ?? 0;
+  const enemy = session.enemies.find((entry) => entry.id === enemyId);
+  if (!enemy) {
+    return getNextTelegraphIndexForEnemy(session, enemyId, currentIndex);
+  }
+  const currentHp = hpById[enemyId] ?? enemy.health ?? 1;
+  const maxHp = enemy.health ?? currentHp;
+  const currentStatusFx = pruneExpiredStatusFx(statusById[enemyId] ?? [], effectNowMs);
+  for (let offset = 1; offset <= session.telegraphs.length; offset += 1) {
+    const candidate = (currentIndex + offset) % session.telegraphs.length;
+    const telegraph = session.telegraphs[candidate];
+    if (telegraph.enemyId !== enemyId) {
+      continue;
+    }
+    if (isEnemyMechanicUsable(enemy, telegraph.mechanic, currentHp, maxHp, currentStatusFx)) {
+      return candidate;
+    }
+  }
+  return getNextTelegraphIndexForEnemy(session, enemyId, currentIndex);
+};
 const getMechanicStatusFx = (mechanic: string): LiveBattleStatusFx | null => {
   const keyword = mechanic.toLowerCase();
+  if (keyword.includes("brinefire")) {
+    return { id: "shocked", label: "Shocked", icon: "fire-circle", tone: "bad", detail: "Brinefire strips rhythm and makes the next answer hit softer.", stacks: 1 };
+  }
+  if (keyword.includes("covenant-breaker roar") || keyword.includes("undertow") || keyword.includes("crooked tide")) {
+    return { id: "rushed", label: "Pressured", icon: "wave", tone: "bad", detail: "The field has turned against you and your attack rhythm drops until it clears.", stacks: 1 };
+  }
   if (keyword.includes("poison")) {
     return { id: "poisoned", label: "Poisoned", icon: "biohazard", tone: "bad", detail: "Poison pressure is eating away at you.", stacks: 1 };
   }
@@ -949,8 +2737,374 @@ const getMechanicStatusFx = (mechanic: string): LiveBattleStatusFx | null => {
   }
   return null;
 };
+const getEnemyStatusSnapshot = (list: LiveBattleStatusFx[]) => ({
+  fortifiedStacks: getStatusStacks(list, "fortified"),
+  sigilRaisedStacks: getStatusStacks(list, "sigil-raised"),
+  staggeredStacks: getStatusStacks(list, "staggered"),
+});
+type RankTrialAssessmentLine = {
+  label: string;
+  value: string;
+  passed: boolean;
+};
+
+type RankTrialAssessmentSummary = {
+  trialId: string;
+  title: string;
+  passed: boolean;
+  summary: string;
+  lines: RankTrialAssessmentLine[];
+};
+type RankTrialReadLine = {
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  text: string;
+  color?: string;
+};
+
+const D_TO_C_EXECUTION_RULES = {
+  maxTurns: 7,
+  maxPouchItems: 1,
+  minHealthRatio: 0.6,
+  maxPasses: 0,
+};
+
+const C_TO_B_COMMAND_RULES = {
+  maxTurns: 12,
+  maxPouchItems: 2,
+  minHealthRatio: 0.5,
+  maxPasses: 0,
+  maxFieldBreaches: 1,
+};
+const C_TO_B_SOFT_BREACH_THRESHOLD = 70;
+const C_TO_B_SOFT_BREACH_VALUE = 0.5;
+
+const B_TO_A_CHARTER_RULES = {
+  maxTurns: 14,
+  maxPouchItems: 1,
+  minHealthRatio: 0.55,
+  maxPasses: 0,
+  maxCharterFaults: 0.5,
+};
+const B_TO_A_SOFT_FAULT_THRESHOLD = 72;
+const B_TO_A_SOFT_FAULT_VALUE = 0.5;
+
+const formatBreachScore = (value: number) => (Number.isInteger(value) ? `${value}` : value.toFixed(1));
+
+const buildDToCExecutionAssessment = (
+  session: LiveTowerBattleSession,
+  healthCap: number,
+): RankTrialAssessmentSummary => {
+  const responses = session.responses ?? [];
+  const turnsUsed = responses.length;
+  const pouchItemsUsed = Object.values(session.usedPouchItemCounts).reduce<number>((sum, count) => sum + count, 0);
+  const passesUsed = responses.filter((entry) => entry.responseType === "pass").length;
+  const endingHealthRatio = healthCap > 0 ? session.playerHp / healthCap : 0;
+  const endingHealthPct = Math.round(endingHealthRatio * 100);
+  const lines: RankTrialAssessmentLine[] = [
+    {
+      label: "Turns Used",
+      value: `${turnsUsed}/${D_TO_C_EXECUTION_RULES.maxTurns}`,
+      passed: turnsUsed <= D_TO_C_EXECUTION_RULES.maxTurns,
+    },
+    {
+      label: "Pouch Items Spent",
+      value: `${pouchItemsUsed}/${D_TO_C_EXECUTION_RULES.maxPouchItems}`,
+      passed: pouchItemsUsed <= D_TO_C_EXECUTION_RULES.maxPouchItems,
+    },
+    {
+      label: "Ending Vitality",
+      value: `${endingHealthPct}%`,
+      passed: endingHealthRatio >= D_TO_C_EXECUTION_RULES.minHealthRatio,
+    },
+    {
+      label: "Yielded Exchanges",
+      value: `${passesUsed}/${D_TO_C_EXECUTION_RULES.maxPasses}`,
+      passed: passesUsed <= D_TO_C_EXECUTION_RULES.maxPasses,
+    },
+  ];
+  const passed = lines.every((line) => line.passed);
+  return {
+    trialId: "rank-trial-d-c",
+    title: "Execution Review",
+    passed,
+    summary: passed
+      ? "The record holds. You finished quickly enough, bled little enough, and wasted little enough for the office to call it professional work."
+      : "The target can still fall and the record can still come back red. C-rank is not just about winning. It is about how much waste, blood, and hesitation the guild had to watch you spend.",
+    lines,
+  };
+};
+
+const buildCToBFieldAssessment = (
+  session: LiveTowerBattleSession,
+  healthCap: number,
+): RankTrialAssessmentSummary => {
+  const responses = session.responses ?? [];
+  const turnsUsed = responses.length;
+  const pouchItemsUsed = Object.values(session.usedPouchItemCounts).reduce<number>((sum, count) => sum + count, 0);
+  const passesUsed = responses.filter((entry) => entry.responseType === "pass").length;
+  const endingHealthRatio = healthCap > 0 ? session.playerHp / healthCap : 0;
+  const endingHealthPct = Math.round(endingHealthRatio * 100);
+  const fieldBreaches = session.fieldCommandBreaches ?? 0;
+  const lines: RankTrialAssessmentLine[] = [
+    {
+      label: "Field Breaches",
+      value: `${formatBreachScore(fieldBreaches)}/${formatBreachScore(C_TO_B_COMMAND_RULES.maxFieldBreaches)}`,
+      passed: fieldBreaches <= C_TO_B_COMMAND_RULES.maxFieldBreaches,
+    },
+    {
+      label: "Turns Used",
+      value: `${turnsUsed}/${C_TO_B_COMMAND_RULES.maxTurns}`,
+      passed: turnsUsed <= C_TO_B_COMMAND_RULES.maxTurns,
+    },
+    {
+      label: "Pouch Items Spent",
+      value: `${pouchItemsUsed}/${C_TO_B_COMMAND_RULES.maxPouchItems}`,
+      passed: pouchItemsUsed <= C_TO_B_COMMAND_RULES.maxPouchItems,
+    },
+    {
+      label: "Ending Vitality",
+      value: `${endingHealthPct}%`,
+      passed: endingHealthRatio >= C_TO_B_COMMAND_RULES.minHealthRatio,
+    },
+    {
+      label: "Yielded Exchanges",
+      value: `${passesUsed}/${C_TO_B_COMMAND_RULES.maxPasses}`,
+      passed: passesUsed <= C_TO_B_COMMAND_RULES.maxPasses,
+    },
+  ];
+  const passed = lines.every((line) => line.passed);
+  return {
+    trialId: "rank-trial-c-b",
+    title: "Command Review",
+    passed,
+    summary: passed
+      ? "The line held. You broke the support lines, kept Broken Spear from closing around you, and finished with enough control for the office to call it B-rank command."
+      : "B-rank is not just about enduring a hard finish. It is about keeping the line from breaking around you before the captain ever gets the last word.",
+    lines,
+  };
+};
+
+const buildBToACharterAssessment = (
+  session: LiveTowerBattleSession,
+  healthCap: number,
+): RankTrialAssessmentSummary => {
+  const responses = session.responses ?? [];
+  const turnsUsed = responses.length;
+  const pouchItemsUsed = Object.values(session.usedPouchItemCounts).reduce<number>((sum, count) => sum + count, 0);
+  const passesUsed = responses.filter((entry) => entry.responseType === "pass").length;
+  const endingHealthRatio = healthCap > 0 ? session.playerHp / healthCap : 0;
+  const endingHealthPct = Math.round(endingHealthRatio * 100);
+  const charterFaults = session.fieldCommandBreaches ?? 0;
+  const lines: RankTrialAssessmentLine[] = [
+    {
+      label: "Charter Faults",
+      value: `${formatBreachScore(charterFaults)}/${formatBreachScore(B_TO_A_CHARTER_RULES.maxCharterFaults)}`,
+      passed: charterFaults <= B_TO_A_CHARTER_RULES.maxCharterFaults,
+    },
+    {
+      label: "Turns Used",
+      value: `${turnsUsed}/${B_TO_A_CHARTER_RULES.maxTurns}`,
+      passed: turnsUsed <= B_TO_A_CHARTER_RULES.maxTurns,
+    },
+    {
+      label: "Pouch Items Spent",
+      value: `${pouchItemsUsed}/${B_TO_A_CHARTER_RULES.maxPouchItems}`,
+      passed: pouchItemsUsed <= B_TO_A_CHARTER_RULES.maxPouchItems,
+    },
+    {
+      label: "Ending Vitality",
+      value: `${endingHealthPct}%`,
+      passed: endingHealthRatio >= B_TO_A_CHARTER_RULES.minHealthRatio,
+    },
+    {
+      label: "Yielded Exchanges",
+      value: `${passesUsed}/${B_TO_A_CHARTER_RULES.maxPasses}`,
+      passed: passesUsed <= B_TO_A_CHARTER_RULES.maxPasses,
+    },
+  ];
+  const passed = lines.every((line) => line.passed);
+  return {
+    trialId: "rank-trial-b-a",
+    title: "Charter Review",
+    passed,
+    summary: passed
+      ? "The charter holds. You stayed steady through Serin Vael's full witness and finished with a file the office can trust for A-rank authority."
+      : "A-rank is not only about surviving a harder witness. It is about whether the guild can trust your name once the run turns costly, stretched, and easy to lose.",
+    lines,
+  };
+};
+
+const getEnemyMechanicSelfEffect = (
+  enemy: TowerEnemyUnit,
+  mechanic: string,
+  currentHp: number,
+  maxHp: number,
+): { heal?: number; addStatus?: LiveBattleStatusFx; clearIds?: string[]; logLine?: string } => {
+  const keyword = mechanic.toLowerCase();
+  if (keyword.includes("scalewake shedding")) {
+    return {
+      clearIds: ["staggered"],
+      addStatus: {
+        id: "fortified",
+        label: "Fortified",
+        icon: "shield-lock-outline",
+        tone: "neutral",
+        detail: "Leviathor has re-knit the shell around its body. Your next hits deal less damage until the scales break again.",
+        stacks: 3,
+      },
+      logLine: `Scalewake Shedding • ${enemy.name} hardens its shell again.`,
+    };
+  }
+  if (keyword.includes("scaldwake turn")) {
+    return {
+      addStatus: {
+        id: "leviathor-boiling-surge",
+        label: "Boiling Surge",
+        icon: "fire-circle",
+        tone: "good",
+        detail: "SPD +6 and Leviathor steals an extra action before the line resets.",
+        speedFlatBonus: 6,
+        extraTurnFlatBonus: 1,
+      },
+      logLine: `Scaldwake Turn • ${enemy.name} whips the boiling wake around itself and surges faster into the next exchange.`,
+    };
+  }
+  if (keyword.includes("breaker surge")) {
+    return {
+      addStatus: {
+        id: "leviathor-predator-rise",
+        label: "Predator Rise",
+        icon: "sword-cross",
+        tone: "good",
+        detail: "ATK +5 and CRIT +4% while Leviathor is still pressing the opening shell-turn harder.",
+        damageFlatBonus: 5,
+        critFlatBonus: 4,
+      },
+      logLine: `Breaker Surge • ${enemy.name} slams through the wake and starts striking with harder intent.`,
+    };
+  }
+  if (keyword.includes("furnace bite")) {
+    return {
+      addStatus: {
+        id: "leviathor-maw-fed",
+        label: "Maw Fed",
+        icon: "fire-circle",
+        tone: "good",
+        detail: "ATK +6 and take 2 less damage while the furnace maw keeps feeding on the fight.",
+        damageFlatBonus: 6,
+        mitigationFlatBonus: 2,
+      },
+      logLine: `Furnace Bite • ${enemy.name} feeds the maw on the exchange and comes back hotter.`,
+    };
+  }
+  if (keyword.includes("crooked tide")) {
+    return {
+      addStatus: {
+        id: "leviathor-tide-warp",
+        label: "Tide Warp",
+        icon: "wave",
+        tone: "good",
+        detail: "SPD +5, take 3 less damage, and Leviathor steals an extra action while the tide keeps twisting the field around it.",
+        speedFlatBonus: 5,
+        mitigationFlatBonus: 3,
+        extraTurnFlatBonus: 1,
+      },
+      logLine: `Crooked Tide • ${enemy.name} twists the whole field and starts taking more of the fight for itself.`,
+    };
+  }
+  if (keyword.includes("covenant-breaker roar")) {
+    return {
+      addStatus: {
+        id: "leviathor-roar-of-ruin",
+        label: "Roar of Ruin",
+        icon: "bullhorn-variant",
+        tone: "good",
+        detail: "ATK +6 and CRIT +5% while the roar is still carrying through the field.",
+        damageFlatBonus: 6,
+        critFlatBonus: 5,
+      },
+      logLine: `Covenant-Breaker Roar • ${enemy.name} breaks the rhythm and comes back harder behind the sound.`,
+    };
+  }
+  if (keyword.includes("judgment coil")) {
+    return {
+      addStatus: {
+        id: "leviathor-coil-snap",
+        label: "Coil Snap",
+        icon: "snake",
+        tone: "good",
+        detail: "ATK +8, SPD +7, and Leviathor steals an extra action before the line resets.",
+        damageFlatBonus: 8,
+        speedFlatBonus: 7,
+        extraTurnFlatBonus: 1,
+      },
+      logLine: `Judgment Coil • ${enemy.name} tightens the whole body and starts taking extra answers before you can settle.`,
+    };
+  }
+  if (keyword.includes("brinefire wake")) {
+    return {
+      addStatus: {
+        id: "leviathor-brineveil",
+        label: "Brineveil",
+        icon: "weather-lightning-rainy",
+        tone: "good",
+        detail: "CRIT +4% and take 3 less damage while the boiling spray keeps veiling the body.",
+        critFlatBonus: 4,
+        mitigationFlatBonus: 3,
+      },
+      logLine: `Brinefire Wake • ${enemy.name} disappears behind scalding spray and grows harder to answer cleanly.`,
+    };
+  }
+  if (keyword.includes("guard tonic")) {
+    return {
+      addStatus: {
+        id: "fortified",
+        label: "Fortified",
+        icon: "shield-lock-outline",
+        tone: "neutral",
+        detail: "A Guard Tonic is reinforcing this target. Your next strikes deal less damage until the guard layers are broken.",
+        stacks: 2,
+      },
+      logLine: `Guard Tonic • ${enemy.name} settles behind a heavier guard.`,
+    };
+  }
+  if (keyword.includes("health potion")) {
+    return {
+      heal: Math.min(28, Math.max(0, maxHp - currentHp)),
+      clearIds: ["staggered"],
+      logLine: `Health Potion • ${enemy.name} steadies and regains footing.`,
+    };
+  }
+  if (keyword.includes("steel rhythm")) {
+    return {
+      addStatus: {
+        id: "steel-rhythm",
+        label: "Steel Rhythm",
+        icon: "sword-cross",
+        tone: "good",
+        detail: "ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage while Steel Rhythm lasts.",
+        stacks: 2,
+      },
+      logLine: `Steel Rhythm • ${enemy.name} gains ATK +3, CRIT +2%, SPD +3, and stronger counters.`,
+    };
+  }
+  if (keyword.includes("focus tonic")) {
+    return {
+      addStatus: {
+        id: "sigil-raised",
+        label: "Focused",
+        icon: "crosshairs-gps",
+        tone: "good",
+        detail: "Focus Tonic tightens the pace. Incoming attacks hit softer while the user's next exchanges stay sharper.",
+        stacks: 2,
+      },
+      logLine: `${enemy.name} drinks Focus Tonic and the pace tightens around cleaner timing.`,
+    };
+  }
+  return {};
+};
 const getPlayerResponseStatusFx = (
-  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass",
+  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass" | "interrupt",
   success: boolean,
   critTriggered: boolean,
   skillId?: AbilityId | null,
@@ -984,6 +3138,18 @@ const addOrStackStatusFx = (list: LiveBattleStatusFx[], nextFx: LiveBattleStatus
       : entry,
   );
 };
+const consumeStatusFxStack = (list: LiveBattleStatusFx[], id: string, amount = 1): LiveBattleStatusFx[] =>
+  list.flatMap((entry) => {
+    if (entry.id !== id) {
+      return [entry];
+    }
+    const currentStacks = entry.stacks ?? 1;
+    const nextStacks = currentStacks - amount;
+    if (nextStacks <= 0) {
+      return [];
+    }
+    return [{ ...entry, stacks: nextStacks }];
+  });
 const pruneExpiredStatusFx = (list: LiveBattleStatusFx[], nowMs: number): LiveBattleStatusFx[] =>
   list.filter((entry) => !entry.expiresAtMs || entry.expiresAtMs > nowMs);
 const getLiveBattleEffectClockMs = (session: LiveTowerBattleSession, wallNowMs: number): number =>
@@ -1019,6 +3185,20 @@ const getNextBattleEffectClockState = (
 };
 const getStatusStacks = (list: LiveBattleStatusFx[], id: string): number => list.find((entry) => entry.id === id)?.stacks ?? 0;
 const hasStatusFx = (list: LiveBattleStatusFx[], id: string): boolean => list.some((entry) => entry.id === id);
+const getActiveArmorBonusFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.armorFlatBonus ?? 0), 0);
+const getActiveDamageBonusFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.damageFlatBonus ?? 0), 0);
+const getActiveCritBonusFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.critFlatBonus ?? 0), 0);
+const getActiveSpeedBonusFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.speedFlatBonus ?? 0), 0);
+const getActiveMitigationBonusFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.mitigationFlatBonus ?? 0), 0);
+const getActiveExtraTurnsFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.extraTurnFlatBonus ?? 0), 0);
+const getActiveHitNegationChargesFromStatuses = (list: LiveBattleStatusFx[]): number =>
+  list.reduce((sum, entry) => sum + (entry.hitNegationCharges ?? 0), 0);
 type BattleStatusChangeSet = {
   clearIds?: string[];
   replace?: LiveBattleStatusFx[];
@@ -1048,7 +3228,18 @@ const getPlayerBattleItemEffect = (
     return { heal: 35 };
   }
   if (itemId === "antitoxin-vial") {
-    return { heal: 4, clearStatusIds: ["poisoned"] };
+    return {
+      heal: 4,
+      clearStatusIds: ["poisoned"],
+      addStatus: {
+        id: "antitoxin",
+        label: "Antitoxin",
+        icon: "flask-empty-outline",
+        tone: "good",
+        detail: "Poison applications are negated while Antitoxin remains.",
+        stacks: 3,
+      },
+    };
   }
   if (itemId === "guard-tonic") {
     return {
@@ -1057,8 +3248,8 @@ const getPlayerBattleItemEffect = (
         label: "Guarded",
         icon: "shield-check-outline",
         tone: "good",
-        detail: "Guard Tonic hardens your guard for the next exchanges.",
-        stacks: 1,
+        detail: "Guard Tonic hardens your guard for the next enemy hits.",
+        stacks: 2,
       },
     };
   }
@@ -1069,8 +3260,8 @@ const getPlayerBattleItemEffect = (
         label: "Grounded",
         icon: "lightning-bolt-circle",
         tone: "good",
-        detail: "Grounding current steadies you against shock.",
-        stacks: 1,
+        detail: "Grounding current steadies you against shock surges.",
+        stacks: 2,
       },
     };
   }
@@ -1081,17 +3272,354 @@ const getPlayerBattleItemEffect = (
         label: "Warded",
         icon: "shield-sun-outline",
         tone: "good",
-        detail: "A ward veil dulls incoming arc pressure.",
-        stacks: 1,
+        detail: "A ward veil blunts hostile field and brinefire pressure.",
+        stacks: 2,
       },
     };
   }
   return {};
 };
+const getWeaponMarkStatusId = (markId: string) => `weapon-mark:${markId}`;
+const getTriggeredWeaponMarkKey = (ownerScope: string, markId: string) => `${ownerScope}:${markId}`;
+const getOpeningEnemyStatuses = (enemy: TowerEnemyUnit): LiveBattleStatusFx[] => {
+  switch (enemy.id) {
+    case "raid-leviathor-phase1":
+      return [
+        {
+          id: "leviathor-scalewake-shell",
+          label: "Scalewake Shell",
+          icon: "shield-lock-outline",
+          tone: "neutral",
+          detail: "ARM +7 while the first shell still holds.",
+          armorFlatBonus: 7,
+        },
+        {
+          id: "leviathor-deepcurrent-body",
+          label: "Deepcurrent Body",
+          icon: "wave",
+          tone: "good",
+          detail: "SPD +3 while Leviathor is still rising out of the deep.",
+          speedFlatBonus: 3,
+        },
+      ];
+    case "raid-leviathor-phase2":
+      return [
+        {
+          id: "leviathor-brinefire-heart",
+          label: "Brinefire Heart",
+          icon: "fire-circle",
+          tone: "good",
+          detail: "ATK +8 while the furnace maw is open.",
+          damageFlatBonus: 8,
+        },
+        {
+          id: "leviathor-furnace-sight",
+          label: "Furnace Sight",
+          icon: "eye-circle-outline",
+          tone: "good",
+          detail: "CRIT +5% while the maw stays lit.",
+          critFlatBonus: 5,
+        },
+      ];
+    case "raid-leviathor-phase3":
+      return [
+        {
+          id: "leviathor-crooked-tide",
+          label: "Crooked Tide",
+          icon: "wave",
+          tone: "good",
+          detail: "SPD +7 and Leviathor steals an extra action while the tide is twisted around the field.",
+          speedFlatBonus: 7,
+          extraTurnFlatBonus: 1,
+        },
+        {
+          id: "leviathor-tidebound-hide",
+          label: "Tidebound Hide",
+          icon: "shield-half-full",
+          tone: "neutral",
+          detail: "Take 3 less damage while the tide is still wrapped around the shell.",
+          mitigationFlatBonus: 3,
+        },
+      ];
+    case "raid-leviathor-phase4":
+      return [
+        {
+          id: "leviathor-judgment-drawn",
+          label: "Judgment Drawn",
+          icon: "snake",
+          tone: "good",
+          detail: "ATK +10 and CRIT +7% while the last measure is fully drawn.",
+          damageFlatBonus: 10,
+          critFlatBonus: 7,
+        },
+        {
+          id: "leviathor-judgment-coil",
+          label: "Judgment Coil",
+          icon: "snake",
+          tone: "good",
+          detail: "SPD +7 and Leviathor steals an extra action while the coil is fully drawn.",
+          speedFlatBonus: 7,
+          extraTurnFlatBonus: 1,
+        },
+      ];
+    default:
+      return [];
+  }
+};
+const buildPhaseShiftEnemyStatuses = (
+  previousPhaseStatuses: LiveBattleStatusFx[],
+  nextPhaseOpeningStatuses: LiveBattleStatusFx[],
+  nowMs: number,
+): LiveBattleStatusFx[] => {
+  const carriedStatuses = pruneExpiredStatusFx(previousPhaseStatuses, nowMs).filter(
+    (effect) => effect.tone !== "bad" && effect.id !== "staggered",
+  );
+  return applyBattleStatusChanges(carriedStatuses, {
+    nowMs,
+    replace: nextPhaseOpeningStatuses,
+  });
+};
+const getCombatWeaponMarksForCharacter = (state: CharacterState | null | undefined): WeaponMarkDefinition[] => {
+  if (!state?.equippedWeaponId) {
+    return [];
+  }
+  const weapon = ITEM_BY_ID[state.equippedWeaponId];
+  return weapon?.category === "weapon" ? weapon.weaponMarks ?? [] : [];
+};
+const getCombatWeaponMarksForTrialEnemy = (enemyId: string): WeaponMarkDefinition[] => {
+  const profile = getTrialAdventurerProfile(enemyId);
+  if (!profile) {
+    return [];
+  }
+  const weapon = ITEM_BY_ID[profile.weaponId];
+  return weapon?.category === "weapon" ? weapon.weaponMarks ?? [] : [];
+};
+const getWeaponEffectSummary = (weapon: ItemDefinition | null | undefined): string => {
+  if (!weapon || weapon.category !== "weapon") {
+    return "Weapon effect";
+  }
+  const parts: string[] = [];
+  if (weapon.weaponStats) {
+    parts.push(`ATK +${weapon.weaponStats.attack}`);
+    parts.push(`CRIT +${weapon.weaponStats.crit}%`);
+    parts.push(`SPD +${weapon.weaponStats.speed}`);
+  }
+  if (weapon.weaponMarks?.length) {
+    parts.push(
+      ...weapon.weaponMarks.map((mark) =>
+        mark.effectDescription ? `${mark.name}: ${mark.effectDescription}` : mark.name,
+      ),
+    );
+  }
+  return parts.join(" • ");
+};
+const getBuffItemEffectSummary = (itemId: ItemId): string => {
+  const item = ITEM_BY_ID[itemId];
+  if (!item || item.category !== "buff") {
+    return "Sigil effect";
+  }
+  const parts: string[] = [];
+  if (item.buffStats?.armorFlat) {
+    parts.push(`ARM +${item.buffStats.armorFlat}`);
+  }
+  if (item.buffStats?.damageFlat) {
+    parts.push(`ATK +${item.buffStats.damageFlat}`);
+  }
+  if (item.buffStats?.critFlat) {
+    parts.push(`CRIT +${item.buffStats.critFlat}%`);
+  }
+  if (item.buffStats?.speedFlat) {
+    parts.push(`SPD +${item.buffStats.speedFlat}`);
+  }
+  if (item.buffStats?.questSuccessFlat) {
+    parts.push(`Quest +${item.buffStats.questSuccessFlat}%`);
+  }
+  return parts.join(" • ") || item.name;
+};
+const buildWeaponMarkStatusFx = (mark: WeaponMarkDefinition): LiveBattleStatusFx | null => {
+  const combatEffect = mark.combatEffect;
+  if (!combatEffect) {
+    return null;
+  }
+  if (combatEffect.kind === "below-half-armor") {
+    return {
+      id: getWeaponMarkStatusId(mark.id),
+      label: mark.name,
+      icon: mark.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+      tone: "good",
+      detail: `ARM +${combatEffect.armorFlat} for ${combatEffect.durationTurns} turns.`,
+      stacks: combatEffect.durationTurns,
+      sourceType: "weaponMark",
+      sourceId: mark.id,
+      armorFlatBonus: combatEffect.armorFlat,
+    };
+  }
+  if (combatEffect.kind === "battle-start-armor") {
+    return {
+      id: getWeaponMarkStatusId(mark.id),
+      label: mark.name,
+      icon: mark.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+      tone: "good",
+      detail: `ARM +${combatEffect.armorFlat} for ${combatEffect.durationTurns} turns.`,
+      stacks: combatEffect.durationTurns,
+      sourceType: "weaponMark",
+      sourceId: mark.id,
+      armorFlatBonus: combatEffect.armorFlat,
+    };
+  }
+  if (combatEffect.kind === "battle-start-damage") {
+    return {
+      id: getWeaponMarkStatusId(mark.id),
+      label: mark.name,
+      icon: mark.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+      tone: "good",
+      detail: `ATK +${combatEffect.damageFlat} for ${combatEffect.durationTurns} turns.`,
+      stacks: combatEffect.durationTurns,
+      sourceType: "weaponMark",
+      sourceId: mark.id,
+      damageFlatBonus: combatEffect.damageFlat,
+    };
+  }
+  if (combatEffect.kind === "battle-start-negate-hit") {
+    return {
+      id: getWeaponMarkStatusId(mark.id),
+      label: mark.name,
+      icon: mark.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+      tone: "good",
+      detail: "Negates the first hit that would deal damage.",
+      sourceType: "weaponMark",
+      sourceId: mark.id,
+      hitNegationCharges: 1,
+      consumeOnTurn: false,
+    };
+  }
+  if (combatEffect.kind === "below-half-damage") {
+    return {
+      id: getWeaponMarkStatusId(mark.id),
+      label: mark.name,
+      icon: mark.icon as keyof typeof MaterialCommunityIcons.glyphMap,
+      tone: "good",
+      detail: `ATK +${combatEffect.damageFlat} for ${combatEffect.durationTurns} turns.`,
+      stacks: combatEffect.durationTurns,
+      sourceType: "weaponMark",
+      sourceId: mark.id,
+      damageFlatBonus: combatEffect.damageFlat,
+    };
+  }
+  return null;
+};
+const getOpeningWeaponMarkStatuses = (marks: WeaponMarkDefinition[]): LiveBattleStatusFx[] =>
+  marks
+    .map((mark) => {
+      const combatEffect = mark.combatEffect;
+      if (
+        !combatEffect ||
+        (combatEffect.kind !== "battle-start-armor" &&
+          combatEffect.kind !== "battle-start-damage" &&
+          combatEffect.kind !== "battle-start-negate-hit")
+      ) {
+        return null;
+      }
+      return buildWeaponMarkStatusFx(mark);
+    })
+    .filter((status): status is LiveBattleStatusFx => Boolean(status));
+const applyBattleWeaponMarkTriggers = ({
+  marks,
+  currentHp,
+  nextHp,
+  maxHp,
+  statusFx,
+  triggeredMarkKeys,
+  ownerName,
+  ownerLabel,
+  ownerScope,
+}: {
+  marks: WeaponMarkDefinition[];
+  currentHp: number;
+  nextHp: number;
+  maxHp: number;
+  statusFx: LiveBattleStatusFx[];
+  triggeredMarkKeys: string[];
+  ownerName: string;
+  ownerLabel: "player" | "enemy";
+  ownerScope: string;
+}): { nextStatusFx: LiveBattleStatusFx[]; nextTriggeredMarkKeys: string[]; logLines: string[]; triggeredIds: string[] } => {
+  let nextStatusFx = [...statusFx];
+  let nextTriggeredMarkKeys = [...triggeredMarkKeys];
+  const logLines: string[] = [];
+  const triggeredIds: string[] = [];
+  for (const mark of marks) {
+    const combatEffect = mark.combatEffect;
+    if (!combatEffect) {
+      continue;
+    }
+    const triggerLimit = "triggerLimit" in combatEffect ? (combatEffect.triggerLimit ?? 1) : 1;
+    const scopedMarkKey = getTriggeredWeaponMarkKey(ownerScope, mark.id);
+    const priorTriggers = nextTriggeredMarkKeys.filter((key) => key === scopedMarkKey).length;
+    if (priorTriggers >= triggerLimit) {
+      continue;
+    }
+    if (combatEffect.kind === "below-half-armor") {
+      const thresholdHp = maxHp * (combatEffect.triggerThresholdRatio ?? 0.5);
+      const crossedThreshold =
+        currentHp > thresholdHp &&
+        nextHp <= thresholdHp &&
+        (nextHp > 0 || ownerLabel === "enemy");
+      if (!crossedThreshold) {
+        continue;
+      }
+      const status = buildWeaponMarkStatusFx(mark);
+      if (!status) {
+        continue;
+      }
+      nextStatusFx = applyBattleStatusChanges(nextStatusFx, { replace: [status] });
+      nextTriggeredMarkKeys.push(scopedMarkKey);
+      triggeredIds.push(mark.id);
+      logLines.push(
+        ownerLabel === "player"
+          ? `${mark.name} • Below half HP: ARM +${combatEffect.armorFlat} for ${combatEffect.durationTurns} turns.`
+          : `${ownerName} • ${mark.name}: ARM +${combatEffect.armorFlat} for ${combatEffect.durationTurns} turns below half HP.`,
+      );
+      continue;
+    }
+    if (combatEffect.kind === "below-half-damage") {
+      const thresholdHp = maxHp * (combatEffect.triggerThresholdRatio ?? 0.5);
+      const crossedThreshold =
+        currentHp > thresholdHp &&
+        nextHp <= thresholdHp &&
+        (nextHp > 0 || ownerLabel === "enemy");
+      if (!crossedThreshold) {
+        continue;
+      }
+      const status = buildWeaponMarkStatusFx(mark);
+      if (!status) {
+        continue;
+      }
+      nextStatusFx = applyBattleStatusChanges(nextStatusFx, { replace: [status] });
+      nextTriggeredMarkKeys.push(scopedMarkKey);
+      triggeredIds.push(mark.id);
+      logLines.push(
+        ownerLabel === "player"
+          ? `${mark.name} • Below half HP: ATK +${combatEffect.damageFlat} for ${combatEffect.durationTurns} turns.`
+          : `${ownerName} • ${mark.name}: ATK +${combatEffect.damageFlat} for ${combatEffect.durationTurns} turns below half HP.`,
+      );
+    }
+  }
+  return { nextStatusFx, nextTriggeredMarkKeys, logLines, triggeredIds };
+};
 const formatStatusDetail = (effect: LiveBattleStatusFx, nowMs: number): string => {
   const stacks = effect.stacks ?? 1;
   const timerSuffix =
     effect.expiresAtMs && effect.expiresAtMs > nowMs ? ` ${formatRemainingDetailed(effect.expiresAtMs - nowMs)} remaining.` : "";
+  if (effect.sourceType === "weaponMark" && effect.armorFlatBonus) {
+    return `ARM +${effect.armorFlatBonus} for ${stacks} ${stacks === 1 ? "turn" : "turns"}.${timerSuffix}`;
+  }
+  if (effect.sourceType === "weaponMark" && effect.damageFlatBonus) {
+    return `ATK +${effect.damageFlatBonus} for ${stacks} ${stacks === 1 ? "turn" : "turns"}.${timerSuffix}`;
+  }
+  if (effect.sourceType === "weaponMark" && effect.hitNegationCharges) {
+    return `Negates the next hit that would deal damage.${timerSuffix}`;
+  }
   switch (effect.id) {
     case "poisoned":
       return `Lose ${3 * stacks} HP at the start of your turns.${timerSuffix}`;
@@ -1101,10 +3629,42 @@ const formatStatusDetail = (effect: LiveBattleStatusFx, nowMs: number): string =
       return `Pressure lowers your attack damage by ${3 * stacks}.${timerSuffix}`;
     case "guarded":
       return `Incoming damage is reduced by ${4 * stacks} on enemy turns.${timerSuffix}`;
+    case "antitoxin":
+      return `The next ${stacks} poison applications are negated while Antitoxin holds.${timerSuffix}`;
     case "iron-will":
-      return `Iron Will is active. Incoming damage is reduced by 6 and turn control is steadier.${timerSuffix}`;
+      return `Iron Will is active. Take 6 less damage and make it harder to lose the next exchange.${timerSuffix}`;
     case "steel-rhythm":
-      return `Steel Rhythm is active. Speed is boosted by 3, follow-up strikes gain +3 damage, and counter windows hit harder.${timerSuffix}`;
+      return `Steel Rhythm is active. ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage.${timerSuffix}`;
+    case "leviathor-scalewake-shell":
+      return `Scalewake Shell is active. ARM +7 while the first shell still holds.${timerSuffix}`;
+    case "leviathor-deepcurrent-body":
+      return `Deepcurrent Body is active. SPD +3 while Leviathor is still rising out of the deep.${timerSuffix}`;
+    case "leviathor-brinefire-heart":
+      return `Brinefire Heart is active. ATK +8 while the furnace maw stays open.${timerSuffix}`;
+    case "leviathor-furnace-sight":
+      return `Furnace Sight is active. CRIT +5% while the maw stays lit.${timerSuffix}`;
+    case "leviathor-boiling-surge":
+      return `Boiling Surge is active. SPD +6 and Leviathor steals an extra action before the line resets.${timerSuffix}`;
+    case "leviathor-predator-rise":
+      return `Predator Rise is active. ATK +5 and CRIT +4% while Leviathor is still driving the shell-turn forward.${timerSuffix}`;
+    case "leviathor-crooked-tide":
+      return `Crooked Tide is active. SPD +7 and Leviathor steals an extra action while the whole field stays bent around it.${timerSuffix}`;
+    case "leviathor-tidebound-hide":
+      return `Tidebound Hide is active. Leviathor takes 3 less damage while the tide stays wrapped around the shell.${timerSuffix}`;
+    case "leviathor-tide-warp":
+      return `Tide Warp is active. SPD +5, Leviathor takes 3 less damage, and it steals an extra action.${timerSuffix}`;
+    case "leviathor-maw-fed":
+      return `Maw Fed is active. ATK +6 and Leviathor takes 2 less damage while the maw keeps feeding on the fight.${timerSuffix}`;
+    case "leviathor-roar-of-ruin":
+      return `Roar of Ruin is active. ATK +6 and CRIT +5%.${timerSuffix}`;
+    case "leviathor-judgment-drawn":
+      return `Judgment Drawn is active. ATK +10 and CRIT +7% while the last measure is fully drawn.${timerSuffix}`;
+    case "leviathor-judgment-coil":
+      return `Judgment Coil is active. SPD +7 and Leviathor steals an extra action while the last coil is drawn tight.${timerSuffix}`;
+    case "leviathor-coil-snap":
+      return `Coil Snap is active. ATK +8, SPD +7, and Leviathor steals an extra action before the line resets.${timerSuffix}`;
+    case "leviathor-brineveil":
+      return `Brineveil is active. CRIT +4% and Leviathor takes 3 less damage behind the boiling spray.${timerSuffix}`;
     case "bulwark-oath":
       return `Bulwark Oath is active. Incoming damage is reduced by 10, heavy mechanics lose severity, and guarded answers can set up a counter.${timerSuffix}`;
     case "bloodrush":
@@ -1118,9 +3678,9 @@ const formatStatusDetail = (effect: LiveBattleStatusFx, nowMs: number): string =
     case "arcane-surge":
       return `Arcane Surge is active. Your attacks gain +9 damage and +6% crit.${timerSuffix}`;
     case "grounded":
-      return `Shock pressure is reduced by 4 while Grounded holds.${timerSuffix}`;
+      return `The next ${stacks} shock surges are steadied and reduced while Grounded holds.${timerSuffix}`;
     case "warded":
-      return `Arc and field pressure are softened while the ward holds.${timerSuffix}`;
+      return `The next ${stacks} arc or field pressures are blunted while the ward holds.${timerSuffix}`;
     case "fortified":
       return `This target is braced behind protection and harder to break cleanly.${timerSuffix}`;
     case "staggered":
@@ -1133,6 +3693,7 @@ const PERSISTENT_WAVE_STATUS_IDS = new Set([
   "poisoned",
   "shocked",
   "rushed",
+  "antitoxin",
   "grounded",
   "warded",
   "iron-will",
@@ -1186,6 +3747,7 @@ const getBattleStatusSnapshot = (list: LiveBattleStatusFx[]) => ({
   shockStacks: getStatusStacks(list, "shocked"),
   pressureStacks: getStatusStacks(list, "rushed"),
   guardedStacks: getStatusStacks(list, "guarded"),
+  antitoxinStacks: getStatusStacks(list, "antitoxin"),
   groundedStacks: getStatusStacks(list, "grounded"),
   wardedStacks: getStatusStacks(list, "warded"),
   counterReadyStacks: getStatusStacks(list, "counter-ready"),
@@ -1196,7 +3758,46 @@ const getBattleStatusSnapshot = (list: LiveBattleStatusFx[]) => ({
   hasFrenzied: list.some((entry) => entry.id === "frenzied"),
   hasScoutPath: list.some((entry) => entry.id === "scout-path"),
   hasArcaneSurge: list.some((entry) => entry.id === "arcane-surge"),
+  weaponMarkArmorFlatBonus: getActiveArmorBonusFromStatuses(list),
+  weaponMarkDamageFlatBonus: getActiveDamageBonusFromStatuses(list),
+  statusCritFlatBonus: getActiveCritBonusFromStatuses(list),
+  statusSpeedFlatBonus: getActiveSpeedBonusFromStatuses(list),
+  statusMitigationFlatBonus: getActiveMitigationBonusFromStatuses(list),
+  statusExtraTurnFlatBonus: getActiveExtraTurnsFromStatuses(list),
+  weaponMarkHitNegationCharges: getActiveHitNegationChargesFromStatuses(list),
 });
+const consumeTurnBasedWeaponMarkStatuses = (list: LiveBattleStatusFx[], skipMarkIds: string[] = []): LiveBattleStatusFx[] =>
+  list.flatMap((entry) => {
+    if (entry.sourceType !== "weaponMark") {
+      return [entry];
+    }
+    if (entry.consumeOnTurn === false) {
+      return [entry];
+    }
+    if (entry.sourceId && skipMarkIds.includes(entry.sourceId)) {
+      return [entry];
+    }
+    const currentStacks = entry.stacks ?? 1;
+    const nextStacks = currentStacks - 1;
+    if (nextStacks <= 0) {
+      return [];
+    }
+    return [{ ...entry, stacks: nextStacks }];
+  });
+const consumeWeaponMarkHitNegation = (list: LiveBattleStatusFx[]): LiveBattleStatusFx[] => {
+  let consumed = false;
+  return list.flatMap((entry) => {
+    if (!consumed && entry.sourceType === "weaponMark" && (entry.hitNegationCharges ?? 0) > 0) {
+      consumed = true;
+      const nextCharges = (entry.hitNegationCharges ?? 0) - 1;
+      if (nextCharges <= 0) {
+        return [];
+      }
+      return [{ ...entry, hitNegationCharges: nextCharges }];
+    }
+    return [entry];
+  });
+};
 const getLiveBattleSkillEffectProfile = (
   activeSkillEffectId: AbilityId | null,
   skillEffectEndsAtMs: number | null,
@@ -1273,22 +3874,22 @@ const getCombatAbilityEffectSummary = (abilityId: AbilityId): string => {
     if (profile) {
       const effects: string[] = [];
       if (profile.guardBonusFlat > 0) {
-        effects.push(`Guard +${profile.guardBonusFlat}`);
+        effects.push(`Take ${profile.guardBonusFlat} less damage`);
       }
       if (profile.attackConsistencyFlat > 0) {
-        effects.push(`Steady +${profile.attackConsistencyFlat}`);
+        effects.push(`Attack floor +${profile.attackConsistencyFlat}`);
       }
       if (profile.statusSeverityReductionFlat > 0) {
-        effects.push(`Severity -${profile.statusSeverityReductionFlat}`);
+        effects.push(`Status pressure -${profile.statusSeverityReductionFlat}`);
       }
       if (profile.counterBonusDamageFlat > 0) {
-        effects.push(`Counter +${profile.counterBonusDamageFlat}`);
+        effects.push(`Counterattacks +${profile.counterBonusDamageFlat} damage`);
       }
       if (profile.woundedTargetDamageFlat > 0) {
-        effects.push(`Vs Wounded +${profile.woundedTargetDamageFlat}`);
+        effects.push(`ATK +${profile.woundedTargetDamageFlat} vs wounded targets`);
       }
       if (profile.postCritTempoFlat > 0 || profile.postKillTempoFlat > 0) {
-        effects.push(`Tempo Feed`);
+        effects.push(`Extra turn gain on crit or kill`);
       }
       return `${passiveCategory} • ${effects.join(" • ") || "Combat support."}`;
     }
@@ -1300,7 +3901,7 @@ const getCombatAbilityEffectSummary = (abilityId: AbilityId): string => {
   }
   const effects: string[] = [];
   if (liveProfile.mitigationFlat > 0) {
-    effects.push(`Guard +${liveProfile.mitigationFlat}`);
+    effects.push(`Take ${liveProfile.mitigationFlat} less damage`);
   }
   if (liveProfile.attackBonus > 0) {
     effects.push(`ATK +${liveProfile.attackBonus}`);
@@ -1312,13 +3913,13 @@ const getCombatAbilityEffectSummary = (abilityId: AbilityId): string => {
     effects.push(`SPD +${liveProfile.speedBonus}`);
   }
   if (liveProfile.initiativeBonus > 0) {
-    effects.push(`Tempo +${liveProfile.initiativeBonus}`);
+    effects.push("Harder to lose the next exchange");
   }
-  if (liveProfile.counterBonusDamageFlat > 0) {
-    effects.push(`Counter +${liveProfile.counterBonusDamageFlat}`);
+      if (liveProfile.counterBonusDamageFlat > 0) {
+    effects.push(`Counterattacks +${liveProfile.counterBonusDamageFlat} damage`);
   }
   if (liveProfile.woundedTargetDamageFlat > 0) {
-    effects.push(`Vs Wounded +${liveProfile.woundedTargetDamageFlat}`);
+    effects.push(`ATK +${liveProfile.woundedTargetDamageFlat} vs wounded targets`);
   }
   return `${ability.cooldownSeconds}s CD${effects.length ? ` • ${effects.join(" • ")}` : ""}`;
 };
@@ -1340,9 +3941,9 @@ const getSkillCardMeta = (profile: LiveBattleSkillProfile | null): string => {
 const getBasicSkillHint = (abilityId: AbilityId): string => {
   switch (abilityId) {
     case "ability-warrior-iron-will":
-      return "Toughens you up for a short time and helps you hold the line.";
+      return "Take 6 less damage and make it harder to lose the next exchange for a short stretch.";
     case "ability-warrior-steel-rhythm":
-      return "Locks your timing in so guarded turns flow into better follow-up pressure.";
+      return "ATK +3, CRIT +2%, SPD +3, take 1 less damage, and make counterattacks deal +4 damage for a short stretch.";
     case "ability-warrior-bulwark-oath":
       return "Anchors you against heavy mechanics and sets up a safer counter window.";
     case "ability-warrior-bloodrush":
@@ -1393,8 +3994,193 @@ const describeBattleStatusChange = (effect: LiveBattleStatusFx, action: "gained"
   if (action === "cleared") {
     return `${label} fades.`;
   }
+  switch (effect.id) {
+    case "rushed":
+      return "Pressured • ATK -3 until it clears.";
+    case "poisoned":
+      return "Poisoned • Lose 3 HP at the start of each turn.";
+    case "shocked":
+      return "Shocked • ATK -2 while it holds.";
+    case "fortified":
+      return "Fortified • Your next hits deal less damage until the guard layers break.";
+    case "staggered":
+      return "Staggered • Follow-up hits land harder on this target.";
+    case "steel-rhythm":
+      return "Steel Rhythm • ATK +3 • CRIT +2% • SPD +3 • take 1 less damage • counterattacks deal +4 damage.";
+    case "leviathor-scalewake-shell":
+      return "Scalewake Shell • ARM +7.";
+    case "leviathor-deepcurrent-body":
+      return "Deepcurrent Body • SPD +3.";
+    case "leviathor-brinefire-heart":
+      return "Brinefire Heart • ATK +8.";
+    case "leviathor-furnace-sight":
+      return "Furnace Sight • CRIT +5%.";
+    case "leviathor-boiling-surge":
+      return "Boiling Surge • SPD +6 • Leviathor steals an extra action before the line resets.";
+    case "leviathor-predator-rise":
+      return "Predator Rise • ATK +5 • CRIT +4%.";
+    case "leviathor-crooked-tide":
+      return "Crooked Tide • SPD +7 • Leviathor steals an extra action.";
+    case "leviathor-tidebound-hide":
+      return "Tidebound Hide • Leviathor takes 3 less damage.";
+    case "leviathor-tide-warp":
+      return "Tide Warp • SPD +5 • Leviathor takes 3 less damage • Leviathor steals an extra action.";
+    case "leviathor-maw-fed":
+      return "Maw Fed • ATK +6 • Leviathor takes 2 less damage.";
+    case "leviathor-roar-of-ruin":
+      return "Roar of Ruin • ATK +6 • CRIT +5%.";
+    case "leviathor-judgment-drawn":
+      return "Judgment Drawn • ATK +10 • CRIT +7%.";
+    case "leviathor-judgment-coil":
+      return "Judgment Coil • SPD +7 • Leviathor steals an extra action.";
+    case "leviathor-coil-snap":
+      return "Coil Snap • ATK +8 • SPD +7 • Leviathor steals an extra action before the line resets.";
+    case "leviathor-brineveil":
+      return "Brineveil • CRIT +4% • Leviathor takes 3 less damage.";
+    case "guarded":
+      return "Guarded • The next 2 enemy hits deal less damage.";
+    case "grounded":
+      return "Grounded • The next 2 shock surges are blunted.";
+    case "warded":
+      return "Warded • The next 2 field or brinefire effects are blunted.";
+    case "antitoxin":
+      return "Antitoxin • The next 3 poison applications are negated.";
+    default:
+      break;
+  }
   const stacks = effect.stacks ?? 1;
-  return stacks > 1 ? `${label} intensifies to ${stacks} stacks.` : `${label} takes hold.`;
+  return stacks > 1 ? `${label} intensifies to ${stacks} stacks.` : `${label} becomes active.`;
+};
+const getBattleLogVisual = (line: string): BattleLogVisual => {
+  const text = line.toLowerCase();
+  if (text.startsWith("attack •") || text.includes(" takes ") && text.includes(" damage")) {
+    return { icon: "sword-cross", tone: "offense" };
+  }
+  if (text.startsWith("guard •") || text.startsWith("guarded •") || text.startsWith("fortified •")) {
+    return { icon: "shield-outline", tone: "good" };
+  }
+  if (text.startsWith("health potion •") || text.startsWith("recovery •")) {
+    return { icon: "bottle-tonic-plus-outline", tone: "good" };
+  }
+  if (text.startsWith("steel rhythm •")) {
+    return { icon: "sword-cross", tone: "good" };
+  }
+  if (text.startsWith("seal of denial •")) {
+    return { icon: "file-alert-outline", tone: text.includes("you take") ? "bad" : "warn" };
+  }
+  if (
+    text.startsWith("first hold •") ||
+    text.startsWith("hidden claim •") ||
+    text.startsWith("opening claim •") ||
+    text.startsWith("standfast •") ||
+    text.startsWith("charterglass •")
+  ) {
+    return { icon: "diamond-stone", tone: "good" };
+  }
+  if (
+    text.startsWith("pressured •") ||
+    text.startsWith("poisoned •") ||
+    text.startsWith("shocked •") ||
+    text.startsWith("staggered •") ||
+    text.startsWith("grounded •") ||
+    text.startsWith("warded •") ||
+    text.startsWith("antitoxin •")
+  ) {
+    return { icon: "alert-circle-outline", tone: "warn" };
+  }
+  if (text.startsWith("interrupt •")) {
+    return { icon: "flash-alert", tone: "warn" };
+  }
+  if (
+    text.includes("hits you for") ||
+    text.includes("poison bites for") ||
+    text.includes("hard fault") ||
+    text.includes("seal of denial") ||
+    text.includes("would remember the whole run for the wrong reasons")
+  ) {
+    return { icon: "sword-cross", tone: "bad" };
+  }
+  if (text.includes("fault +") || text.includes("fault line") || text.includes("half a fault")) {
+    return { icon: "file-alert-outline", tone: "warn" };
+  }
+  if (
+    text.includes("recovered") ||
+    text.includes("recovers") ||
+    text.includes("health potion") ||
+    text.includes("guard tonic") ||
+    text.includes("steel rhythm") ||
+    text.includes("first hold") ||
+    text.includes("hidden claim") ||
+    text.includes("opening claim") ||
+    text.includes("standfast") ||
+    text.includes("charterglass")
+  ) {
+    return { icon: "star-four-points-circle-outline", tone: "good" };
+  }
+  if (
+    text.startsWith("pressured") ||
+    text.startsWith("poisoned") ||
+    text.startsWith("shocked") ||
+    text.startsWith("fortified") ||
+    text.startsWith("staggered") ||
+    text.startsWith("guarded") ||
+    text.startsWith("grounded") ||
+    text.startsWith("warded") ||
+    text.startsWith("antitoxin")
+  ) {
+    return { icon: "alert-circle-outline", tone: "warn" };
+  }
+  if (text.includes("dealt ") || text.includes("counter window spent") || text.includes("clean angle")) {
+    return { icon: "sword-cross", tone: "offense" };
+  }
+  return { icon: "information-outline", tone: "neutral" };
+};
+const formatBattleLogLine = (line: string): string => {
+  const trimmed = line.trim();
+  const enemyAttackMatch = trimmed.match(/^(.+?) lashes out with (.+?) and hits you for (\d+) damage(?: \((CRIT)\))?\.$/);
+  if (enemyAttackMatch) {
+    const [, , mechanic, damage, critFlag] = enemyAttackMatch;
+    return `${mechanic} • You take ${damage} damage${critFlag ? " (CRIT)" : ""}.`;
+  }
+  const playerAttackMatch = trimmed.match(/^You used Attack on (.+?) and dealt (\d+) damage(?: \((CRIT)\))?\.$/);
+  if (playerAttackMatch) {
+    const [, target, damage, critFlag] = playerAttackMatch;
+    return `Attack • ${target} takes ${damage} damage${critFlag ? " (CRIT)" : ""}.`;
+  }
+  const genericAttackMatch = trimmed.match(/^You used (.+?) on (.+?) and dealt (\d+) damage(?: \((CRIT)\))?\.$/);
+  if (genericAttackMatch) {
+    const [, action, target, damage, critFlag] = genericAttackMatch;
+    return `${action} • ${target} takes ${damage} damage${critFlag ? " (CRIT)" : ""}.`;
+  }
+  const enemyHealMatch = trimmed.match(/^(.+?) recovers (\d+) HP\.$/);
+  if (enemyHealMatch) {
+    const [, target, amount] = enemyHealMatch;
+    return `Recovery • ${target} recovers ${amount} HP.`;
+  }
+  const playerHealMatch = trimmed.match(/^You used Health Potion on yourself and recovered (\d+) HP\.$/);
+  if (playerHealMatch) {
+    return `Health Potion • Recover ${playerHealMatch[1]} HP.`;
+  }
+  const belowHalfArmorMatch = trimmed.match(/^(.+?) activates after the hit drives (?:you|them) below half health\. ARM \+(\d+) for (\d+) turns\.$/);
+  if (belowHalfArmorMatch) {
+    const [, markName, armorFlat, turns] = belowHalfArmorMatch;
+    return `${markName} • Below half HP: ARM +${armorFlat} for ${turns} turns.`;
+  }
+  const belowHalfDamageMatch = trimmed.match(/^(.+?) activates after the hit drives (?:you|them) below half health\. ATK \+(\d+) for (\d+) turns\.$/);
+  if (belowHalfDamageMatch) {
+    const [, markName, damageFlat, turns] = belowHalfDamageMatch;
+    return `${markName} • Below half HP: ATK +${damageFlat} for ${turns} turns.`;
+  }
+  if (trimmed === "Seal Of Denial pushes Charter Pressure past the fault line. Trial Fault +0.5." || trimmed === "Seal Of Denial • Trial Fault +0.5.") {
+    return "Seal Of Denial • Charter Pressure crosses the line. Trial Fault +0.5.";
+  }
+  if (trimmed === "You drink Guard Tonic and harden your stance for the next 2 enemy hits.") {
+    return "Guard Tonic • Guarded for the next 2 enemy hits.";
+  }
+  if (trimmed === "First Hold turns the opening hit aside before it can land cleanly.") {
+    return "First Hold • Negates the hit.";
+  }
+  return trimmed;
 };
 const applyStartOfTurnStatusEffects = (
   list: LiveBattleStatusFx[],
@@ -1437,8 +4223,29 @@ const applySelfTargetBattleItem = (
       nextHp,
       logLine:
         clearedStatusLabels.length > 0
-          ? `You used Antitoxin Vial on yourself and cleared ${clearedStatusLabels.join(", ")}.`
-          : "You used Antitoxin Vial on yourself. No venom took hold.",
+          ? `You flood your system with Antitoxin, clear ${clearedStatusLabels.join(", ")}, and ready yourself to negate the next 3 poison hits.`
+          : "You flood your system with Antitoxin and ready yourself to negate the next 3 poison hits.",
+    };
+  }
+  if (itemId === "guard-tonic") {
+    return {
+      nextStatusFx,
+      nextHp,
+      logLine: "You drink Guard Tonic and harden your stance for the next 2 enemy hits.",
+    };
+  }
+  if (itemId === "grounding-tonic") {
+    return {
+      nextStatusFx,
+      nextHp,
+      logLine: "You steady yourself with Grounding Tonic. The next 2 shock surges will be blunted.",
+    };
+  }
+  if (itemId === "ward-charm") {
+    return {
+      nextStatusFx,
+      nextHp,
+      logLine: "You call up a ward veil. The next 2 field or brinefire effects will be blunted.",
     };
   }
   if (itemId === "focus-tonic" || itemId === "mana-tonic") {
@@ -1474,6 +4281,7 @@ const calculateIncomingEnemyDamage = ({
   enemyCrit,
   responseSucceeded,
   speedMitigation,
+  armorFlat,
   snapshot,
   activeSkillProfile,
   passiveBonuses,
@@ -1483,6 +4291,7 @@ const calculateIncomingEnemyDamage = ({
   enemyCrit: boolean;
   responseSucceeded: boolean;
   speedMitigation: number;
+  armorFlat: number;
   snapshot: BattleStatusSnapshot;
   activeSkillProfile: CombinedLiveSkillBonuses;
   passiveBonuses: ReturnType<typeof getEquippedPassiveBattleBonuses>;
@@ -1514,7 +4323,7 @@ const calculateIncomingEnemyDamage = ({
   if (enemyCrit) {
     incomingDamage = Math.round(incomingDamage * 1.45);
   }
-  return incomingDamage;
+  return Math.max(0, incomingDamage - armorFlat);
 };
 const getMechanicSeverity = (mechanic: string): number => {
   const keyword = mechanic.toLowerCase();
@@ -1593,6 +4402,14 @@ const getMechanicSeverity = (mechanic: string): number => {
     setQuestResultOpen(true);
     setPendingQuestResultOpen(false);
   }, [lastQuestOutcome, pendingQuestResultOpen]);
+
+  useEffect(() => {
+    if (!lastRankUpOutcome || !pendingRankTrialResultOpen) {
+      return;
+    }
+    setRankTrialResultOpen(true);
+    setPendingRankTrialResultOpen(false);
+  }, [lastRankUpOutcome, pendingRankTrialResultOpen]);
   useEffect(() => {
     const isAldricBattle = activeQuest?.questId === SPECIAL_RESCUE_QUEST_ID;
     if (!isAldricBattle) {
@@ -1636,6 +4453,20 @@ const getMechanicSeverity = (mechanic: string): number => {
     setConditionalEncounterResolved(false);
     setPendingTowerEncounterOpen(false);
   }, [lastTowerOutcome, pendingTowerEncounterOpen]);
+  useEffect(() => {
+    if (!liveTowerBattle || liveTowerBattle.queuedEnemyIndex == null) {
+      return;
+    }
+    const currentEnemyId = liveTowerBattle.telegraphs[liveTowerBattle.activeIndex]?.enemyId;
+    const currentEnemy = currentEnemyId ? liveTowerBattle.enemies.find((enemy) => enemy.id === currentEnemyId) ?? null : null;
+    if (!getQueuedPhaseShiftState(liveTowerBattle, currentEnemy)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      advanceLiveBattleEnemy();
+    }, 650);
+    return () => clearTimeout(timer);
+  }, [liveTowerBattle?.activeIndex, liveTowerBattle?.queuedEnemyIndex, liveTowerBattle]);
   const conditionalEncounterPhaseIndex = useMemo(() => {
     const triggerPhase = lastTowerOutcome?.conditionalEncounter?.triggerPhase;
     if (!triggerPhase) {
@@ -1811,14 +4642,21 @@ const getMechanicSeverity = (mechanic: string): number => {
   );
 
   const handleStartQuest = (questId: string) => {
-    const selectedItems = selectedItemsByQuest[questId] ?? {};
     const questDef = quests.find((quest) => quest.id === questId) ?? null;
+    const selectedItems = questDef?.combatModel === "raid" ? {} : selectedItemsByQuest[questId] ?? {};
+    if (questDef?.combatModel === "raid" && !LIVE_QUEST_ENCOUNTERS[questId]) {
+      setNoticeTone("error");
+      setNotice("This black-ledger raid record is not live yet. Leviathor is the first raid being brought online.");
+      return;
+    }
     const result = onStartQuest(questId, selectedItems);
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(
       result.ok
         ? questId === SPECIAL_RESCUE_QUEST_ID
           ? "Watchtrail rescue launched. Hold through the bandit waves."
+          : questDef?.combatModel === "raid"
+            ? `${questDef.title} opens as a live black-ledger raid.`
           : questDef?.combatModel === "live"
             ? `${questDef.title} is now running in live combat mode.`
           : result.reason?.trim() || "Quest accepted."
@@ -1830,11 +4668,16 @@ const getMechanicSeverity = (mechanic: string): number => {
         delete next[questId];
         return next;
       });
-      if (questDef?.combatModel === "live") {
-        startLiveQuestBattle(questDef, selectedItems);
+      if (questDef?.combatModel === "raid") {
+        onClearActiveQuest();
+        startLiveQuestBattle(questDef, combatPouchItems, result.activeQuest ?? null);
+      } else if (questDef?.combatModel === "live") {
+        startLiveQuestBattle(questDef, combatPouchItems, result.activeQuest ?? null);
       }
     }
   };
+
+  const canLaunchLiveRaid = (quest: QuestDefinition) => quest.combatModel === "raid" && Boolean(LIVE_QUEST_ENCOUNTERS[quest.id]);
 
   const getCommittedCount = (questId: string, itemId: ItemId): number =>
     selectedItemsByQuest[questId]?.[itemId] ?? 0;
@@ -1877,6 +4720,232 @@ const getMechanicSeverity = (mechanic: string): number => {
     const titleTrails = TITLES.filter(
       (title) => title.unlockRequirement?.type === "quest_starts" && title.unlockRequirement.questId === quest.id,
     );
+    if (isRaidQuest) {
+      const proofRewards = quest.itemRewards.filter((reward) => reward.itemId.startsWith("proof-"));
+      const secondaryRewards = quest.itemRewards.filter((reward) => !reward.itemId.startsWith("proof-")).slice(0, 4);
+      const raidLayoutCompact = viewportWidth < 840;
+      const raidHeroArt = raidLayoutCompact ? questArt?.backdropPortrait ?? questArt?.backdrop : questArt?.backdropLandscape ?? questArt?.backdrop;
+      const raidDetailArt = questArt?.detailArt ?? raidHeroArt;
+      const raidMeasureCount = Math.max(1, quest.encounterStages?.length ?? 0);
+      const suggestedSupplies = getRaidSuggestedSupplies(quest);
+      return (
+        <View key={quest.id} style={styles.raidQuestCard}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(88, 45, 19, 0.2)", "rgba(43, 32, 74, 0.12)", "rgba(18, 14, 29, 0.04)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.cardGradient}
+          />
+          <Pressable
+            onPress={() =>
+              setHuntDossierPanel({
+                title: quest.title.replace(/^Raid Hunt:\s*/i, ""),
+                artSource: raidDetailArt,
+                loreSummary: quest.loreSummary ?? "",
+                encounterStages: quest.encounterStages ?? [],
+                signatureMechanics: quest.signatureMechanics ?? [],
+                suggestedSupplies,
+                proofItemIds: proofRewards.map((reward) => reward.itemId),
+              })
+            }
+            style={[styles.raidQuestShowcase, raidLayoutCompact ? styles.raidQuestShowcaseCompact : null]}
+          >
+            {raidHeroArt ? (
+              <ImageBackground source={raidHeroArt} style={styles.raidQuestShowcaseArt} resizeMode="cover">
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(5, 7, 16, 0.02)", "rgba(7, 10, 19, 0.08)", "rgba(10, 11, 19, 0.82)"]}
+                  locations={[0, 0.52, 1]}
+                  start={{ x: 0.5, y: 0 }}
+                  end={{ x: 0.5, y: 1 }}
+                  style={styles.raidQuestShowcaseOverlay}
+                />
+                <View style={styles.raidQuestBadgeRow}>
+                  <View style={styles.raidQuestLedgerBadge}>
+                    <MaterialCommunityIcons name="book-lock-outline" size={14} color="#ffe0af" />
+                    <Text style={styles.raidQuestLedgerBadgeText}>BLACK LEDGER</Text>
+                  </View>
+                  <View style={styles.raidQuestShowcaseCorner}>
+                    <View style={styles.raidQuestHuntBadge}>
+                      <Text style={styles.raidQuestHuntBadgeText}>{quest.raidLabel ?? "RAID HUNT"}</Text>
+                    </View>
+                    <View style={styles.raidQuestRankSeal}>
+                      <Text style={styles.raidQuestRankSealText}>{quest.rank}</Text>
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.raidQuestShowcaseFooter}>
+                  <View style={styles.raidQuestShowcaseTextBlock}>
+                    <Text style={styles.raidQuestTitle}>{quest.title.replace(/^Raid Hunt:\s*/i, "")}</Text>
+                    <Text style={styles.raidQuestShowcaseMeta}>{questArt?.sceneLabel ?? "Black Ledger Hunt"}</Text>
+                  </View>
+                  <View style={styles.raidQuestStatRow}>
+                    <View style={styles.raidQuestStatPill}>
+                      <MaterialCommunityIcons name="account-arrow-up-outline" size={14} color="#b7e291" />
+                      <Text style={styles.raidQuestStatText}>Lv {quest.minLevel}+</Text>
+                      <IconTooltip text="Minimum player level the guild expects before posting this black-ledger hunt to your record." />
+                    </View>
+                    <View style={styles.raidQuestStatPill}>
+                      <MaterialCommunityIcons name="stairs" size={14} color="#8fd7ff" />
+                      <Text style={styles.raidQuestStatText}>{raidMeasureCount} Measures</Text>
+                      <IconTooltip text="How many full measures the hunt runs through before the proof can be claimed." />
+                    </View>
+                    <View style={styles.raidQuestStatPill}>
+                      <MaterialCommunityIcons name="alert-octagram-outline" size={14} color="#ffb7b7" />
+                      <Text style={styles.raidQuestStatText}>Catastrophe</Text>
+                      <IconTooltip text="The raid builds toward a signature catastrophe strike. Interrupt is the cleanest break, but strong hits and good answers can also knock the build back." />
+                    </View>
+                  </View>
+                </View>
+              </ImageBackground>
+            ) : (
+              <View style={styles.raidQuestArtFallback}>
+                <MaterialCommunityIcons name="skull-outline" size={56} color="#ffd48f" />
+              </View>
+            )}
+          </Pressable>
+
+          <View style={[styles.raidQuestBody, raidLayoutCompact ? styles.raidQuestBodyStack : null]}>
+            <View style={styles.raidQuestColumn}>
+              <View style={styles.raidQuestSection}>
+                <Text style={styles.raidQuestSectionTitle}>Raid Proof</Text>
+                {proofRewards.map((reward) => {
+                  const rewardItem = ITEM_BY_ID[reward.itemId];
+                  return (
+                    <Pressable
+                      key={`${quest.id}-proof-${reward.itemId}`}
+                      style={styles.raidQuestProofRow}
+                      onPress={() =>
+                        showQuickInfo(
+                          rewardItem?.name ?? reward.itemId,
+                          rewardItem?.description ?? "Guild-certified raid proof.",
+                          rewardItem?.rarity ?? "legendary",
+                          reward.itemId,
+                        )
+                      }
+                    >
+                      <GameItemIcon itemId={reward.itemId} size={20} />
+                      <View style={styles.raidQuestProofTextWrap}>
+                        <Text style={styles.raidQuestProofName}>{rewardItem?.name ?? reward.itemId}</Text>
+                        <Text style={styles.raidQuestProofMeta}>Guaranteed proof on meaningful clear</Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {secondaryRewards.length > 0 ? (
+                <View style={styles.raidQuestSection}>
+                  <Text style={styles.raidQuestSectionTitle}>Secondary Rewards</Text>
+                  <View style={styles.raidQuestRewardRow}>
+                    {secondaryRewards.map((reward) => {
+                      const rewardItem = ITEM_BY_ID[reward.itemId];
+                      return (
+                        <Pressable
+                          key={`${quest.id}-secondary-${reward.itemId}`}
+                          style={styles.raidQuestRewardChip}
+                          onPress={() =>
+                            showQuickInfo(
+                              rewardItem?.name ?? reward.itemId,
+                              `Drop Chance: ${Math.round(reward.chance * 100)}%\nAmount: x${reward.amount}`,
+                              rewardItem?.rarity ?? "common",
+                              reward.itemId,
+                            )
+                          }
+                        >
+                          <GameItemIcon itemId={reward.itemId} size={16} />
+                          <Text style={styles.raidQuestRewardChipText} numberOfLines={1}>
+                            {rewardItem?.name ?? rewardItem?.id ?? reward.itemId}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.raidQuestColumn}>
+              {suggestedSupplies.length > 0 ? (
+                <View style={styles.raidQuestSection}>
+                  <View style={styles.raidQuestSectionTitleRow}>
+                    <Text style={styles.raidQuestSectionTitle}>Suggested Supplies</Text>
+                    <IconTooltip text="These are the supplies that actually help in Leviathor's current live raid kit. General sustain stays up to your own pouch planning." />
+                  </View>
+                  <View style={styles.raidSupplyList}>
+                    {suggestedSupplies.map((entry) => {
+                      const item = ITEM_BY_ID[entry.itemId];
+                      const owned = character.inventory[entry.itemId] ?? 0;
+                      return (
+                        <Pressable
+                          key={`${quest.id}-suggested-${entry.itemId}`}
+                          style={styles.raidSupplyRow}
+                          onPress={() =>
+                            showQuickInfo(
+                              item?.name ?? entry.itemId,
+                              `${item?.description ?? "Raid supply."}\n\nWhy it matters here: ${entry.note}`,
+                              item?.rarity ?? "common",
+                              entry.itemId,
+                            )
+                          }
+                        >
+                          <View style={styles.raidSupplyIdentity}>
+                            <GameItemIcon itemId={entry.itemId} size={16} />
+                            <View style={styles.raidSupplyTextWrap}>
+                              <Text style={styles.raidSupplyName}>{item?.name ?? entry.itemId}</Text>
+                              <Text style={styles.raidSupplyReason}>{entry.note}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.raidSupplyMeta}>
+                            <Text style={styles.raidSupplyOwned}>Owned {owned}</Text>
+                            <MaterialCommunityIcons name="chevron-right" size={16} color="#cfbb91" />
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          </View>
+
+          <View style={styles.raidQuestFooter}>
+            {blocked ? (
+              <View style={styles.lockRow}>
+                <MaterialCommunityIcons name="lock-outline" size={14} color="#ff9b92" />
+                <Text style={styles.lockText}>{access.reason}</Text>
+              </View>
+            ) : null}
+            <Pressable
+              disabled={Boolean(activeQuest) || blocked || questHealthLocked || isDead || !canLaunchLiveRaid(quest)}
+              onPress={() => handleStartQuest(quest.id)}
+              style={styles.actionWrap}
+            >
+              <View
+                style={[
+                  styles.startButton,
+                  activeQuest || blocked || questHealthLocked || isDead || !canLaunchLiveRaid(quest) ? styles.actionDisabled : null,
+                ]}
+              >
+                <Text style={styles.startText}>
+                  {isDead
+                    ? "Being Fractured"
+                    : questHealthLocked
+                      ? "Need 50% HP"
+                      : blocked
+                        ? "Locked"
+                        : activeQuest
+                          ? "On a Quest"
+                          : canLaunchLiveRaid(quest)
+                            ? "Launch Raid Hunt"
+                            : "Raid Record Pending"}
+                </Text>
+              </View>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
     return (
       <View
         key={quest.id}
@@ -1968,11 +5037,13 @@ const getMechanicSeverity = (mechanic: string): number => {
             </Text>
             <IconTooltip text="Quest timer duration." />
           </View>
-          <View style={styles.rewardChip}>
-            <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
-            <Text style={styles.rewardChipText}>{quest.staminaCost}</Text>
-            <IconTooltip text="Stamina cost to start this quest." />
-          </View>
+          {!isStaminaFreeRaidHunt(quest) ? (
+            <View style={styles.rewardChip}>
+              <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
+              <Text style={styles.rewardChipText}>{quest.staminaCost}</Text>
+              <IconTooltip text="Stamina cost to start this quest." />
+            </View>
+          ) : null}
           <View style={styles.rewardChip}>
             <MaterialCommunityIcons name="signal" size={14} color={difficultyColor(quest.difficulty)} />
             <Text style={styles.rewardChipText}>D{quest.difficulty}</Text>
@@ -2051,16 +5122,14 @@ const getMechanicSeverity = (mechanic: string): number => {
                 <View style={[styles.titleRewardIconWrap, { borderColor: rarityColor }]}>
                   <Image source={TITLE_ICON_ART[title.id]} style={styles.titleRewardIcon} resizeMode="contain" />
                 </View>
-                <View style={styles.titleRewardTextWrap}>
-                  <View style={styles.titleRewardTopRow}>
-                    <Text style={styles.titleRewardLabel}>TITLE TRAIL</Text>
-                    <View style={[styles.titleRewardGradePill, { borderColor: rarityColor }]}>
-                      <Text style={[styles.titleRewardGradeText, { color: rarityColor }]}>
-                        {title.rarity.toUpperCase()}
-                      </Text>
+                  <View style={styles.titleRewardTextWrap}>
+                    <View style={styles.titleRewardTopRow}>
+                      <Text style={styles.titleRewardLabel}>TITLE TRAIL</Text>
+                    <View style={[styles.titleRewardGradePill, { borderColor: rarityColor, backgroundColor: `${rarityColor}18` }]}>
+                      <Text style={[styles.titleRewardGradeText, { color: rarityColor }]}>{title.rarity.toUpperCase()}</Text>
                     </View>
                   </View>
-                  <Text style={styles.titleRewardName}>{title.name}</Text>
+                  <Text style={[styles.titleRewardName, { color: rarityColor }]}>{title.name}</Text>
                   <View style={styles.titleRewardStatusRow}>
                     <Text style={styles.titleRewardMeta}>Progress {progress}/{required}</Text>
                     {isEarned ? (
@@ -2097,7 +5166,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                   <View key={`${quest.id}-${requirement.itemId}`} style={styles.reqItem}>
                     <GameItemIcon itemId={requirement.itemId} size={14} />
                     <IconTooltip
-                      text={`${item?.name ?? requirement.itemId}: commit items with +/-. Committed items are consumed when quest starts. Key items heavily influence success.`}
+                      text={`${item?.name ?? requirement.itemId}: choose how many to bring on the job with +/-. Anything you bring is used up when the quest starts. Key items heavily influence success.`}
                     />
                     <Pressable
                       onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
@@ -2137,7 +5206,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                   <View key={`${quest.id}-optional-${requirement.itemId}`} style={styles.reqItem}>
                     <GameItemIcon itemId={requirement.itemId} size={14} />
                     <IconTooltip
-                      text={`${item?.name ?? requirement.itemId}: commit optional supplies with +/-. Committed amount is consumed on quest start and provides bonus success chance.`}
+                      text={`${item?.name ?? requirement.itemId}: choose how many optional supplies to bring with +/-. Anything you bring is used up on quest start and improves your odds.`}
                     />
                     <Pressable
                       onPress={() => adjustCommittedItem(quest.id, requirement.itemId, -1, requirement.needed, owned)}
@@ -2212,11 +5281,18 @@ const getMechanicSeverity = (mechanic: string): number => {
         ) : null}
 
         <Pressable
-          disabled={Boolean(activeQuest) || blocked || questHealthLocked || isDead}
+          disabled={Boolean(activeQuest) || blocked || questHealthLocked || isDead || (quest.combatModel === "raid" && !canLaunchLiveRaid(quest))}
           onPress={() => handleStartQuest(quest.id)}
           style={styles.actionWrap}
         >
-          <View style={[styles.startButton, activeQuest || blocked || questHealthLocked || isDead ? styles.actionDisabled : null]}>
+          <View
+            style={[
+              styles.startButton,
+              activeQuest || blocked || questHealthLocked || isDead || (quest.combatModel === "raid" && !canLaunchLiveRaid(quest))
+                ? styles.actionDisabled
+                : null,
+            ]}
+          >
             <Text style={styles.startText}>
               {isDead
                 ? "Being Fractured"
@@ -2226,6 +5302,10 @@ const getMechanicSeverity = (mechanic: string): number => {
                     ? "Locked"
                     : activeQuest
                       ? "On a Quest"
+                      : quest.combatModel === "raid"
+                        ? canLaunchLiveRaid(quest)
+                          ? "Launch Raid Hunt"
+                          : "Raid Record Pending"
                       : quest.combatModel === "live"
                         ? "Launch Live Contract"
                         : "Take This Quest"}
@@ -2313,12 +5393,6 @@ const getMechanicSeverity = (mechanic: string): number => {
         delete next[floorNumber];
         return next;
       });
-      const floorKey = `floor-${floorNumber}`;
-      setSelectedItemsForTower((current) => {
-        const next = { ...current };
-        delete next[floorKey];
-        return next;
-      });
     }
   };
   const handleEnterTowerFloor = (floorNumber: number) => {
@@ -2337,12 +5411,33 @@ const getMechanicSeverity = (mechanic: string): number => {
     setFloorLoreOpenFor(null);
     setTowerRunStageByFloor((current) => ({ ...current, [floorNumber]: "waves" }));
   };
-  const startLiveTowerBattle = (
-    floorNumber: number,
-    wave: TowerWaveKey,
-    committedItems: Record<ItemId, number>,
-    enemies: TowerEnemyUnit[],
-  ) => {
+  const createLiveBattleSession = ({
+    source,
+    floorNumber,
+    wave,
+    enemies,
+    pouchItems,
+    encounterTitle,
+    encounterSummary,
+    questId,
+    questSnapshot,
+    rankTrialId,
+    openingLines,
+    initialPlayerStatusFx,
+  }: {
+    source: LiveTowerBattleSession["source"];
+    floorNumber: number;
+    wave: TowerWaveKey;
+    enemies: TowerEnemyUnit[];
+    pouchItems: Record<ItemId, number>;
+    encounterTitle: string;
+    encounterSummary?: string;
+    questId?: string;
+    questSnapshot?: ActiveQuestState | null;
+    rankTrialId?: string;
+    openingLines: { playerFirst: string; enemyFirst: string };
+    initialPlayerStatusFx: LiveBattleStatusFx[];
+  }): LiveTowerBattleSession => {
     const pendingBonuses = getPendingAbilityBonuses(character);
     const combatStats = getCharacterCombatStats(character);
     const estimatedTurnDamage = Math.max(8, Math.round((combatStats.damage + pendingBonuses.damageFlat) * 0.28));
@@ -2350,14 +5445,30 @@ const getMechanicSeverity = (mechanic: string): number => {
     const enemyStatsById = Object.fromEntries(enemies.map((enemy) => [enemy.id, getLiveEnemyCombatStats(enemy)]));
     const firstEnemy = telegraphs[0] ? enemies.find((enemy) => enemy.id === telegraphs[0].enemyId) ?? enemies[0] : enemies[0];
     const firstEnemyStats = firstEnemy ? getLiveEnemyCombatStats(firstEnemy) : { damage: 6, critChance: 8, speed: 5, role: "normal" as const };
-    const playerTurnFirst = combatStats.speed >= firstEnemyStats.speed;
-    setLiveTowerBattle({
-      source: "tower",
+    const firstEnemyOpeningStatuses = firstEnemy ? getOpeningEnemyStatuses(firstEnemy) : [];
+    const firstEnemySpeed = firstEnemyStats.speed + getActiveSpeedBonusFromStatuses(firstEnemyOpeningStatuses);
+    const playerTurnFirst = combatStats.speed >= firstEnemySpeed;
+    const openingEnemyStatusesById = Object.fromEntries(
+      enemies.map((enemy) => [
+        enemy.id,
+        applyBattleStatusChanges([], {
+          replace: [...getOpeningWeaponMarkStatuses(getCombatWeaponMarksForTrialEnemy(enemy.id)), ...getOpeningEnemyStatuses(enemy)],
+        }),
+      ]),
+    );
+    const openingPlayerWeaponStatuses = getOpeningWeaponMarkStatuses(getCombatWeaponMarksForCharacter(character));
+    return {
+      source,
       floorNumber,
       wave,
+      questId,
+      questSnapshot,
+      rankTrialId,
       enemies,
-      encounterTitle: `Live Clash: ${getWaveTitle(wave)}`,
-      committedItems,
+      encounterTitle,
+      encounterSummary,
+      pouchItems,
+      usedPouchItemCounts: {},
       telegraphs,
       activeIndex: 0,
       position: "mid",
@@ -2365,91 +5476,130 @@ const getMechanicSeverity = (mechanic: string): number => {
       skillUsed: false,
       responses: [],
       turnOwner: playerTurnFirst ? "player" : "enemy",
-      playerTurnsRemaining: playerTurnFirst ? getTurnBurst(combatStats.speed, firstEnemyStats.speed) : 0,
-      enemyTurnsRemaining: playerTurnFirst ? 0 : getTurnBurst(firstEnemyStats.speed, combatStats.speed),
+      playerTurnsRemaining: playerTurnFirst ? getTurnBurst(combatStats.speed, firstEnemySpeed) : 0,
+      enemyTurnsRemaining:
+        playerTurnFirst
+          ? 0
+          : getTurnBurst(firstEnemySpeed, combatStats.speed) + getActiveExtraTurnsFromStatuses(firstEnemyOpeningStatuses),
       playerStats: {
         damage: combatStats.damage + pendingBonuses.damageFlat,
         critChance: combatStats.critChance,
         speed: combatStats.speed,
+        armor: combatStats.armor,
       },
       enemyStatsById,
       playerHp: character.health,
       enemyHpById: Object.fromEntries(enemies.map((enemy) => [enemy.id, enemy.health ?? 1])),
-      playerStatusFx: towerStatusEffects.map(mapTowerStatusToLiveFx),
-      enemyStatusFxById: Object.fromEntries(enemies.map((enemy) => [enemy.id, []])),
+      playerStatusFx: applyBattleStatusChanges(initialPlayerStatusFx, { replace: openingPlayerWeaponStatuses }),
+      enemyStatusFxById: openingEnemyStatusesById,
+      enemySpecialMeterById: buildEnemySpecialMeterState(enemies),
+      triggeredWeaponMarkKeys: [],
+      fieldCommandBreaches: 0,
       effectClockElapsedMs: 0,
       effectClockStartedAtMs: playerTurnFirst ? Date.now() : null,
       initiativeHistory: [],
       skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
       queuedEnemyIndex: null,
-      turnLog: [
-        playerTurnFirst
-          ? "Steel rings out first. The enemy is in front of you and the opening is yours."
-          : "The enemy lunges before you can settle your stance and steals the first move.",
-      ],
-    });
+      turnLog: [playerTurnFirst ? openingLines.playerFirst : openingLines.enemyFirst],
+    };
+  };
+  const startLiveTowerBattle = (
+    floorNumber: number,
+    wave: TowerWaveKey,
+    pouchItems: Record<ItemId, number>,
+    enemies: TowerEnemyUnit[],
+  ) => {
+    setLiveTowerBattle(
+      createLiveBattleSession({
+        source: "tower",
+        floorNumber,
+        wave,
+        enemies,
+        pouchItems,
+        encounterTitle: `Live Clash: ${getWaveTitle(wave)}`,
+        openingLines: {
+          playerFirst: "Steel rings out first. The enemy is in front of you and the opening is yours.",
+          enemyFirst: "The enemy lunges before you can settle your stance and steals the first move.",
+        },
+        initialPlayerStatusFx: towerStatusEffects.map(mapTowerStatusToLiveFx),
+      }),
+    );
     setBattleEffectHint(null);
     setBattleStatusHint(null);
   };
-  const startLiveQuestBattle = (quest: QuestDefinition, committedItems: Record<ItemId, number>) => {
+  const startLiveQuestBattle = (quest: QuestDefinition, pouchItems: Record<ItemId, number>, questSnapshot?: ActiveQuestState | null) => {
     const encounter = LIVE_QUEST_ENCOUNTERS[quest.id];
     if (!encounter) {
       return false;
     }
-    const pendingBonuses = getPendingAbilityBonuses(character);
-    const combatStats = getCharacterCombatStats(character);
-    const estimatedTurnDamage = Math.max(8, Math.round((combatStats.damage + pendingBonuses.damageFlat) * 0.28));
-    const telegraphs = buildLiveBattleTelegraphs(encounter.enemies, estimatedTurnDamage);
-    const enemyStatsById = Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, getLiveEnemyCombatStats(enemy)]));
-    const firstEnemy =
-      telegraphs[0] ? encounter.enemies.find((enemy) => enemy.id === telegraphs[0].enemyId) ?? encounter.enemies[0] : encounter.enemies[0];
-    const firstEnemyStats = firstEnemy ? getLiveEnemyCombatStats(firstEnemy) : { damage: 6, critChance: 8, speed: 5, role: "normal" as const };
-    const playerTurnFirst = combatStats.speed >= firstEnemyStats.speed;
-    setLiveTowerBattle({
-      source: "quest",
-      floorNumber: 0,
-      wave: "normal",
-      questId: quest.id,
-      encounterTitle: encounter.title,
-      encounterSummary: encounter.summary,
-      enemies: encounter.enemies,
-      committedItems,
-      telegraphs,
-      activeIndex: 0,
-      position: "mid",
-      braceUsed: false,
-      skillUsed: false,
-      responses: [],
-      turnOwner: playerTurnFirst ? "player" : "enemy",
-      playerTurnsRemaining: playerTurnFirst ? getTurnBurst(combatStats.speed, firstEnemyStats.speed) : 0,
-      enemyTurnsRemaining: playerTurnFirst ? 0 : getTurnBurst(firstEnemyStats.speed, combatStats.speed),
-      playerStats: {
-        damage: combatStats.damage + pendingBonuses.damageFlat,
-        critChance: combatStats.critChance,
-        speed: combatStats.speed,
-      },
-      enemyStatsById,
-      playerHp: character.health,
-      enemyHpById: Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, enemy.health ?? 1])),
-      playerStatusFx: [],
-      enemyStatusFxById: Object.fromEntries(encounter.enemies.map((enemy) => [enemy.id, []])),
-      effectClockElapsedMs: 0,
-      effectClockStartedAtMs: playerTurnFirst ? Date.now() : null,
-      initiativeHistory: [],
-      skillCooldownEndsAtMsById: { ...(character.abilityCooldownsUntilMs ?? {}) },
-      queuedEnemyIndex: null,
-      turnLog: [
-        playerTurnFirst
-          ? "The contract erupts into a live clash. You move first."
-          : "The flock drops out of the smoke first and tears the opening move away from you.",
-      ],
-    });
+    setLiveTowerBattle(
+      createLiveBattleSession({
+        source: "quest",
+        floorNumber: 0,
+        wave: "normal",
+        questId: quest.id,
+        questSnapshot: questSnapshot ?? null,
+        encounterTitle: encounter.title,
+        encounterSummary: encounter.summary,
+        enemies: encounter.enemies,
+        pouchItems,
+        openingLines:
+          quest.combatModel === "raid"
+            ? {
+                playerFirst: "The black-ledger hunt opens live. Leviathor rises in front of you and the first answer is yours if you can keep it.",
+                enemyFirst: "The black water breaks first. Leviathor rises before you can settle and tears the opening move away from you.",
+              }
+            : {
+                playerFirst: "The contract erupts into a live clash. You move first.",
+                enemyFirst: "The flock drops out of the smoke first and tears the opening move away from you.",
+              },
+        initialPlayerStatusFx: [],
+      }),
+    );
+    setBattleEffectHint(null);
+    setBattleStatusHint(null);
+    return true;
+  };
+  const startLiveRankTrial = (trial: RankUpTrialDefinition, pouchItems: Record<ItemId, number>) => {
+    const encounter = LIVE_RANK_TRIAL_ENCOUNTERS[trial.id];
+    if (!encounter) {
+      return false;
+    }
+    setRankTrialAssessmentSummary(null);
+    setLiveTowerBattle(
+      createLiveBattleSession({
+        source: "rank",
+        floorNumber: 0,
+        wave: "normal",
+        rankTrialId: trial.id,
+        encounterTitle: encounter.title,
+        encounterSummary: encounter.summary,
+        enemies: encounter.enemies,
+        pouchItems,
+        openingLines:
+          trial.id === "rank-trial-e-d"
+            ? {
+                playerFirst: "Nyra drops the signal. The first exchange is yours if you can hold it.",
+                enemyFirst: "Nyra drops the signal and the sanctioned bout starts fast. Steel is already on you before the ring can turn ceremonial.",
+              }
+            : trial.id === "rank-trial-d-c"
+              ? {
+                  playerFirst: "Thorne calls the audit live. Kestrel is in front of you, the ledger is open, and the clean first step is yours if you can take it.",
+                  enemyFirst: "Thorne calls the audit live and Kestrel is already moving. The record starts with her pace unless you take it away immediately.",
+                }
+            : {
+                playerFirst: "The examiner drops the signal. The threshold ring is live, and you seize the first step.",
+                enemyFirst: "The gate crashes open and the trial lunges at you before you can settle your stance.",
+              },
+        initialPlayerStatusFx: [],
+      }),
+    );
     setBattleEffectHint(null);
     setBattleStatusHint(null);
     return true;
   };
   const recordLiveBattleResponse = (
-    responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass",
+    responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass" | "interrupt",
     responseId?: ItemId | string | TowerBattlePosition,
   ) => {
     setLiveTowerBattle((current) => {
@@ -2464,11 +5614,33 @@ const getMechanicSeverity = (mechanic: string): number => {
         return current;
       }
       const currentEnemy = current.enemies.find((enemy) => enemy.id === activeTelegraph.enemyId);
+      const currentEnemyProfile = getTrialAdventurerProfile(activeTelegraph.enemyId);
       if (!currentEnemy) {
         return current;
       }
+      const specialMeterProfile = getEnemySpecialMeterProfile(currentEnemy);
+      const specialMeterPreview = getEnemySpecialMeterPreview(current, currentEnemy);
+      const baseInterruptAmount =
+        specialMeterProfile != null
+          ? getSpecialMeterInterruptAmount(
+              specialMeterProfile.interruptPerTurn,
+              character.progression.level,
+              currentEnemy.level,
+            )
+          : 0;
       if (responseType === "move" && responseId && getEnemyBlockedPositions(currentEnemy).includes(responseId as TowerBattlePosition)) {
         return current;
+      }
+      if (responseType === "interrupt" && !specialMeterProfile) {
+        return current;
+      }
+      if (responseType === "item" && responseId) {
+        const itemId = responseId as ItemId;
+        const packedCount = current.pouchItems[itemId] ?? 0;
+        const usedCount = current.usedPouchItemCounts[itemId] ?? 0;
+        if (packedCount <= 0 || usedCount >= packedCount) {
+          return current;
+        }
       }
       const wallNowMs = Date.now();
       const effectNowMs = getLiveBattleEffectClockMs(current, wallNowMs);
@@ -2489,21 +5661,47 @@ const getMechanicSeverity = (mechanic: string): number => {
         (responseType === "item" && responseId === activeTelegraph.recommendedItemId) ||
         (responseType === "move" && responseId === activeTelegraph.suggestedPosition) ||
         (responseType === "skill" && activeTelegraph.suggestedSkillClass === character.classId) ||
-        (responseType === "brace" && activeTelegraph.suggestedBrace === true);
-      const critCycle = current.playerStats.critChance >= 45 ? 2 : current.playerStats.critChance >= 30 ? 3 : current.playerStats.critChance >= 15 ? 4 : 999;
+        (responseType === "brace" && activeTelegraph.suggestedBrace === true) ||
+        (responseType === "interrupt" && Boolean(specialMeterProfile));
       const nextTurnNumber = (current.responses?.length ?? 0) + 1;
       const skillAttackBonus = activeSkillBonuses.attackBonus;
       const skillCritBonus = activeSkillBonuses.critBonus;
-      const effectiveCritChance = current.playerStats.critChance + skillCritBonus;
-      const effectiveSpeed = current.playerStats.speed + activeSkillBonuses.speedBonus;
+      const nextPlayerHp = Math.max(0, current.playerHp - turnStatus.hpLoss);
+      const playerMarkTrigger = applyBattleWeaponMarkTriggers({
+        marks: getCombatWeaponMarksForCharacter(character),
+        currentHp: current.playerHp,
+        nextHp: nextPlayerHp,
+        maxHp: character.healthCap,
+        statusFx: nextPlayerStatusFx,
+        triggeredMarkKeys: current.triggeredWeaponMarkKeys,
+        ownerName: character.name,
+        ownerLabel: "player",
+        ownerScope: "player",
+      });
+      nextPlayerStatusFx = playerMarkTrigger.nextStatusFx;
+      const playerStatusSnapshot = getBattleStatusSnapshot(nextPlayerStatusFx);
+      const effectiveCritChance = current.playerStats.critChance + skillCritBonus + playerStatusSnapshot.statusCritFlatBonus;
+      const effectiveSpeed = current.playerStats.speed + activeSkillBonuses.speedBonus + playerStatusSnapshot.statusSpeedFlatBonus;
       const effectiveCritCycle = effectiveCritChance >= 45 ? 2 : effectiveCritChance >= 30 ? 3 : effectiveCritChance >= 15 ? 4 : 999;
       const critTriggered =
         responseType !== "brace" && responseType !== "skill" && responseType !== "pass" && effectiveCritCycle !== 999 && nextTurnNumber % effectiveCritCycle === 0;
       const speedDamageBonus = effectiveSpeed >= 18 ? 3 : effectiveSpeed >= 12 ? 1 : 0;
-      const nextPlayerHp = Math.max(0, current.playerHp - turnStatus.hpLoss);
-      let playerDamage = Math.max(0, Math.round(current.playerStats.damage * 0.24) + speedDamageBonus);
+      let playerDamage = Math.max(0, Math.round((current.playerStats.damage + playerStatusSnapshot.weaponMarkDamageFlatBonus) * 0.24) + speedDamageBonus);
       playerDamage = calculatePlayerAttackAdjustment(playerDamage, turnStatus.snapshot, passiveBattleBonuses);
       const currentEnemyHp = current.enemyHpById[activeTelegraph.enemyId] ?? (currentEnemy.health ?? 1);
+      const currentEnemyStatusFx = pruneExpiredStatusFx(current.enemyStatusFxById[activeTelegraph.enemyId] ?? [], effectNowMs);
+      let nextEnemyStatusFxById = {
+        ...current.enemyStatusFxById,
+        [activeTelegraph.enemyId]: currentEnemyStatusFx,
+      };
+      const enemyStatusSnapshot = getEnemyStatusSnapshot(currentEnemyStatusFx);
+      const enemyBattleSnapshot = getBattleStatusSnapshot(currentEnemyStatusFx);
+      const enemyActiveSkillBonuses = getCombinedLiveSkillBonuses(
+        currentEnemyStatusFx,
+        currentEnemyProfile?.activeSkillId ? [currentEnemyProfile.activeSkillId] : [],
+        effectNowMs,
+      );
+      const enemyArmorBonusFromStatuses = getActiveArmorBonusFromStatuses(currentEnemyStatusFx);
       const woundedTarget = currentEnemy.health > 0 && currentEnemyHp <= Math.ceil((currentEnemy.health ?? 1) * 0.5);
       const attackPosition = (responseType === "attack" ? current.position : undefined) as TowerBattlePosition | undefined;
       const positionAttackBonus = attackPosition ? getPositionAttackBonus(currentEnemy, attackPosition) : 0;
@@ -2519,6 +5717,8 @@ const getMechanicSeverity = (mechanic: string): number => {
         playerDamage = 0;
       } else if (responseType === "pass") {
         playerDamage = 0;
+      } else if (responseType === "interrupt") {
+        playerDamage = 0;
       }
       if (!success && (responseType === "item" || responseType === "move")) {
         playerDamage = 0;
@@ -2532,11 +5732,61 @@ const getMechanicSeverity = (mechanic: string): number => {
       if (turnStatus.snapshot.hasFrenzied) {
         playerDamage += passiveBattleBonuses.frenzyAttackBonusFlat;
       }
+      if (responseType === "attack" && enemyStatusSnapshot.staggeredStacks > 0) {
+        playerDamage += 4 * enemyStatusSnapshot.staggeredStacks;
+      }
+      if (responseType === "attack") {
+        playerDamage = Math.max(0, playerDamage - (current.enemyStatsById[activeTelegraph.enemyId].armor + enemyArmorBonusFromStatuses));
+        if (enemyActiveSkillBonuses.mitigationFlat + enemyBattleSnapshot.statusMitigationFlatBonus > 0) {
+          playerDamage = Math.max(0, playerDamage - enemyActiveSkillBonuses.mitigationFlat - enemyBattleSnapshot.statusMitigationFlatBonus);
+        }
+        if (enemyStatusSnapshot.fortifiedStacks > 0) {
+          playerDamage = Math.max(0, playerDamage - 6 * enemyStatusSnapshot.fortifiedStacks);
+        }
+        if (enemyStatusSnapshot.sigilRaisedStacks > 0) {
+          playerDamage = Math.max(0, playerDamage - 4 * enemyStatusSnapshot.sigilRaisedStacks);
+        }
+      }
+      if (playerDamage > 0 && enemyBattleSnapshot.weaponMarkHitNegationCharges > 0) {
+        playerDamage = 0;
+        nextEnemyStatusFxById = {
+          ...nextEnemyStatusFxById,
+          [activeTelegraph.enemyId]: consumeWeaponMarkHitNegation(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? []),
+        };
+      }
       playerDamage = Math.max(0, playerDamage);
       if (critTriggered) {
         playerDamage = Math.round(playerDamage * 1.5);
       }
       const nextEnemyHp = Math.max(0, currentEnemyHp - playerDamage);
+      const playerSpecialMeterAdjustment =
+        specialMeterProfile && specialMeterPreview
+          ? Math.min(
+              Math.max(0, specialMeterPreview.current),
+              getSpecialMeterResponseAdjustment({
+                responseType,
+                success,
+                baseInterruptAmount,
+                playerDamage,
+                critTriggered,
+              }),
+            )
+          : 0;
+      const enemyMarkTrigger = applyBattleWeaponMarkTriggers({
+        marks: getCombatWeaponMarksForTrialEnemy(activeTelegraph.enemyId),
+        currentHp: currentEnemyHp,
+        nextHp: nextEnemyHp,
+        maxHp: currentEnemy.health ?? currentEnemyHp,
+        statusFx: nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [],
+        triggeredMarkKeys: playerMarkTrigger.nextTriggeredMarkKeys,
+        ownerName: activeTelegraph.enemyName,
+        ownerLabel: "enemy",
+        ownerScope: activeTelegraph.enemyId,
+      });
+      nextEnemyStatusFxById = {
+        ...nextEnemyStatusFxById,
+        [activeTelegraph.enemyId]: enemyMarkTrigger.nextStatusFx,
+      };
       const actionLabel =
         responseType === "attack"
           ? "Attack"
@@ -2550,13 +5800,16 @@ const getMechanicSeverity = (mechanic: string): number => {
                   ? "Guard"
                   : responseType === "pass"
                     ? "Pass"
+                    : responseType === "interrupt"
+                      ? "Interrupt"
                   : "Action";
       let resultLine = "";
       const nextEnemyHpById = {
         ...current.enemyHpById,
         [activeTelegraph.enemyId]: nextEnemyHp,
       };
-      let nextEnemyStatusFxById = current.enemyStatusFxById;
+      let nextTriggeredWeaponMarkKeys = enemyMarkTrigger.nextTriggeredMarkKeys;
+      let nextEnemySpecialMeterById = { ...current.enemySpecialMeterById };
       nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, {
         clearIds: ["guarded", ...(responseType === "attack" ? ["counter-ready"] : [])],
       });
@@ -2576,7 +5829,7 @@ const getMechanicSeverity = (mechanic: string): number => {
           expiresAtMs: nextEffectEndsAtMs,
         };
         nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, { replace: [skillFx] });
-        resultLine = `You activated ${actionLabel} on yourself. ${currentSkillProfile.effectLabel} is now active.`;
+        resultLine = `${currentSkillProfile.effectLabel} • Active.`;
         statusLogLines.push(describeBattleStatusChange(skillFx, "gained"));
       } else if (responseType === "brace") {
         const guardFx: LiveBattleStatusFx = {
@@ -2588,26 +5841,52 @@ const getMechanicSeverity = (mechanic: string): number => {
           stacks: 1,
         };
         nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, { stack: [guardFx] });
-        resultLine = "You raise your guard and brace for the next hit.";
+        resultLine = "Guard • You brace for the next hit.";
         statusLogLines.push(describeBattleStatusChange(guardFx, "gained"));
       } else if (responseType === "move") {
         const targetPosition = (responseId as TowerBattlePosition | undefined) ?? current.position;
         resultLine = getEnemyAdvantagePositions(currentEnemy).includes(targetPosition)
-          ? `You shift ${targetPosition} and line up the clean side of ${activeTelegraph.enemyName}. Hits from there will land harder.`
-          : `You shift ${targetPosition} and reset your footing.`;
+          ? `Shift ${targetPosition[0].toUpperCase()}${targetPosition.slice(1)} • Better angle on ${activeTelegraph.enemyName}.`
+          : `Shift ${targetPosition[0].toUpperCase()}${targetPosition.slice(1)} • Footing reset.`;
       } else if (responseType === "pass") {
-        resultLine = `You yield the moment and let ${activeTelegraph.enemyName} commit first.`;
+        resultLine = `Pass • Let ${activeTelegraph.enemyName} commit first.`;
+      } else if (responseType === "interrupt" && specialMeterProfile && specialMeterPreview) {
+        const interruptAmount = playerSpecialMeterAdjustment;
+        const nextMeter = Math.max(0, specialMeterPreview.current - interruptAmount);
+        nextEnemySpecialMeterById[activeTelegraph.enemyId] = nextMeter;
+        resultLine =
+          nextMeter > 0
+            ? `Interrupt • ${specialMeterProfile.label} -${interruptAmount}.`
+            : `Interrupt • ${specialMeterProfile.label} collapses.`;
       } else if (responseType === "item" && responseId) {
         const itemId = responseId as ItemId;
         const itemOutcome = applySelfTargetBattleItem(itemId, nextPlayerStatusFx, nextPlayerHp, character.healthCap);
         nextPlayerStatusFx = itemOutcome.nextStatusFx;
         const updatedPlayerHp = itemOutcome.nextHp;
         resultLine = itemOutcome.logLine;
+        if (specialMeterProfile && specialMeterPreview && playerSpecialMeterAdjustment > 0) {
+          const nextMeter = Math.max(0, specialMeterPreview.current - playerSpecialMeterAdjustment);
+          nextEnemySpecialMeterById[activeTelegraph.enemyId] = nextMeter;
+        }
+        nextEnemyStatusFxById = {
+          ...nextEnemyStatusFxById,
+          [activeTelegraph.enemyId]: consumeTurnBasedWeaponMarkStatuses(
+            nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [],
+            enemyMarkTrigger.triggeredIds,
+          ),
+        };
         const nextEnemyTurnsBase = current.enemyStatsById[activeTelegraph.enemyId];
         return (() => {
-          const nextIndexLocal = getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
           const nextTurnLog = [...current.turnLog, ...turnStatus.logLines];
+          nextTurnLog.push(...playerMarkTrigger.logLines);
           nextTurnLog.push(resultLine);
+          if (specialMeterProfile && specialMeterPreview && playerSpecialMeterAdjustment > 0) {
+            nextTurnLog.push(
+              nextEnemySpecialMeterById[activeTelegraph.enemyId] > 0
+                ? `${specialMeterProfile.label} • ${itemOutcome.logLine.split(" • ")[0]} slows the build (-${playerSpecialMeterAdjustment}).`
+                : `${specialMeterProfile.label} • ${itemOutcome.logLine.split(" • ")[0]} breaks the build entirely.`,
+            );
+          }
           const addedStatuses = itemOutcome.nextStatusFx.filter(
             (effect) => !nextPlayerStatusFx.some((entry) => entry.id === effect.id),
           );
@@ -2631,8 +5910,14 @@ const getMechanicSeverity = (mechanic: string): number => {
               },
             ],
             playerHp: updatedPlayerHp,
+            usedPouchItemCounts: {
+              ...current.usedPouchItemCounts,
+              [itemId]: (current.usedPouchItemCounts[itemId] ?? 0) + 1,
+            },
             playerStatusFx: nextPlayerStatusFx,
             enemyStatusFxById: nextEnemyStatusFxById,
+            enemySpecialMeterById: nextEnemySpecialMeterById,
+            triggeredWeaponMarkKeys: nextTriggeredWeaponMarkKeys,
             effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
             effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
             initiativeHistory: [...current.initiativeHistory, "player" as const].slice(-4),
@@ -2641,22 +5926,64 @@ const getMechanicSeverity = (mechanic: string): number => {
             lastPlayerDamage: 0,
             lastEnemyDamage: 0,
             lastCrit: false,
-            activeIndex: nextIndexLocal,
+            activeIndex: current.activeIndex,
             turnOwner: nextTurnOwnerLocal,
             playerTurnsRemaining: nextPlayerTurnsRemainingLocal,
             enemyTurnsRemaining: nextPlayerTurnsRemainingLocal > 0 ? 0 : Math.max(1, getTurnBurst(nextEnemyTurnsBase.speed, effectiveSpeed + 3)),
           };
         })();
       } else {
-        resultLine = `You used ${actionLabel} on ${activeTelegraph.enemyName} and dealt ${playerDamage} damage${critTriggered ? " (CRIT)" : ""}.`;
+        resultLine =
+          responseType === "attack" && enemyBattleSnapshot.weaponMarkHitNegationCharges > 0
+            ? `First Hold • ${activeTelegraph.enemyName} turns your opening aside.`
+            : `${actionLabel} • ${activeTelegraph.enemyName} takes ${playerDamage} damage${critTriggered ? " (CRIT)" : ""}.`;
         if (responseType === "attack" && positionAttackBonus > 0) {
-          resultLine += ` ${POSITION_LABELS[current.position]} lane gave you the clean angle for +${positionAttackBonus} damage.`;
+          resultLine += ` ${POSITION_LABELS[current.position]} angle: +${positionAttackBonus}.`;
+        }
+        if (responseType === "attack" && enemyStatusSnapshot.fortifiedStacks > 0) {
+          resultLine += " Fortified softens it.";
+          nextEnemyStatusFxById = {
+            ...nextEnemyStatusFxById,
+            [activeTelegraph.enemyId]: consumeStatusFxStack(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], "fortified"),
+          };
+          statusLogLines.push(`Fortified • ${activeTelegraph.enemyName} loses one guard layer.`);
+        }
+        if (responseType === "attack" && enemyStatusSnapshot.sigilRaisedStacks > 0) {
+          nextEnemyStatusFxById = {
+            ...nextEnemyStatusFxById,
+            [activeTelegraph.enemyId]: consumeStatusFxStack(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], "sigil-raised"),
+          };
+          statusLogLines.push(`Sigil Cover • ${activeTelegraph.enemyName} loses one layer.`);
+        }
+        if (responseType === "attack" && enemyStatusSnapshot.staggeredStacks > 0) {
+          nextEnemyStatusFxById = {
+            ...nextEnemyStatusFxById,
+            [activeTelegraph.enemyId]: consumeStatusFxStack(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], "staggered"),
+          };
         }
         if (turnStatus.snapshot.counterReadyStacks > 0 && responseType === "attack") {
-          resultLine += " Counter window spent cleanly.";
+          resultLine += " Counter ready spent.";
         } else if (woundedTarget && playerDamage > 0) {
-          resultLine += " The wounded target buckles faster once your blow lands cleanly.";
+          resultLine += " Wounded target bonus applies.";
         }
+      }
+      if (
+        specialMeterProfile &&
+        specialMeterPreview &&
+        responseType !== "interrupt" &&
+        responseType !== "item" &&
+        playerSpecialMeterAdjustment > 0
+      ) {
+        const nextMeter = Math.max(0, specialMeterPreview.current - playerSpecialMeterAdjustment);
+        nextEnemySpecialMeterById[activeTelegraph.enemyId] = nextMeter;
+        statusLogLines.push(
+          nextMeter > 0
+            ? `${specialMeterProfile.label} • Your answer knocks the build back by ${playerSpecialMeterAdjustment}.`
+            : `${specialMeterProfile.label} • Your answer breaks the build entirely.`,
+        );
+      }
+      if (specialMeterProfile && responseType === "pass") {
+        statusLogLines.push(`${specialMeterProfile.label} • Passing yields the pace and does nothing to slow the build.`);
       }
       for (const status of getPlayerResponseStatusFx(responseType, success, critTriggered, character.activeClassSkillId)) {
         if (status.tone === "good") {
@@ -2670,6 +5997,13 @@ const getMechanicSeverity = (mechanic: string): number => {
           statusLogLines.push(`${activeTelegraph.enemyName}: ${describeBattleStatusChange(status, "gained")}`);
         }
       }
+      nextEnemyStatusFxById = {
+        ...nextEnemyStatusFxById,
+        [activeTelegraph.enemyId]: consumeTurnBasedWeaponMarkStatuses(
+          nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [],
+          enemyMarkTrigger.triggeredIds,
+        ),
+      };
       const enemyStats = current.enemyStatsById[activeTelegraph.enemyId];
       let nextIndex = current.activeIndex;
       let nextTurnOwner: "player" | "enemy" = "enemy";
@@ -2682,9 +6016,13 @@ const getMechanicSeverity = (mechanic: string): number => {
             : responseType === "move"
               ? 1
               : 0;
-      let nextEnemyTurnsRemaining = Math.max(1, getTurnBurst(enemyStats.speed, effectiveSpeed + initiativeBonus));
+      let nextEnemyTurnsRemaining =
+        Math.max(1, getTurnBurst(enemyStats.speed + enemyActiveSkillBonuses.speedBonus + enemyBattleSnapshot.statusSpeedFlatBonus, effectiveSpeed + initiativeBonus)) +
+        enemyBattleSnapshot.statusExtraTurnFlatBonus;
       const nextTurnLog = [...current.turnLog, ...turnStatus.logLines];
+      nextTurnLog.push(...playerMarkTrigger.logLines);
       nextTurnLog.push(resultLine);
+      nextTurnLog.push(...enemyMarkTrigger.logLines);
       nextTurnLog.push(...statusLogLines);
       let bonusPlayerTurns = 0;
       if (critTriggered) {
@@ -2704,21 +6042,48 @@ const getMechanicSeverity = (mechanic: string): number => {
           nextTurnOwner = "player";
           nextPlayerTurnsRemaining = 0;
           nextEnemyTurnsRemaining = 0;
-          nextTurnLog.push(`${activeTelegraph.enemyName} crashes down. The path ahead opens for a heartbeat.`);
+          nextTurnLog.push(
+            current.source === "rank"
+              ? `${activeTelegraph.enemyName} gives ground under the guild's eye. The trial ring opens for a breath.`
+              : `${activeTelegraph.enemyName} crashes down. The path ahead opens for a heartbeat.`,
+          );
         } else {
           const nextEnemyId = current.telegraphs[calculatedNextIndex]?.enemyId ?? activeTelegraph.enemyId;
           const nextEnemyStats = current.enemyStatsById[nextEnemyId] ?? enemyStats;
-          const playerFirst = effectiveSpeed >= nextEnemyStats.speed;
+          const nextEnemyDef = current.enemies.find((enemy) => enemy.id === nextEnemyId) ?? null;
+          const nextEnemyOpeningStatuses = nextEnemyDef ? getOpeningEnemyStatuses(nextEnemyDef) : [];
+          const phaseShiftState = getQueuedPhaseShiftState(current, currentEnemy);
+          if (phaseShiftState && nextEnemyDef) {
+            const carriedNextStatuses = buildPhaseShiftEnemyStatuses(
+              nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [],
+              nextEnemyOpeningStatuses,
+              effectNowMs,
+            );
+            nextEnemyStatusFxById = {
+              ...nextEnemyStatusFxById,
+              [nextEnemyId]: carriedNextStatuses,
+            };
+          }
+          const nextEnemyStatusList =
+            phaseShiftState && nextEnemyDef
+              ? nextEnemyStatusFxById[nextEnemyId] ?? nextEnemyOpeningStatuses
+              : nextEnemyOpeningStatuses;
+          const nextEnemyEffectiveSpeed = nextEnemyStats.speed + getActiveSpeedBonusFromStatuses(nextEnemyStatusList);
+          const playerFirst = effectiveSpeed >= nextEnemyEffectiveSpeed;
           queuedEnemyIndex = calculatedNextIndex;
           nextTurnOwner = "player";
-          nextPlayerTurnsRemaining = playerFirst ? getTurnBurst(effectiveSpeed, nextEnemyStats.speed) + passiveBattleBonuses.postKillTempoFlat : 0;
+          nextPlayerTurnsRemaining = playerFirst ? getTurnBurst(effectiveSpeed, nextEnemyEffectiveSpeed) + passiveBattleBonuses.postKillTempoFlat : 0;
           nextEnemyTurnsRemaining = 0;
           nextTurnLog.push(
-            `${activeTelegraph.enemyName} drops where it stood. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next threat"} is already closing in.`,
+            phaseShiftState
+              ? `${activeTelegraph.enemyName} gives half a step, digs deeper, and forces the bout into a harsher phase before the room can finish breathing.`
+              : current.source === "rank"
+                ? `${activeTelegraph.enemyName} is forced back. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next challenger"} is already being brought forward under guild watch.`
+                : `${activeTelegraph.enemyName} drops where it stood. ${current.telegraphs[calculatedNextIndex]?.enemyName ?? "The next threat"} is already closing in.`,
           );
         }
       } else {
-        nextIndex = getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
+        nextIndex = current.activeIndex;
         nextPlayerTurnsRemaining += bonusPlayerTurns;
         if (nextPlayerTurnsRemaining > 0) {
           nextTurnOwner = "player";
@@ -2748,6 +6113,8 @@ const getMechanicSeverity = (mechanic: string): number => {
         enemyHpById: nextEnemyHpById,
         playerStatusFx: nextPlayerStatusFx,
         enemyStatusFxById: nextEnemyStatusFxById,
+        enemySpecialMeterById: nextEnemySpecialMeterById,
+        triggeredWeaponMarkKeys: nextTriggeredWeaponMarkKeys,
         effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
         effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
         initiativeHistory: [...current.initiativeHistory, "player" as const].slice(-4),
@@ -2764,7 +6131,7 @@ const getMechanicSeverity = (mechanic: string): number => {
             ? nextPlayerTurnsRemaining
             : nextTurnOwner === "player"
               ? nextPlayerTurnsRemaining
-              : Math.max(1, getTurnBurst(effectiveSpeed, enemyStats.speed)),
+              : Math.max(1, getTurnBurst(effectiveSpeed, enemyStats.speed + enemyActiveSkillBonuses.speedBonus + enemyBattleSnapshot.statusSpeedFlatBonus)),
         enemyTurnsRemaining: nextEnemyTurnsRemaining,
       };
     });
@@ -2779,6 +6146,7 @@ const getMechanicSeverity = (mechanic: string): number => {
         return current;
       }
       const currentEnemy = current.enemies.find((enemy) => enemy.id === activeTelegraph.enemyId);
+      const currentEnemyProfile = getTrialAdventurerProfile(activeTelegraph.enemyId);
       if (!currentEnemy) {
         return current;
       }
@@ -2794,27 +6162,94 @@ const getMechanicSeverity = (mechanic: string): number => {
       const playerStatusSnapshot = getBattleStatusSnapshot(nextPlayerStatusBase);
       const response = (current.responses ?? []).find((entry) => entry.telegraphId === activeTelegraph.id);
       const enemyStats = current.enemyStatsById[activeTelegraph.enemyId];
+      const currentEnemyHp = current.enemyHpById[activeTelegraph.enemyId] ?? currentEnemy.health ?? 1;
+      const specialMeterProfile = getEnemySpecialMeterProfile(currentEnemy);
+      const currentSpecialMeter = specialMeterProfile
+        ? current.enemySpecialMeterById[activeTelegraph.enemyId] ?? specialMeterProfile.startValue ?? 0
+        : 0;
+      const specialMeterReady = specialMeterProfile ? currentSpecialMeter >= (specialMeterProfile.maxValue ?? 100) : false;
+      const isPureSelfUseTurn = isPureEnemySelfUseMechanic(activeTelegraph.mechanic);
+      let nextEnemyHpById = { ...current.enemyHpById };
+      let nextEnemyStatusFxById = {
+        ...current.enemyStatusFxById,
+        [activeTelegraph.enemyId]: pruneExpiredStatusFx(current.enemyStatusFxById[activeTelegraph.enemyId] ?? [], effectNowMs),
+      };
+      let nextEnemySpecialMeterById = { ...current.enemySpecialMeterById };
+      const enemySelfEffect = getEnemyMechanicSelfEffect(
+        currentEnemy,
+        activeTelegraph.mechanic,
+        currentEnemyHp,
+        currentEnemy.health ?? currentEnemyHp,
+      );
+      if (!specialMeterReady && enemySelfEffect.clearIds?.length) {
+        nextEnemyStatusFxById = {
+          ...nextEnemyStatusFxById,
+          [activeTelegraph.enemyId]: applyBattleStatusChanges(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], { clearIds: enemySelfEffect.clearIds }),
+        };
+      }
+      if (!specialMeterReady && enemySelfEffect.addStatus) {
+        nextEnemyStatusFxById = {
+          ...nextEnemyStatusFxById,
+          [activeTelegraph.enemyId]: applyBattleStatusChanges(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [], { stack: [enemySelfEffect.addStatus] }),
+        };
+      }
+      if (!specialMeterReady && enemySelfEffect.heal) {
+        nextEnemyHpById[activeTelegraph.enemyId] = Math.min(currentEnemy.health ?? currentEnemyHp, currentEnemyHp + enemySelfEffect.heal);
+      }
+      const enemyStatusSnapshot = getEnemyStatusSnapshot(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? []);
+      const enemyBattleSnapshot = getBattleStatusSnapshot(nextEnemyStatusFxById[activeTelegraph.enemyId] ?? []);
+      const enemyActiveSkillBonuses = getCombinedLiveSkillBonuses(
+        nextEnemyStatusFxById[activeTelegraph.enemyId] ?? [],
+        currentEnemyProfile?.activeSkillId ? [currentEnemyProfile.activeSkillId] : [],
+        effectNowMs,
+      );
+      const mechanicKeyword = activeTelegraph.mechanic.toLowerCase();
+      const poisonMechanic = mechanicKeyword.includes("poison") || mechanicKeyword.includes("venom");
+      const shockMechanic = mechanicKeyword.includes("spark") || mechanicKeyword.includes("overcharge") || mechanicKeyword.includes("shock");
+      const wardMechanic = mechanicKeyword.includes("field") || mechanicKeyword.includes("arc") || mechanicKeyword.includes("brinefire");
       const severity = Math.max(
         1,
         getMechanicSeverity(activeTelegraph.mechanic) -
           passiveBattleBonuses.statusSeverityReductionFlat -
           activeSkillBonuses.statusSeverityReductionFlat,
       );
-      const enemyCritCycle = enemyStats.critChance >= 18 ? 3 : enemyStats.critChance >= 10 ? 4 : 999;
-      const enemyTurnOrdinal = Math.max(1, getTurnBurst(enemyStats.speed, current.playerStats.speed) - current.enemyTurnsRemaining + 1);
+      const livePlayerArmor = current.playerStats.armor + playerStatusSnapshot.weaponMarkArmorFlatBonus;
+      const liveEnemyDamage = enemyStats.damage + enemyBattleSnapshot.weaponMarkDamageFlatBonus + enemyActiveSkillBonuses.attackBonus;
+      const effectiveEnemyCritChance = enemyStats.critChance + enemyActiveSkillBonuses.critBonus + enemyBattleSnapshot.statusCritFlatBonus;
+      const effectiveEnemySpeed = enemyStats.speed + enemyActiveSkillBonuses.speedBonus + enemyBattleSnapshot.statusSpeedFlatBonus;
+      const enemyCritCycle = effectiveEnemyCritChance >= 18 ? 3 : effectiveEnemyCritChance >= 10 ? 4 : 999;
+      const enemyTurnOrdinal = Math.max(1, getTurnBurst(effectiveEnemySpeed, current.playerStats.speed) - current.enemyTurnsRemaining + 1);
       const enemyCrit = enemyCritCycle !== 999 && enemyTurnOrdinal % enemyCritCycle === 0;
       const effectivePlayerSpeed = current.playerStats.speed + activeSkillBonuses.speedBonus;
       const speedMitigation = effectivePlayerSpeed >= 18 ? 2 : effectivePlayerSpeed >= 12 ? 1 : 0;
-      let incomingDamage = calculateIncomingEnemyDamage({
-        baseDamage: Math.max(1, Math.round(enemyStats.damage * 0.72)),
-        severity,
-        enemyCrit,
-        responseSucceeded: Boolean(response?.success),
-        speedMitigation,
-        snapshot: playerStatusSnapshot,
-        activeSkillProfile: activeSkillBonuses,
-        passiveBonuses: passiveBattleBonuses,
-      });
+      let incomingDamage = specialMeterReady
+        ? calculateIncomingEnemyDamage({
+            baseDamage: Math.max(18, Math.round(liveEnemyDamage * 1.45) + 16),
+            severity: Math.max(4, severity + 1),
+            enemyCrit: true,
+            responseSucceeded: false,
+            speedMitigation,
+            armorFlat: livePlayerArmor,
+            snapshot: playerStatusSnapshot,
+            activeSkillProfile: activeSkillBonuses,
+            passiveBonuses: passiveBattleBonuses,
+          })
+        : isPureSelfUseTurn
+          ? 0
+          : calculateIncomingEnemyDamage({
+              baseDamage: Math.max(1, Math.round((liveEnemyDamage + enemyStatusSnapshot.sigilRaisedStacks * 5) * 0.72)),
+              severity,
+              enemyCrit,
+              responseSucceeded: Boolean(response?.success),
+              speedMitigation,
+              armorFlat: livePlayerArmor,
+              snapshot: playerStatusSnapshot,
+              activeSkillProfile: activeSkillBonuses,
+              passiveBonuses: passiveBattleBonuses,
+            });
+      if (playerStatusSnapshot.statusMitigationFlatBonus > 0) {
+        incomingDamage = Math.max(0, incomingDamage - playerStatusSnapshot.statusMitigationFlatBonus);
+      }
       if ((activeTelegraph.mechanic.toLowerCase().includes("spark") || activeTelegraph.mechanic.toLowerCase().includes("overcharge")) && playerStatusSnapshot.groundedStacks > 0) {
         incomingDamage = Math.max(0, incomingDamage - 4 * playerStatusSnapshot.groundedStacks);
       }
@@ -2822,9 +6257,61 @@ const getMechanicSeverity = (mechanic: string): number => {
         incomingDamage = Math.max(0, incomingDamage - 3 * playerStatusSnapshot.wardedStacks);
       }
       const nextPlayerHp = Math.max(0, current.playerHp - incomingDamage);
-      const appliedFx = !response?.success ? getMechanicStatusFx(activeTelegraph.mechanic) : null;
-      let nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusBase, {
-        clearIds: ["guarded"],
+      let appliedFx = !response?.success && !isPureSelfUseTurn && !specialMeterReady ? getMechanicStatusFx(activeTelegraph.mechanic) : null;
+      let nextPlayerStatusFx = [...nextPlayerStatusBase];
+      const enemyTurnLog: string[] = [];
+      if (incomingDamage > 0 && playerStatusSnapshot.weaponMarkHitNegationCharges > 0) {
+        incomingDamage = 0;
+        nextPlayerStatusFx = consumeWeaponMarkHitNegation(nextPlayerStatusFx);
+        enemyTurnLog.push("First Hold turns the opening hit aside before it can land cleanly.");
+      }
+      if (!specialMeterReady && enemySelfEffect.logLine) {
+        enemyTurnLog.push(enemySelfEffect.logLine);
+      }
+      if (!specialMeterReady && enemySelfEffect.addStatus) {
+        enemyTurnLog.push(`${currentEnemy.name}: ${describeBattleStatusChange(enemySelfEffect.addStatus, "gained")}`);
+      }
+      if (!specialMeterReady && enemySelfEffect.heal) {
+        enemyTurnLog.push(`Recovery • ${currentEnemy.name} recovers ${enemySelfEffect.heal} HP.`);
+      }
+      if (!isPureSelfUseTurn && playerStatusSnapshot.guardedStacks > 0) {
+        nextPlayerStatusFx = consumeStatusFxStack(nextPlayerStatusFx, "guarded");
+        enemyTurnLog.push("Guarded • One layer blocks part of the hit.");
+      }
+      if (!isPureSelfUseTurn && poisonMechanic && playerStatusSnapshot.antitoxinStacks > 0) {
+        nextPlayerStatusFx = consumeStatusFxStack(nextPlayerStatusFx, "antitoxin");
+        appliedFx = null;
+        enemyTurnLog.push("Antitoxin • The poison is negated.");
+      }
+      if (!isPureSelfUseTurn && shockMechanic && playerStatusSnapshot.groundedStacks > 0) {
+        nextPlayerStatusFx = consumeStatusFxStack(nextPlayerStatusFx, "grounded");
+        if (appliedFx?.id === "shocked") {
+          appliedFx = null;
+        }
+        enemyTurnLog.push("Grounded • The shock surge is blunted.");
+      }
+      if (!isPureSelfUseTurn && wardMechanic && playerStatusSnapshot.wardedStacks > 0) {
+        nextPlayerStatusFx = consumeStatusFxStack(nextPlayerStatusFx, "warded");
+        if (appliedFx?.id === "shocked") {
+          appliedFx = null;
+        }
+        enemyTurnLog.push(mechanicKeyword.includes("brinefire") ? "Warded • The brinefire pressure is blunted." : "Warded • The field pressure is blunted.");
+      }
+      const playerMarkTrigger = applyBattleWeaponMarkTriggers({
+        marks: getCombatWeaponMarksForCharacter(character),
+        currentHp: current.playerHp,
+        nextHp: nextPlayerHp,
+        maxHp: character.healthCap,
+        statusFx: nextPlayerStatusFx,
+        triggeredMarkKeys: current.triggeredWeaponMarkKeys,
+        ownerName: character.name,
+        ownerLabel: "player",
+        ownerScope: "player",
+      });
+      nextPlayerStatusFx = playerMarkTrigger.nextStatusFx;
+      enemyTurnLog.push(...playerMarkTrigger.logLines);
+      nextPlayerStatusFx = consumeTurnBasedWeaponMarkStatuses(nextPlayerStatusFx, playerMarkTrigger.triggeredIds);
+      nextPlayerStatusFx = applyBattleStatusChanges(nextPlayerStatusFx, {
         stack: appliedFx ? [appliedFx] : undefined,
       });
       if (
@@ -2859,6 +6346,74 @@ const getMechanicSeverity = (mechanic: string): number => {
           ],
         });
       }
+      let nextFieldCommandBreaches = current.fieldCommandBreaches;
+      if (specialMeterProfile) {
+        const responseFillStall =
+          response?.responseType && response.responseType !== "pass"
+            ? Math.max(
+                0,
+                Math.round(
+                  getSpecialMeterResponseAdjustment({
+                    responseType: response.responseType,
+                    success: response.success,
+                    baseInterruptAmount: getSpecialMeterInterruptAmount(
+                      specialMeterProfile.interruptPerTurn,
+                      character.progression.level,
+                      currentEnemy.level,
+                    ),
+                    playerDamage: current.lastPlayerDamage ?? 0,
+                    critTriggered: Boolean(current.lastCrit),
+                  }) * 0.45,
+                ),
+              )
+            : 0;
+        const actualFillThisTurn = Math.max(6, specialMeterProfile.fillPerEnemyTurn - responseFillStall);
+        const nextSpecialMeterValue = specialMeterReady
+          ? specialMeterProfile.resetValue ?? 0
+          : Math.min(specialMeterProfile.maxValue ?? 100, currentSpecialMeter + actualFillThisTurn);
+        nextEnemySpecialMeterById[activeTelegraph.enemyId] = nextSpecialMeterValue;
+        if (!specialMeterReady && responseFillStall > 0) {
+          enemyTurnLog.push(`${specialMeterProfile.label} • Your last answer slows the next build (+${actualFillThisTurn} instead of +${specialMeterProfile.fillPerEnemyTurn}).`);
+        }
+        if (
+          current.rankTrialId === "rank-trial-c-b" &&
+          activeTelegraph.enemyId !== "rank-field-captain-sable" &&
+          !specialMeterReady &&
+          currentSpecialMeter < C_TO_B_SOFT_BREACH_THRESHOLD &&
+          nextSpecialMeterValue >= C_TO_B_SOFT_BREACH_THRESHOLD
+        ) {
+          nextFieldCommandBreaches += C_TO_B_SOFT_BREACH_VALUE;
+          enemyTurnLog.push(
+            "The support line settles too cleanly and the field slips half a step further toward Sable's command.",
+          );
+        }
+        if (
+          current.rankTrialId === "rank-trial-b-a" &&
+          !specialMeterReady &&
+          currentSpecialMeter < B_TO_A_SOFT_FAULT_THRESHOLD &&
+          nextSpecialMeterValue >= B_TO_A_SOFT_FAULT_THRESHOLD
+        ) {
+          nextFieldCommandBreaches += B_TO_A_SOFT_FAULT_VALUE;
+          enemyTurnLog.push("Seal Of Denial • Charter Pressure crosses the line. Trial Fault +0.5.");
+        }
+      }
+      if (current.rankTrialId === "rank-trial-c-b" && specialMeterReady) {
+        nextFieldCommandBreaches += 1;
+        if (activeTelegraph.enemyId !== "rank-field-captain-sable") {
+          const captainEnemy = current.enemies.find((enemy) => enemy.id === "rank-field-captain-sable");
+          const captainProfile = getEnemySpecialMeterProfile(captainEnemy ?? null);
+          if (captainEnemy && captainProfile) {
+            const currentCaptainMeter = nextEnemySpecialMeterById[captainEnemy.id] ?? captainProfile.startValue ?? 0;
+            nextEnemySpecialMeterById[captainEnemy.id] = Math.min(
+              captainProfile.maxValue ?? 100,
+              currentCaptainMeter + 18,
+            );
+          }
+        }
+      }
+      if (current.rankTrialId === "rank-trial-b-a" && specialMeterReady) {
+        nextFieldCommandBreaches += 1;
+      }
       let nextEnemyTurnsRemaining = Math.max(0, current.enemyTurnsRemaining - 1);
       let nextTurnOwner: "player" | "enemy" = nextEnemyTurnsRemaining > 0 ? "enemy" : "player";
       const allEnemiesDown = Object.values(current.enemyHpById).every((hp) => hp <= 0);
@@ -2866,12 +6421,39 @@ const getMechanicSeverity = (mechanic: string): number => {
       let nextIndex =
         allEnemiesDown || allBattleLost
           ? current.activeIndex
-          : getNextTelegraphIndexForEnemy(current, activeTelegraph.enemyId, current.activeIndex);
+          : getNextUsableTelegraphIndexForEnemy(
+              current,
+              activeTelegraph.enemyId,
+              current.activeIndex,
+              nextEnemyHpById,
+              nextEnemyStatusFxById,
+              effectNowMs,
+            );
       const nextPlayerTurnsRemaining =
-        allEnemiesDown || allBattleLost || nextTurnOwner !== "player" ? 0 : Math.max(1, getTurnBurst(effectivePlayerSpeed, enemyStats.speed));
-      const enemyTurnLog = [
-        `${currentEnemy.name} lashes out with ${activeTelegraph.mechanic.split(":")[0]} and hits you for ${incomingDamage}${enemyCrit ? " damage (CRIT)" : " damage"}.`,
-      ];
+        allEnemiesDown || allBattleLost || nextTurnOwner !== "player" ? 0 : Math.max(1, getTurnBurst(effectivePlayerSpeed, effectiveEnemySpeed));
+      if (specialMeterReady) {
+        enemyTurnLog.unshift(
+          `${specialMeterProfile?.triggerLabel ?? "Finisher"} • You take ${incomingDamage} damage.`,
+        );
+        if (current.rankTrialId === "rank-trial-c-b") {
+          enemyTurnLog.push(
+            activeTelegraph.enemyId === "rank-field-captain-sable"
+              ? "The field collapses inward under Sable's command and the whole certification gets uglier at once."
+              : "The support line lands cleanly and Captain Sable's side of the field tightens around you.",
+          );
+        }
+        if (current.rankTrialId === "rank-trial-b-a") {
+          enemyTurnLog.push(
+            activeTelegraph.enemyId === "rank-charter-serin-phase3"
+              ? "Serin closes the last measure hard enough that the office would remember the whole run for the wrong reasons."
+              : "Serin tightens the charter and another hard fault lands against the file.",
+          );
+        }
+      } else if (!isPureSelfUseTurn) {
+        enemyTurnLog.unshift(
+          `${activeTelegraph.mechanic.split(":")[0]} • You take ${incomingDamage} damage${enemyCrit ? " (CRIT)" : ""}.`,
+        );
+      }
       if (appliedFx) {
         enemyTurnLog.push(describeBattleStatusChange(appliedFx, "gained"));
       }
@@ -2880,17 +6462,22 @@ const getMechanicSeverity = (mechanic: string): number => {
         response.success &&
         (playerStatusSnapshot.hasBulwarkOath || playerStatusSnapshot.hasSteelRhythm || passiveBattleBonuses.counterBonusDamageFlat > 0)
       ) {
-        enemyTurnLog.push("The blow slams into your guard, rebounds, and leaves the enemy wide open for a counter.");
+        enemyTurnLog.push("Counter Ready • Your guard opens a stronger counter.");
       }
       if (nextPlayerHp < current.playerHp && passiveBattleBonuses.frenzyDurationSeconds > 0) {
-        enemyTurnLog.push("Pain only drives you harder. Your battle frenzy rises instead of breaking.");
+        enemyTurnLog.push("Frenzied • Taking the hit sharpens your offense.");
       }
       const finalTurnOwner = allEnemiesDown || allBattleLost ? "player" : nextTurnOwner;
       const nextEffectClockState = getNextBattleEffectClockState(current, finalTurnOwner, wallNowMs);
       return {
         ...current,
         playerHp: nextPlayerHp,
+        enemyHpById: nextEnemyHpById,
         playerStatusFx: nextPlayerStatusFx,
+        enemyStatusFxById: nextEnemyStatusFxById,
+        enemySpecialMeterById: nextEnemySpecialMeterById,
+        triggeredWeaponMarkKeys: playerMarkTrigger.nextTriggeredMarkKeys,
+        fieldCommandBreaches: nextFieldCommandBreaches,
         turnLog: [...current.turnLog, ...enemyTurnLog],
         effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
         effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
@@ -2912,23 +6499,65 @@ const getMechanicSeverity = (mechanic: string): number => {
       }
       const nextEnemyId = current.telegraphs[current.queuedEnemyIndex]?.enemyId;
       const nextEnemyStats = nextEnemyId ? current.enemyStatsById[nextEnemyId] : null;
-      const playerTurnFirst = nextEnemyStats ? current.playerStats.speed >= nextEnemyStats.speed : true;
+      const nextEnemyDef = nextEnemyId ? current.enemies.find((entry) => entry.id === nextEnemyId) ?? null : null;
+      const nextEnemyOpeningStatuses = nextEnemyDef ? getOpeningEnemyStatuses(nextEnemyDef) : [];
+      const currentEnemyId = current.telegraphs[current.activeIndex]?.enemyId;
+      const currentEnemy = currentEnemyId ? current.enemies.find((entry) => entry.id === currentEnemyId) ?? null : null;
+      const phaseShiftState = getQueuedPhaseShiftState(current, currentEnemy);
+      const nextEnemyStatuses =
+        phaseShiftState && currentEnemyId && nextEnemyId && nextEnemyDef
+          ? buildPhaseShiftEnemyStatuses(
+              current.enemyStatusFxById[currentEnemyId] ?? [],
+              nextEnemyOpeningStatuses,
+              getLiveBattleEffectClockMs(current, Date.now()),
+            )
+          : nextEnemyOpeningStatuses;
+      const nextEnemyEffectiveSpeed = nextEnemyStats ? nextEnemyStats.speed + getActiveSpeedBonusFromStatuses(nextEnemyStatuses) : 0;
+      const nextEnemyExtraTurns = getActiveExtraTurnsFromStatuses(nextEnemyStatuses);
+      const resolvedQueuedIndex =
+        nextEnemyId != null
+          ? getNextUsableTelegraphIndexForEnemy(
+              current,
+              nextEnemyId,
+              current.queuedEnemyIndex - 1,
+              current.enemyHpById,
+              current.enemyStatusFxById,
+              getLiveBattleEffectClockMs(current, Date.now()),
+            )
+          : current.queuedEnemyIndex;
+      const playerTurnFirst = nextEnemyStats ? current.playerStats.speed >= nextEnemyEffectiveSpeed : true;
       const nextTurnOwner: "player" | "enemy" = playerTurnFirst ? "player" : "enemy";
       const nextEffectClockState = getNextBattleEffectClockState(current, nextTurnOwner, Date.now());
       return {
         ...current,
-        activeIndex: current.queuedEnemyIndex,
+        enemyStatusFxById:
+          phaseShiftState && nextEnemyId
+            ? {
+                ...current.enemyStatusFxById,
+                [nextEnemyId]: nextEnemyStatuses,
+              }
+            : current.enemyStatusFxById,
+        activeIndex: resolvedQueuedIndex,
         queuedEnemyIndex: null,
         turnOwner: nextTurnOwner,
         effectClockElapsedMs: nextEffectClockState.effectClockElapsedMs,
         effectClockStartedAtMs: nextEffectClockState.effectClockStartedAtMs,
-        playerTurnsRemaining: playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(current.playerStats.speed, nextEnemyStats.speed)) : 0,
-        enemyTurnsRemaining: !playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(nextEnemyStats.speed, current.playerStats.speed)) : 0,
+        playerTurnsRemaining: playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(current.playerStats.speed, nextEnemyEffectiveSpeed)) : 0,
+        enemyTurnsRemaining:
+          !playerTurnFirst && nextEnemyStats ? Math.max(1, getTurnBurst(nextEnemyEffectiveSpeed, current.playerStats.speed)) + nextEnemyExtraTurns : 0,
         turnLog: [
           ...current.turnLog,
-          playerTurnFirst
-            ? "You step over the fallen enemy and meet the next threat before it can set itself."
-            : "Another enemy surges in while you are still recovering from the last exchange.",
+          phaseShiftState
+            ? playerTurnFirst
+              ? `${phaseShiftState.nextEnemy.name} digs deeper, resets, and the exchange snaps into a harsher phase under your eyes.`
+              : `${phaseShiftState.nextEnemy.name} tears into the next phase before you can reset and the whole exchange turns ugly at once.`
+            : playerTurnFirst
+              ? current.source === "rank"
+                ? "The next exchange is called in before the ring can cool, and you square yourself immediately."
+                : "You step over the fallen enemy and meet the next threat before it can set itself."
+              : current.source === "rank"
+                ? "The ring resets around you while the next sanctioned exchange is called forward."
+                : "Another enemy surges in while you are still recovering from the last exchange.",
         ],
       };
     });
@@ -2937,12 +6566,53 @@ const getMechanicSeverity = (mechanic: string): number => {
     if (!liveTowerBattle) {
       return;
     }
+    if (liveTowerBattle.source === "rank") {
+      const rankEncounter = liveTowerBattle.rankTrialId ? LIVE_RANK_TRIAL_ENCOUNTERS[liveTowerBattle.rankTrialId] : undefined;
+      const battleWon = Object.values(liveTowerBattle.enemyHpById).every((hp) => hp <= 0);
+      const assessmentSummary =
+        liveTowerBattle.rankTrialId === "rank-trial-d-c"
+          ? buildDToCExecutionAssessment(liveTowerBattle, character.healthCap)
+          : liveTowerBattle.rankTrialId === "rank-trial-c-b"
+            ? buildCToBFieldAssessment(liveTowerBattle, character.healthCap)
+            : liveTowerBattle.rankTrialId === "rank-trial-b-a"
+              ? buildBToACharterAssessment(liveTowerBattle, character.healthCap)
+            : null;
+      const rankTrialSuccess = battleWon && (assessmentSummary ? assessmentSummary.passed : true);
+      const rankSummaryOverride =
+        battleWon && assessmentSummary && !assessmentSummary.passed
+          ? liveTowerBattle.rankTrialId === "rank-trial-d-c"
+            ? "You dropped the target, but Thorne Veld rejected the execution record. Too much time, blood, or support was spent for the office to certify it as C-rank work."
+            : liveTowerBattle.rankTrialId === "rank-trial-c-b"
+              ? "You beat the field unit, but Virel Dawn refused the command record. Too many breaches, too much waste, or too little control slipped into Broken Spear for B-rank."
+              : "You endured Serin Vael's full witness, but Lyss Argent withheld the charter. Too many faults, too much drag, or too much blood slipped into the run for A-rank trust."
+          : battleWon
+            ? rankEncounter?.successSummary
+            : rankEncounter?.failureSummary;
+      const result = onResolveRankUpCombatTrial(
+        rankTrialSuccess,
+        liveTowerBattle.usedPouchItemCounts,
+        liveTowerBattle.playerHp,
+        rankSummaryOverride,
+      );
+      setNoticeTone(result.ok ? "ok" : "error");
+      setNotice(result.reason ?? (result.ok ? "Rank trial resolved." : "Rank trial could not be resolved."));
+      if (result.ok) {
+        setRankTrialAssessmentSummary(assessmentSummary);
+        setPendingRankTrialResultOpen(true);
+      }
+      setLiveTowerBattle(null);
+      return;
+    }
     if (liveTowerBattle.source === "quest") {
       const questEncounter = liveTowerBattle.questId ? LIVE_QUEST_ENCOUNTERS[liveTowerBattle.questId] : undefined;
       const battleWon = Object.values(liveTowerBattle.enemyHpById).every((hp) => hp <= 0);
       const result = onClaimQuest(
         battleWon,
         battleWon ? questEncounter?.successSummary : questEncounter?.failureSummary,
+        Object.entries(liveTowerBattle.usedPouchItemCounts).flatMap(([itemId, count]) =>
+          Array.from({ length: count }, () => itemId as ItemId),
+        ),
+        liveTowerBattle.questSnapshot ?? null,
       );
       setNoticeTone(result.ok ? "ok" : "error");
       setNotice(result.reason ?? (result.ok ? "Quest combat resolved." : "Quest combat could not be resolved."));
@@ -2955,14 +6625,14 @@ const getMechanicSeverity = (mechanic: string): number => {
     const result = onResolveTowerWave(
       liveTowerBattle.floorNumber,
       liveTowerBattle.wave,
-      liveTowerBattle.committedItems,
+      liveTowerBattle.usedPouchItemCounts,
       {
         position: liveTowerBattle.position,
         braceUsed: liveTowerBattle.braceUsed,
         skillId: liveTowerBattle.skillUsed ? character.activeClassSkillId : null,
-        itemIdsUsed: Object.values(liveTowerBattle.committedItems).some((amount) => amount > 0)
-          ? Object.keys(liveTowerBattle.committedItems) as ItemId[]
-          : [],
+        itemIdsUsed: Object.entries(liveTowerBattle.usedPouchItemCounts).flatMap(([itemId, count]) =>
+          Array.from({ length: count }, () => itemId as ItemId),
+        ),
         responses: liveTowerBattle.responses,
         finalPlayerHp: liveTowerBattle.playerHp,
         finalEnemyHpById: liveTowerBattle.enemyHpById,
@@ -3032,19 +6702,6 @@ const getMechanicSeverity = (mechanic: string): number => {
         };
       });
       const floorSelectionKey = `floor-${liveTowerBattle.floorNumber}`;
-      const usedItemIds = new Set(Object.keys(liveTowerBattle.committedItems));
-      if (usedItemIds.size > 0) {
-        setSelectedItemsForTower((current) => {
-          const floorItems = { ...(current[floorSelectionKey] ?? {}) };
-          for (const itemId of usedItemIds) {
-            delete floorItems[itemId as ItemId];
-          }
-          return {
-            ...current,
-            [floorSelectionKey]: floorItems,
-          };
-        });
-      }
     }
     setLiveTowerBattle(null);
   };
@@ -3111,18 +6768,15 @@ const getMechanicSeverity = (mechanic: string): number => {
     if (!floor) {
       return;
     }
-    const floorSelectionKey = `floor-${floorNumber}`;
     const enemies = getTowerEnemiesForFloor(floor);
-    const waveCommittedItems = Object.fromEntries(
-      towerPreparedItemIds.map((itemId) => [itemId, 1]),
-    ) as Record<ItemId, number>;
+    const wavePouchItems = combatPouchItems;
     const waveEnemies = wave === "normal" ? enemies.normal : wave === "subBoss" ? enemies.subBoss : enemies.boss;
     const supportsLiveBattle = waveEnemies.length > 0;
     if (supportsLiveBattle) {
-      startLiveTowerBattle(floorNumber, wave, waveCommittedItems, waveEnemies);
+      startLiveTowerBattle(floorNumber, wave, wavePouchItems, waveEnemies);
       return;
     }
-    const result = onResolveTowerWave(floorNumber, wave, waveCommittedItems);
+    const result = onResolveTowerWave(floorNumber, wave, {});
     if (!result.ok || !result.outcome) {
       setNoticeTone("error");
       setNotice(result.reason ?? "Wave resolution failed.");
@@ -3175,19 +6829,6 @@ const getMechanicSeverity = (mechanic: string): number => {
         [floorNumber]: nextWaveState,
       };
     });
-    const usedItemIds = new Set(Object.keys(waveCommittedItems));
-    if (usedItemIds.size > 0) {
-      setSelectedItemsForTower((current) => {
-        const floorItems = { ...(current[floorSelectionKey] ?? {}) };
-        for (const itemId of usedItemIds) {
-          delete floorItems[itemId];
-        }
-        return {
-          ...current,
-          [floorSelectionKey]: floorItems,
-        };
-      });
-    }
   };
   const handleFloorEncounterChoice = (accept: boolean) => {
     if (!activeFloorEncounter) {
@@ -3220,12 +6861,39 @@ const getMechanicSeverity = (mechanic: string): number => {
     );
   };
   const handleAttemptRankUp = () => {
-    const result = onAttemptRankUp(selectedItemsForRankTrial);
+    if (rankTrial && LIVE_RANK_TRIAL_ENCOUNTERS[rankTrial.id]) {
+      const started = startLiveRankTrial(rankTrial, combatPouchItems);
+      if (!started) {
+        setNoticeTone("error");
+        setNotice("The live trial arena is not ready yet.");
+        return;
+      }
+      setNoticeTone("ok");
+      setNotice(
+        rankTrial.id === "rank-trial-d-c"
+          ? `${rankTrialPresentation?.title ?? "The trial"} is live. Thorne is judging the whole record, not just the kill. Finish cleanly enough to earn promotion.`
+          : `${rankTrialPresentation?.title ?? "The trial"} is live. Win the sanctioned clash to earn promotion.`,
+      );
+      return;
+    }
+    const result = onAttemptRankUp({});
     setNoticeTone(result.ok ? "ok" : "error");
     setNotice(result.reason ?? (result.ok ? "Rank trial resolved." : "Could not start rank trial."));
-    if (result.ok) {
-      setSelectedItemsForRankTrial({});
+  };
+  const handleCloseRankTrialResult = () => {
+    if (lastRankUpOutcome?.success) {
+      setNoticeTone("ok");
+      setNotice(
+        `Guild Notice: ${rankTrialResultPresentation?.title ?? "Field Trial"} has been entered into the guild record. Your standing is now ${lastRankUpOutcome.toRank}-rank.`,
+      );
+    } else if (lastRankUpOutcome) {
+      setNoticeTone("error");
+      setNotice(
+        `Guild Notice: ${rankTrialResultPresentation?.title ?? "Field Trial"} remains unresolved. Recover, revise your loadout, and challenge the record again when ready.`,
+      );
     }
+    setRankTrialAssessmentSummary(null);
+    setRankTrialResultOpen(false);
   };
   const handleResolveLyraQuestChoice = (choice: "returned" | "kept" | "reported") => {
     const result = onResolveLyraQuestChoice(choice);
@@ -3260,37 +6928,67 @@ const getMechanicSeverity = (mechanic: string): number => {
     setNotice("Bran Kest: I'll keep the stock ready for your next run.");
   };
   const promptRankVisit = () => {
-    onRecordNpcInteraction(rankExaminerProfile.id, rankUpAvailable ? 5 : -3);
+    onRecordNpcInteraction(rankExaminerProfile.id, rankTrial?.id === "rank-trial-a-s" ? 3 : rankUpAvailable ? 5 : -3);
     const trial = getNextRankTrial();
     const access = getRankTrialAccess();
     const ready = Boolean(trial && access.allowed);
+    const presentation = trial ? RANK_TRIAL_PRESENTATION[trial.id] : null;
     setExaminerSpeakCount((prev) => {
       const next = prev + 1;
       if (!trial) {
         setExaminerDialogLine(pickEscalatingDialog(EXAMINER_NO_TRIAL_DIALOG_LINES, next));
+      } else if (trial.id === "rank-trial-a-s" && !aToSRaidNoticesUnlocked) {
+        setExaminerDialogLine(
+          `"S-rank does not open by duel. I'll post three black-ledger raid notices. Bring me their proofs, and then we'll talk about formal record."`,
+        );
+      } else if (trial.id === "rank-trial-a-s") {
+        setExaminerDialogLine(
+          ready
+            ? `"You have the three proofs. Good. Bring them before the office cleanly and I'll open the S-rank record."`
+            : `"The notices are posted. Do not come back with stories. Bring me the three proofs or do not ask for S-rank yet."`,
+        );
       } else if (ready) {
-        setExaminerDialogLine(pickEscalatingDialog(EXAMINER_READY_DIALOG_LINES, next));
+        setExaminerDialogLine(presentation?.readyLine ?? pickEscalatingDialog(EXAMINER_READY_DIALOG_LINES, next));
       } else {
-        setExaminerDialogLine(pickEscalatingDialog(EXAMINER_NOT_READY_DIALOG_LINES, next));
+        setExaminerDialogLine(presentation?.notReadyLine ?? pickEscalatingDialog(EXAMINER_NOT_READY_DIALOG_LINES, next));
       }
       return next;
     });
     setGuildDialog("examiner-rank");
   };
+  const promptRankDuelistVisit = () => {
+    onRecordNpcInteraction(E_RANK_TRIAL_CHALLENGER_ID, rankTrial?.id === "rank-trial-e-d" ? 4 : 1);
+    setGuildDialog("rank-duelist");
+  };
   const openRankDesk = () => {
     setGuildTab("rank");
     setNoticeTone("ok");
-    setNotice(`Examiner ${rankExaminerProfile.name}: Present your trial prep and I'll authorize your promotion attempt.`);
+    setNotice(
+      rankTrial && rankTrialPresentation
+        ? `Examiner ${rankExaminerProfile.name}: ${rankTrialPresentation.title} is open. Present your prep and step into formal evaluation.`
+        : `Examiner ${rankExaminerProfile.name}: Present your trial prep and I'll authorize your promotion attempt.`,
+    );
   };
   const handleExaminerDialogChoice = (openDesk: boolean) => {
     onRecordNpcInteraction(rankExaminerProfile.id, openDesk ? 4 : 0);
     setGuildDialog(null);
     if (openDesk) {
+      if (rankTrial?.id === "rank-trial-a-s") {
+        const result = onUnlockASRankRaidNotices();
+        setGuildTab("board");
+        setNoticeTone(result.ok ? "ok" : "error");
+        setNotice(result.reason ?? "Raid notices updated.");
+        return;
+      }
       openRankDesk();
       return;
     }
     setNoticeTone("ok");
-    setNotice(`Examiner ${rankExaminerProfile.name}: Return when your preparation is complete.`);
+    setNotice(
+      rankTrial && rankTrialPresentation
+        ? `Examiner ${rankExaminerProfile.name}: Return when your ${rankTrialPresentation.title.toLowerCase()} preparation is complete.`
+        : `Examiner ${rankExaminerProfile.name}: Return when your preparation is complete.`,
+    );
   };
   const promptTamsinVisit = () => {
     onRecordNpcInteraction("npc-tamsin-vale", 2, 0);
@@ -3358,10 +7056,10 @@ const getMechanicSeverity = (mechanic: string): number => {
     setNoticeTone("ok");
     setNotice("Returned to NPC Hall.");
   };
-  const showQuickInfo = (title: string, body: string, rarity?: ItemRarity, itemId?: ItemId) => {
+  const showQuickInfo = (title: string, body: string, rarity?: ItemRarity, itemId?: ItemId, artSource?: ImageSourcePropType) => {
     setNoticeTone("ok");
     setNotice(`${title}: ${body}`);
-    setInfoPanel({ title, body, rarity, itemId });
+    setInfoPanel({ title, body, rarity, itemId, artSource });
   };
   const isItemAppraised = (itemId: ItemId) => (character.appraisedItemIds ?? []).includes(itemId);
   const getItemDisplayName = (itemId: ItemId) => {
@@ -3393,6 +7091,105 @@ const getMechanicSeverity = (mechanic: string): number => {
       return undefined;
     }
     return item.rarity;
+  };
+  const getItemEffectSummary = (itemId: ItemId): string[] => {
+    const item = ITEM_BY_ID[itemId];
+    if (!item) {
+      return [];
+    }
+    if (item.category === "weapon" && item.weaponStats) {
+      const parts = [
+        `ATK +${item.weaponStats.attack}`,
+        `CRIT +${item.weaponStats.crit}%`,
+        `SPD +${item.weaponStats.speed}`,
+      ];
+      return parts;
+    }
+    if (item.category === "buff" && item.buffStats) {
+      const parts: string[] = [];
+      if (item.buffStats.armorFlat) parts.push(`ARM +${item.buffStats.armorFlat}`);
+      if (item.buffStats.damageFlat) parts.push(`ATK +${item.buffStats.damageFlat}`);
+      if (item.buffStats.critFlat) parts.push(`CRIT +${item.buffStats.critFlat}%`);
+      if (item.buffStats.speedFlat) parts.push(`SPD +${item.buffStats.speedFlat}`);
+      if (item.buffStats.questSuccessFlat) parts.push(`QUEST +${item.buffStats.questSuccessFlat}%`);
+      return parts;
+    }
+    return [];
+  };
+  const getTitleEffectSummary = (titleId: string): string[] => {
+    const title = TITLE_BY_ID[titleId];
+    if (!title) {
+      return [];
+    }
+    const parts: string[] = [];
+    if (title.bonuses.damageFlat) parts.push(`ATK +${title.bonuses.damageFlat}`);
+    if (title.bonuses.critFlat) parts.push(`CRIT +${title.bonuses.critFlat}%`);
+    if (title.bonuses.speedFlat) parts.push(`SPD +${title.bonuses.speedFlat}`);
+    if (title.bonuses.questSuccessFlat) parts.push(`QUEST +${title.bonuses.questSuccessFlat}%`);
+    return parts;
+  };
+  const getWeaponPreview = (itemId?: ItemId) => {
+    if (!itemId) {
+      return null;
+    }
+    const item = ITEM_BY_ID[itemId];
+    if (!item || item.category !== "weapon") {
+      return null;
+    }
+
+    const requiredLevel = item.requiredLevel ?? 1;
+    const classLocked = Boolean(item.classRestriction && item.classRestriction !== character.classId);
+    const proficiency = classLocked ? 0 : getWeaponProficiencyForItem(character, item);
+
+    return {
+      requiredLevel,
+      proficiencyPercent: Math.round(proficiency * 100),
+      classLocked,
+      underleveled: !classLocked && character.progression.level < requiredLevel,
+    };
+  };
+  const openItemInfo = (itemId: ItemId) => {
+    const description = getItemDisplayDescription(itemId);
+    const effectLines = getItemEffectSummary(itemId);
+    const weapon = ITEM_BY_ID[itemId];
+    showQuickInfo(
+      getItemDisplayName(itemId),
+      [description, weapon?.lore ? `Lore: ${weapon.lore}` : null, ...effectLines].filter(Boolean).join("\n"),
+      getItemDisplayRarity(itemId),
+      itemId,
+    );
+  };
+  const openTitleInfo = (titleId: string) => {
+    const title = TITLE_BY_ID[titleId];
+    if (!title) {
+      return;
+    }
+    const lines = [
+      title.flavor,
+      `Ability: ${title.abilityLabel}`,
+      ...getTitleEffectSummary(titleId),
+    ].filter(Boolean);
+    showQuickInfo(title.name, lines.join("\n"), title.rarity, undefined, TITLE_ICON_ART[titleId]);
+  };
+  const openTrialAdventurerProfile = (profile: TrialAdventurerProfile) => {
+    const baseClassName =
+      BASE_CLASSES.find((baseClass) => baseClass.id === profile.classId)?.name ??
+      `${profile.classId[0].toUpperCase()}${profile.classId.slice(1)}`;
+    const bioLines = [
+      ...(profile.bioLines ?? [`${profile.name} is a registered guild adventurer serving on the rank office circuit.`]),
+      `Registered Class: ${baseClassName}${profile.warriorPathChoice ? ` • ${profile.warriorPathChoice[0].toUpperCase()}${profile.warriorPathChoice.slice(1)} Path` : ""}`,
+    ];
+    showQuickInfo(profile.name, bioLines.join("\n"), undefined, undefined, profile.avatarOverride ?? getAvatarSprite(profile.avatarId, profile.classId));
+  };
+  const openAbilityInfo = (abilityId: AbilityId) => {
+    const ability = ABILITY_BY_ID[abilityId];
+    if (!ability) {
+      return;
+    }
+    const lines = [ability.description, getCombatAbilityEffectSummary(abilityId)];
+    if (ability.bonuses.questSuccessFlat) lines.push(`QUEST +${ability.bonuses.questSuccessFlat}%`);
+    if (ability.bonuses.towerSuccessFlat) lines.push(`TOWER +${ability.bonuses.towerSuccessFlat}%`);
+    showQuickInfo(ability.name, lines.filter(Boolean).join("\n"));
   };
   const getNpcDialogProfile = (npcId: string) =>
     npcProfiles.find((profile) => profile.id === npcId) ??
@@ -3488,9 +7285,213 @@ const getMechanicSeverity = (mechanic: string): number => {
   const activeBuffIds = equippedBuffIds.filter((buffId) => isBuffActive(character, buffId, nowMs));
   const rankTrial = getNextRankTrial();
   const rankTrialAccess = getRankTrialAccess();
-  const rankTrialChance = getRankTrialSuccessChance(selectedItemsForRankTrial);
+  const rankTrialPresentation = rankTrial ? RANK_TRIAL_PRESENTATION[rankTrial.id] : null;
+  const rankTrialEncounter = rankTrial ? LIVE_RANK_TRIAL_ENCOUNTERS[rankTrial.id] ?? null : null;
+  const rankTrialAdventurerProfiles = rankTrialEncounter
+    ? rankTrialEncounter.enemies.map((enemy) => getTrialAdventurerProfile(enemy.id)).filter((profile): profile is TrialAdventurerProfile => Boolean(profile))
+    : [];
+  const primaryRankTrialAdventurer = rankTrialAdventurerProfiles[0] ?? null;
+  const primaryRankTrialAdventurerState = useMemo(
+    () => (primaryRankTrialAdventurer ? buildTrialAdventurerState(primaryRankTrialAdventurer) : null),
+    [primaryRankTrialAdventurer],
+  );
+  type TrialAdventurerHealthEffectEntry =
+    | {
+        key: string;
+        type: "item";
+        itemId: ItemId;
+        label: string;
+        summary: string;
+      }
+    | {
+        key: string;
+        type: "title";
+        titleId: string;
+        label: string;
+        summary: string;
+      }
+    | {
+        key: string;
+        type: "ability";
+        abilityId: AbilityId;
+        label: string;
+        summary: string;
+      };
+  const getTrialAdventurerHealthEffects = useCallback((profile: TrialAdventurerProfile | null) => {
+    if (!profile) {
+      return [] as TrialAdventurerHealthEffectEntry[];
+    }
+    const sigils = profile.sigilIds.map((itemId) => ({
+      key: `health-sigil-${itemId}`,
+      type: "item" as const,
+      itemId,
+      label: ITEM_BY_ID[itemId]?.name ?? itemId,
+      summary: getItemEffectSummary(itemId).join(" • "),
+    }));
+    const titles = profile.titleIds.map((titleId) => ({
+      key: `health-title-${titleId}`,
+      type: "title" as const,
+      titleId,
+      label: TITLE_BY_ID[titleId]?.name ?? titleId,
+      summary: getTitleEffectSummary(titleId).join(" • "),
+    }));
+    const passives = profile.passiveIds.map((abilityId) => ({
+      key: `health-passive-${abilityId}`,
+      type: "ability" as const,
+      abilityId,
+      label: ABILITY_BY_ID[abilityId]?.name ?? abilityId,
+      summary: getCombatAbilityEffectSummary(abilityId),
+    }));
+    return [...sigils, ...titles, ...passives].filter((entry) => entry.summary);
+  }, []);
+  const primaryRankTrialHealthEffects = useMemo(() => {
+    return getTrialAdventurerHealthEffects(primaryRankTrialAdventurer);
+  }, [getTrialAdventurerHealthEffects, primaryRankTrialAdventurer]);
+  const rankTrialKnownReadLines = useMemo(() => {
+    if (!rankTrial) {
+      return [] as RankTrialReadLine[];
+    }
+    if (rankTrial.id === "rank-trial-e-d") {
+      return [
+        {
+          icon: "sword-cross",
+          text: "Riven is strongest when he owns the middle of the ring. Give it away and he starts setting the pace.",
+          color: "#ffd58f",
+        },
+        {
+          icon: "shield-star-outline",
+          text: "If you crack his first guard, expect him to tear open a reserve sigil and come back at once.",
+          color: "#b9b0ff",
+        },
+      ] as RankTrialReadLine[];
+    }
+    if (rankTrial.id === "rank-trial-d-c") {
+      return [
+        {
+          icon: "crosshairs-gps",
+          text: "Kestrel is not here to outshine you. She is here to turn wasted turns and loose footing into marks against the file.",
+          color: "#9fd7ff",
+        },
+        {
+          icon: "file-document-alert-outline",
+          text: "If the first audit line breaks, expect the file to turn red and the pressure to spike. Break the build early or she will cash it in.",
+          color: "#ffd58f",
+        },
+      ] as RankTrialReadLine[];
+    }
+    if (rankTrial.id === "rank-trial-c-b") {
+      return [
+        {
+          icon: "flag-variant-outline",
+          text: "The support lines matter. If you let them land cleanly, Captain Sable inherits a better field than you do.",
+          color: "#9fd7ff",
+        },
+        {
+          icon: "chess-king",
+          text: "This is the first promotion where the whole field can turn against you before the captain even arrives. Break the unit before it coheres.",
+          color: "#ffd58f",
+        },
+      ] as RankTrialReadLine[];
+    }
+    if (rankTrial.id === "rank-trial-b-a") {
+      return [
+        {
+          icon: "shield-crown-outline",
+          text: "Serin Vael is not testing whether you can win one clean exchange. He is testing whether your hand still holds once the run turns long and expensive.",
+          color: "#9fd7ff",
+        },
+        {
+          icon: "script-text-outline",
+          text: "Every time the charter closes cleanly against you, the office marks the run harder. A-rank is where the guild remembers the cost as much as the victory.",
+          color: "#ffd58f",
+        },
+      ] as RankTrialReadLine[];
+    }
+    return [] as RankTrialReadLine[];
+  }, [rankTrial]);
+  const rankTrialStandards = useMemo(() => {
+    if (rankTrial?.id === "rank-trial-d-c") {
+      return [
+        { label: "Turn Budget", value: `Finish within ${D_TO_C_EXECUTION_RULES.maxTurns} turns` },
+        { label: "Pouch Use", value: `Spend no more than ${D_TO_C_EXECUTION_RULES.maxPouchItems} pouch items` },
+        { label: "Vitality", value: `Finish above ${Math.round(D_TO_C_EXECUTION_RULES.minHealthRatio * 100)}% HP` },
+        { label: "Discipline", value: "Do not yield the exchange with Pass" },
+      ];
+    }
+    if (rankTrial?.id === "rank-trial-c-b") {
+      return [
+        { label: "Field Breaches", value: `Allow no more than ${C_TO_B_COMMAND_RULES.maxFieldBreaches} breaches` },
+        { label: "Turn Budget", value: `Clear the field inside ${C_TO_B_COMMAND_RULES.maxTurns} turns` },
+        { label: "Pouch Use", value: `Spend no more than ${C_TO_B_COMMAND_RULES.maxPouchItems} pouch items` },
+        { label: "Vitality", value: `Finish above ${Math.round(C_TO_B_COMMAND_RULES.minHealthRatio * 100)}% HP` },
+      ];
+    }
+    if (rankTrial?.id === "rank-trial-b-a") {
+      return [
+        { label: "Charter Faults", value: `Allow no more than ${formatBreachScore(B_TO_A_CHARTER_RULES.maxCharterFaults)} faults` },
+        { label: "Turn Budget", value: `Finish inside ${B_TO_A_CHARTER_RULES.maxTurns} turns` },
+        { label: "Pouch Use", value: `Spend no more than ${B_TO_A_CHARTER_RULES.maxPouchItems} pouch items` },
+        { label: "Vitality", value: `Finish above ${Math.round(B_TO_A_CHARTER_RULES.minHealthRatio * 100)}% HP` },
+        { label: "Discipline", value: "Do not yield the exchange with Pass" },
+      ];
+    }
+    return [] as { label: string; value: string }[];
+  }, [rankTrial]);
+  const rankTrialResultPresentation = useMemo(() => {
+    if (!lastRankUpOutcome) {
+      return null;
+    }
+    const key = `${lastRankUpOutcome.fromRank}-${lastRankUpOutcome.toRank}`;
+    const presentationIdByPair: Record<string, keyof typeof RANK_TRIAL_PRESENTATION> = {
+      "F-E": "rank-trial-f-e",
+      "E-D": "rank-trial-e-d",
+      "D-C": "rank-trial-d-c",
+      "C-B": "rank-trial-c-b",
+      "B-A": "rank-trial-b-a",
+      "A-S": "rank-trial-a-s",
+      "S-SS": "rank-trial-s-ss",
+    };
+    const presentationId = presentationIdByPair[key];
+    return presentationId ? RANK_TRIAL_PRESENTATION[presentationId] : null;
+  }, [lastRankUpOutcome]);
+  const primaryRankTrialSigilSlotLimit = primaryRankTrialAdventurer
+    ? getBuffSlotLimit(primaryRankTrialAdventurer.adventurerRank)
+    : 0;
+  const primaryRankTrialTitleSlotLimit = primaryRankTrialAdventurer
+    ? getTitleSlotLimit(primaryRankTrialAdventurer.level)
+    : 0;
+  const primaryRankTrialEquippedSigilIds = primaryRankTrialAdventurer
+    ? getTrialAdventurerEquippedSigilIds(primaryRankTrialAdventurer)
+    : [];
+  const primaryRankTrialEquippedTitleIds = primaryRankTrialAdventurer
+    ? getTrialAdventurerEquippedTitleIds(primaryRankTrialAdventurer)
+    : [];
+  const rankTrialResultExaminerProfile = useMemo(
+    () => (lastRankUpOutcome ? getExaminerForRank(lastRankUpOutcome.fromRank) : rankExaminerProfile),
+    [lastRankUpOutcome, rankExaminerProfile],
+  );
+  const aToSRaidNoticesUnlocked = useMemo(
+    () => A_TO_S_RAID_NOTICE_IDS.every((questId) => (storyState.unlockedRaidQuestIds ?? []).includes(questId)),
+    [storyState.unlockedRaidQuestIds],
+  );
+  const rankTrialRequirementLines = rankTrial
+    ? [
+        `Level ${character.progression.level}/${rankTrial.minLevel}`,
+        `Quest Clears ${completedQuestCount}/${rankTrial.minQuestClears}`,
+      ]
+    : [];
+  const rankTrialExaminerResultLine = useMemo(() => {
+    if (!lastRankUpOutcome) {
+      return "";
+    }
+    if (lastRankUpOutcome.success) {
+      return `Examiner ${rankTrialResultExaminerProfile.name}: "${rankTrialResultPresentation?.examinerSuccessLine ?? "Good. The field answered, and you did not fold. I'll sign the promotion record myself."}"`;
+    }
+    return `Examiner ${rankTrialResultExaminerProfile.name}: "${rankTrialResultPresentation?.examinerFailureLine ?? "The field turned you back this time. Read the failure, steady yourself, and return when you can finish cleanly."}"`;
+  }, [lastRankUpOutcome, rankTrialResultExaminerProfile.name, rankTrialResultPresentation]);
   const rankUpAvailable = rankTrialAccess.allowed;
   const examinerReadyForTrial = Boolean(rankTrial && rankTrialAccess.allowed);
+  const examinerCanOpenDesk = Boolean(rankTrial) && (examinerReadyForTrial || rankTrial?.id === "rank-trial-a-s");
   const questHealthGate = Math.ceil(character.healthCap * 0.5);
   const isDead = character.health <= 1;
   const questHealthLocked = character.health > 1 && character.health < questHealthGate;
@@ -3615,6 +7616,8 @@ const getMechanicSeverity = (mechanic: string): number => {
         ? 100
         : 25
       : 0;
+  const getNpcClassName = (npc: GuildNpcProfile): string =>
+    BASE_CLASSES.find((baseClass) => baseClass.id === npc.classId)?.name ?? "Unknown Class";
   const getNpcSummaryText = (npc: GuildNpcProfile): string => {
     if (npc.id === RESCUE_REQUEST_NPC_PROFILE.id) {
       if (storyState.aldricQuestPath === "saved") {
@@ -3641,6 +7644,30 @@ const getMechanicSeverity = (mechanic: string): number => {
         return "Quartermaster Bran has started treating your requests like those of a climber expected to return from harsher floors. His store talk now carries a little more respect than caution.";
       }
       return "Quartermaster Bran manages the guild store. Buy gear, supplies, and sell materials through this desk.";
+    }
+    if (npc.id === E_RANK_TRIAL_CHALLENGER_ID) {
+      if (lastRankUpOutcome?.fromRank === "E" && lastRankUpOutcome.success) {
+        return "Riven Hale is the hall duelist Nyra uses when she wants D-rank hopefuls tested against a real adventurer instead of another penned beast. You beat him and took the D-mark in front of the guild.";
+      }
+      if (lastRankUpOutcome?.fromRank === "E" && !lastRankUpOutcome.success) {
+        return "Riven Hale is the hall duelist Nyra uses for the E -> D promotion. He already has your loss on the guild record and expects you back cleaner the next time you step into the ring.";
+      }
+      if (rankTrial?.id === "rank-trial-e-d") {
+        return "Riven Hale is Nyra Sol's sanctioned duelist for the E -> D promotion. The office uses him because another adventurer can punish sloppy habits in ways a monster never will.";
+      }
+      return "A sanctioned guild duelist who helps the rank office test whether climbers can actually read another adventurer under pressure.";
+    }
+    if (npc.id === A_RANK_CHARTER_WITNESS_PROFILE.id) {
+      if (lastRankUpOutcome?.fromRank === "B" && lastRankUpOutcome.success) {
+        return "Serin Vael is the charter witness Lyss Argent trusted with your A-rank file. He forced your A-rank test all the way to the last measure, and you still came back with the charter signed.";
+      }
+      if (lastRankUpOutcome?.fromRank === "B" && !lastRankUpOutcome.success) {
+        return "Serin Vael is the charter witness Lyss Argent set over your A-rank file. The office still has his refusal on record and expects a stronger run the next time you ask for A-rank trust.";
+      }
+      if (rankTrial?.id === "rank-trial-b-a") {
+        return "Serin Vael is one of Lyss Argent's charter witnesses, the kind of A-rank marshal the guild trusts when strength alone is no longer enough proof. He is there to decide whether your name can carry real ascent authority.";
+      }
+      return "An A-rank ascent marshal who serves as a charter witness when the guild needs a climber's trust tested as hard as their steel.";
     }
     if (npc.id === "npc-tamsin-vale") {
       if ((character.towerProgress?.highestFloorCleared ?? 0) >= 2 && !storyState.thornRunnerIntroductionChoice) {
@@ -3744,6 +7771,22 @@ const getMechanicSeverity = (mechanic: string): number => {
           color: (character.towerProgress?.highestFloorCleared ?? 0) >= 2 ? "#ffcf8d" : "#d0b4ff",
           text: (character.towerProgress?.highestFloorCleared ?? 0) >= 2 ? "Floor 2 Clear Recognized" : "Sigil & Potion Supply",
         },
+      ];
+    }
+    if (npc.id === E_RANK_TRIAL_CHALLENGER_ID) {
+      return [
+        { icon: "account-sword-outline", color: "#8fc3ff", text: "Hall Duelist" },
+        { icon: "shield-star-outline", color: "#ffd48f", text: "Sigil Fighter" },
+        { icon: "flask-outline", color: "#9ce8c2", text: "Uses Potions Mid-Bout" },
+        { icon: "sword-cross", color: "#d0b4ff", text: rankTrial?.id === "rank-trial-e-d" ? "D-Mark Opponent" : "Rank Office Circuit" },
+      ];
+    }
+    if (npc.id === A_RANK_CHARTER_WITNESS_PROFILE.id) {
+      return [
+        { icon: "shield-crown-outline", color: "#ffd48f", text: "A-Rank Charter Witness" },
+        { icon: "sword-cross", color: "#9fd7ff", text: "Marshal's Blade" },
+        { icon: "script-text-outline", color: "#d0b4ff", text: rankTrial?.id === "rank-trial-b-a" ? "Charter Authority" : "Charter Route Authority" },
+        { icon: "flask-outline", color: "#9ce8c2", text: "Long-Run Measure" },
       ];
     }
     if (npc.id === "npc-tamsin-vale") {
@@ -3961,6 +8004,21 @@ const getMechanicSeverity = (mechanic: string): number => {
             : "Bran treats you as another adventurer to outfit and send out.",
       };
     }
+    if (npc.id === E_RANK_TRIAL_CHALLENGER_ID) {
+      const duelComplete = lastRankUpOutcome?.fromRank === "E";
+      return {
+        label: duelComplete ? (lastRankUpOutcome?.success ? "Measured" : "Waiting") : rankTrial?.id === "rank-trial-e-d" ? "Ready" : "Present",
+        score: npcDispositionById[npc.id] ?? (duelComplete ? (lastRankUpOutcome?.success ? 68 : 46) : 58),
+        icon: duelComplete ? (lastRankUpOutcome?.success ? "sword-cross" : "restart") : "sword-cross",
+        color: duelComplete ? (lastRankUpOutcome?.success ? "#9ce8c2" : "#ffcf8d") : "#8fc3ff",
+        flavor:
+          duelComplete
+            ? lastRankUpOutcome?.success
+              ? "Riven now reads you as someone who earned the office mark in steel, not paperwork."
+              : "Riven is still waiting to see whether your next read against him is cleaner."
+            : "Riven watches E-rank hopefuls the way a duelist watches hands before a blade is drawn.",
+      };
+    }
     if (npc.id === "npc-tamsin-vale") {
       const choice = storyState.thornRunnerIntroductionChoice;
       const completed = storyState.thornRunnerQuestStatus === "completed";
@@ -4009,6 +8067,21 @@ const getMechanicSeverity = (mechanic: string): number => {
         icon: "compass-outline",
         color: "#d7c19b",
         flavor: "Tamsin watches for how you carry yourself before she decides what kind of runner you are.",
+      };
+    }
+    if (npc.id === A_RANK_CHARTER_WITNESS_PROFILE.id) {
+      const charterComplete = lastRankUpOutcome?.fromRank === "B";
+      return {
+        label: charterComplete ? (lastRankUpOutcome?.success ? "Signed" : "Withheld") : rankTrial?.id === "rank-trial-b-a" ? "Assessing" : "Reserved",
+        score: npcDispositionById[npc.id] ?? (charterComplete ? (lastRankUpOutcome?.success ? 78 : 38) : rankTrial?.id === "rank-trial-b-a" ? 62 : 48),
+        icon: charterComplete ? (lastRankUpOutcome?.success ? "file-document-check-outline" : "script-text-outline") : "shield-crown-outline",
+        color: charterComplete ? (lastRankUpOutcome?.success ? "#9ce8c2" : "#ffcf8d") : "#c9b4ff",
+        flavor:
+          charterComplete
+            ? lastRankUpOutcome?.success
+              ? "Serin has already signed your name into the kind of trust the guild does not hand out lightly."
+              : "Serin has already seen your file come up short and will not soften the next reading for you."
+            : "Serin Vael keeps his judgment close until the run gives him a reason to open it.",
       };
     }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
@@ -4176,6 +8249,82 @@ const getMechanicSeverity = (mechanic: string): number => {
         borderColor: "#ffcf8d",
         backgroundColor: "rgba(99, 70, 28, 0.95)",
       };
+    }
+    if (npc.id === E_RANK_TRIAL_CHALLENGER_ID) {
+      if (lastRankUpOutcome?.fromRank === "E" && lastRankUpOutcome.success) {
+        return {
+          lines: [
+            "\"You took the D-mark clean. Next time we cross steel, it won't be for the office.\"",
+            "\"Most people break my first guard and lose the ring when I draw the reserve sigil. You didn't.\"",
+          ],
+          icon: "message-check-outline" as const,
+          color: "#eafff1",
+          borderColor: "#9ce8c2",
+          backgroundColor: "rgba(30, 86, 56, 0.95)",
+        };
+      }
+      if (lastRankUpOutcome?.fromRank === "E" && !lastRankUpOutcome.success) {
+        return {
+          lines: [
+            "\"You hit hard enough to matter. You just let me choose the pace.\"",
+            "\"Come back when the reserve sigil no longer knocks the ring out from under you.\"",
+          ],
+          icon: "message-outline" as const,
+          color: "#fff0d2",
+          borderColor: "#ffcf8d",
+          backgroundColor: "rgba(99, 70, 28, 0.95)",
+        };
+      }
+      if (rankTrial?.id === "rank-trial-e-d") {
+        return {
+          lines: [
+            "\"Nyra wants proof you can beat a trained duelist. That's where I come in.\"",
+            "\"Don't train for a beast. Train for someone who drinks, guards, and punishes every bad answer.\"",
+          ],
+          icon: "message-star-outline" as const,
+          color: "#e8f4ff",
+          borderColor: "#8fc3ff",
+          backgroundColor: "rgba(34, 68, 102, 0.95)",
+        };
+      }
+    }
+    if (npc.id === A_RANK_CHARTER_WITNESS_PROFILE.id) {
+      if (lastRankUpOutcome?.fromRank === "B" && lastRankUpOutcome.success) {
+        return {
+          lines: [
+            "\"You held the run together all the way through. That's what the charter was for.\"",
+            "\"A-rank is trust carried under weight. You didn't drop it.\"",
+          ],
+          icon: "message-check-outline" as const,
+          color: "#eafff1",
+          borderColor: "#9ce8c2",
+          backgroundColor: "rgba(30, 86, 56, 0.95)",
+        };
+      }
+      if (lastRankUpOutcome?.fromRank === "B" && !lastRankUpOutcome.success) {
+        return {
+          lines: [
+            "\"You were strong enough to reach the last measure. That wasn't the same as being ready for the charter.\"",
+            "\"Bring me a run the guild can trust, not just admire.\"",
+          ],
+          icon: "message-outline" as const,
+          color: "#fff0d2",
+          borderColor: "#ffcf8d",
+          backgroundColor: "rgba(99, 70, 28, 0.95)",
+        };
+      }
+      if (rankTrial?.id === "rank-trial-b-a") {
+        return {
+          lines: [
+            "\"A-rank isn't a prize for looking impressive in one clean exchange.\"",
+            "\"If your hand comes apart once the run turns costly, the charter stays with the guild.\"",
+          ],
+          icon: "message-star-outline" as const,
+          color: "#e8f4ff",
+          borderColor: "#c9b4ff",
+          backgroundColor: "rgba(58, 42, 98, 0.96)",
+        };
+      }
     }
     if (rankTrial && npc.id === rankExaminerProfile.id) {
       if (rankUpAvailable) {
@@ -4433,27 +8582,6 @@ const getMechanicSeverity = (mechanic: string): number => {
       return item.rarity === "common" || item.id.includes("herb") || item.id.includes("rope") || item.id.includes("torch");
     });
     return { guaranteed, possible };
-  };
-
-  const adjustRankTrialItem = (
-    itemId: ItemId,
-    delta: number,
-    maxAllowed: number,
-    owned: number,
-  ) => {
-    setSelectedItemsForRankTrial((current) => {
-      const currentAmount = current[itemId] ?? 0;
-      const nextAmount = Math.max(0, Math.min(maxAllowed, Math.min(owned, currentAmount + delta)));
-      if (nextAmount <= 0) {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      }
-      return {
-        ...current,
-        [itemId]: nextAmount,
-      };
-    });
   };
 
   return (
@@ -5091,8 +9219,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                 const isActionDisabled = isClassLocked || isAlreadyOwnedWeapon || isBuying;
                 const rarity = item?.rarity ?? "common";
                 const isLegendary = rarity === "legendary";
-                const weaponScale =
-                  character.progression.level >= (item?.requiredLevel ?? 1) ? 1 : 0.25;
+                const weaponScale = getWeaponProficiencyForItem(character, item);
                 const baseWeaponAttack = item?.weaponStats?.attack ?? 0;
                 const baseWeaponCrit = item?.weaponStats?.crit ?? 0;
                 const baseWeaponSpeed = item?.weaponStats?.speed ?? 0;
@@ -5189,7 +9316,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                               <Text style={styles.weaponStatApplied}>now +{weaponSpeed}</Text>
                             </View>
                             <IconTooltip
-                              text={`Base stats are the weapon's full power. "now" shows what you currently get after proficiency scaling. If your level is below the requirement, you only receive 25% until you meet it.`}
+                              text={`Base stats are the weapon's full power. "now" shows what you currently get after proficiency scaling. If your level is below the requirement, your proficiency scales up with your level until you meet it.`}
                             />
                           </View>
                         ) : null}
@@ -5718,7 +9845,13 @@ const getMechanicSeverity = (mechanic: string): number => {
                           ) : null}
                         </View>
                         <Text style={styles.weaponStatApplied}>
-                          DMG +{item?.buffStats?.damageFlat ?? 0} • CRIT +{item?.buffStats?.critFlat ?? 0}% • SPD +{item?.buffStats?.speedFlat ?? 0} • QUEST +{item?.buffStats?.questSuccessFlat ?? 0}%
+                          {[
+                            `ARM +${item?.buffStats?.armorFlat ?? 0}`,
+                            item?.buffStats?.damageFlat ? `ATK +${item.buffStats.damageFlat}` : null,
+                            item?.buffStats?.questSuccessFlat ? `QUEST +${item.buffStats.questSuccessFlat}%` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" • ")}
                         </Text>
                         <Text style={styles.weaponStatApplied}>
                           Duration {Math.floor((item?.buffDurationSeconds ?? 0) / 60)}m {(item?.buffDurationSeconds ?? 0) % 60}s
@@ -5824,7 +9957,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                 const bossDrops = getWaveDrops(currentTowerFloor, "boss");
                 const floorIntelUnlocked = hasFloorIntel(currentTowerFloor.floorNumber) || character.towerProgress.highestFloorCleared >= currentTowerFloor.floorNumber;
                 const floorLore = FLOOR_ENTRY_LORE[currentTowerFloor.floorNumber];
-                const towerPreparedItemSet = new Set(towerPreparedItemIds);
+                const combatPouchItemSet = new Set(combatPouchEntries.map(([itemId]) => itemId));
                 const scoutWaveConfigs: Array<{
                   key: TowerWaveKey;
                   label: string;
@@ -5924,12 +10057,12 @@ const getMechanicSeverity = (mechanic: string): number => {
                     tone: title?.rarity === "legendary" ? "good" : "neutral",
                   });
                 }
-                for (const itemId of towerPreparedItemIds) {
+                for (const [itemId, packedCount] of combatPouchEntries) {
                   const item = ITEM_BY_ID[itemId];
                   towerEffectIcons.push({
-                    key: `prepared-${itemId}`,
-                    label: item?.name ?? "Prepared Supply",
-                    detail: "Prepared for the next exchange",
+                    key: `pouch-${itemId}`,
+                    label: item?.name ?? "Combat Pouch Supply",
+                    detail: `Packed in your combat pouch • x${packedCount}`,
                     kind: "item",
                     itemId,
                     tone: "good",
@@ -6242,7 +10375,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                       {(towerEnemies.normal.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                         ({ enemy, mechanic }, idx) => {
                           const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                          const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
+                          const hasCounter = counterItemId ? combatPouchItemSet.has(counterItemId) : false;
                           return (
                             <View key={`normal-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                               <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -6407,7 +10540,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                           {(towerEnemies.subBoss.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                             ({ enemy, mechanic }, idx) => {
                               const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                              const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
+                              const hasCounter = counterItemId ? combatPouchItemSet.has(counterItemId) : false;
                               return (
                                 <View key={`sub-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                                   <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -6575,7 +10708,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                           {(towerEnemies.boss.flatMap((enemy) => (enemy.mechanics ?? []).map((mechanic) => ({ enemy, mechanic })))).map(
                             ({ enemy, mechanic }, idx) => {
                               const counterItemId = getCounterItemIdFromMechanicText(mechanic);
-                              const hasCounter = counterItemId ? towerPreparedItemSet.has(counterItemId) : false;
+                              const hasCounter = counterItemId ? combatPouchItemSet.has(counterItemId) : false;
                               return (
                                 <View key={`boss-mech-${enemy.id}-${idx}`} style={styles.reqItem}>
                                   <MaterialCommunityIcons name={hasCounter ? "shield-check-outline" : "alert-circle-outline"} size={12} color={hasCounter ? "#95e6ac" : "#ffb1a2"} />
@@ -7056,6 +11189,10 @@ const getMechanicSeverity = (mechanic: string): number => {
                   const needsAttention = npcAttentionTargets.includes(npc.id);
                   const passingRemark = getNpcPassingRemark(npc);
                   const passingRemarkLine = passingRemark ? getNpcPassingRemarkLine(npc, passingRemark) : "";
+                  const npcClassName = getNpcClassName(npc);
+                  const npcSummaryText = getNpcSummaryText(npc);
+                  const npcChips = getNpcTypeChips(npc);
+                  const npcRank = getMaxRankForLevel(npc.level);
                   return (
                     <>
                 <LinearGradient
@@ -7087,7 +11224,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                     ) : null}
                     <ImageBackground source={HUD_ASSETS.badges.rank} style={styles.rankSeal} resizeMode="contain">
                       <Text style={styles.rankSealLabel}>Rank</Text>
-                      <Text style={styles.rankSealValue}>{getMaxRankForLevel(npc.level)}</Text>
+                      <Text style={styles.rankSealValue}>{npcRank}</Text>
                     </ImageBackground>
                   </View>
                 </View>
@@ -7116,77 +11253,88 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </View>
                   </View>
                 ) : null}
-                <View style={styles.npcBody}>
-                  <View style={styles.npcAvatar}>
-                    <Image
-                      source={npc.avatarOverride ?? getAvatarSprite(npc.avatarId, npc.classId)}
-                      style={styles.npcAvatarImage}
-                      resizeMode="cover"
-                    />
-                  </View>
-                  <View style={styles.npcTextWrap}>
-                    <Text style={styles.heroName}>{npc.name}</Text>
-                    <Text style={styles.heroClass}>Title: {npc.title}</Text>
-                    <Text style={styles.heroJobs}>Role: {npc.role}</Text>
-                    <Text style={styles.licenseIdText}>ID {String(npc.sequenceId).padStart(4, "0")}-N</Text>
-                  </View>
-                  <View style={styles.npcRightBadges}>
-                    <View style={styles.npcLevelBadge}>
-                      <Text style={styles.npcLevelBadgeLabel}>Level</Text>
-                      <Text style={styles.npcLevelBadgeValue}>{npc.level}</Text>
+                <View style={styles.npcLicenseShell}>
+                  <View style={styles.npcBody}>
+                    <View style={styles.npcAvatar}>
+                      <Image
+                        source={npc.avatarOverride ?? getAvatarSprite(npc.avatarId, npc.classId)}
+                        style={styles.npcAvatarImage}
+                        resizeMode="cover"
+                      />
                     </View>
-                    <View style={styles.npcFloorBadge}>
-                    <View style={styles.npcFloorBadgeHead}>
-                      <MaterialCommunityIcons name="stairs" size={11} color="#ffe1a1" />
-                        <Text style={styles.npcFloorBadgeLabel}>Floor</Text>
+                    <View style={styles.npcTextWrap}>
+                      <Text style={styles.heroName}>{npc.name}</Text>
+                      <Text style={styles.heroClass}>Class: {npcClassName}</Text>
+                      <Text style={styles.heroJobs}>{npc.title} • {npc.role}</Text>
+                      <Text style={styles.licenseIdText}>ID {String(npc.sequenceId).padStart(4, "0")}-N</Text>
+                    </View>
+                    <View style={styles.npcRightBadges}>
+                      <View style={styles.npcLevelBadge}>
+                        <Text style={styles.npcLevelBadgeLabel}>Level</Text>
+                        <Text style={styles.npcLevelBadgeValue}>{npc.level}</Text>
                       </View>
-                      <Text style={styles.npcFloorBadgeValue}>{getNpcFloorReached(npc)}</Text>
+                      <View style={styles.npcFloorBadge}>
+                      <View style={styles.npcFloorBadgeHead}>
+                        <MaterialCommunityIcons name="stairs" size={11} color="#ffe1a1" />
+                          <Text style={styles.npcFloorBadgeLabel}>Floor</Text>
+                        </View>
+                        <Text style={styles.npcFloorBadgeValue}>{getNpcFloorReached(npc)}</Text>
+                      </View>
                     </View>
                   </View>
-                </View>
-                <View style={styles.npcAuthBar}>
-                  <View style={styles.npcAuthTextWrap}>
-                    <Text style={styles.npcAuthLabel}>Authenticated By</Text>
-                    <Text style={styles.npcAuthValue}>{npc.authBody}</Text>
-                  </View>
-                  <View style={styles.npcSignatureWrap}>
-                    <Text style={styles.npcSignatureText}>{npc.signature}</Text>
-                    <Text style={styles.npcSignatureHint}>Council Sign</Text>
-                  </View>
-                </View>
-                <View style={styles.npcDispositionCard}>
-                  <View style={styles.npcDispositionHead}>
-                    <View style={styles.npcDispositionHeadLeft}>
-                      <MaterialCommunityIcons name={disposition.icon} size={15} color={disposition.color} />
-                      <Text style={styles.npcDispositionLabel}>Disposition</Text>
-                      <Text style={[styles.npcDispositionTier, { color: disposition.color }]}>{disposition.label}</Text>
+                  <View style={styles.npcLicenseInfoGrid}>
+                    <View style={styles.npcLicensePanelFull}>
+                      <Text style={styles.npcLicenseSectionTitle}>Guild Note</Text>
+                      <Text style={styles.npcLicenseNoteText}>{npcSummaryText}</Text>
                     </View>
-                    <Pressable
-                      onPress={() => showQuickInfo(`${npc.name} • Disposition`, disposition.flavor)}
-                      style={styles.npcDispositionInfoButton}
-                    >
-                      <MaterialCommunityIcons name="information-outline" size={15} color="#ffe0af" />
-                    </Pressable>
-                  </View>
-                  <View style={styles.npcDispositionTrack}>
-                    <View style={[styles.npcDispositionFill, { width: `${disposition.score}%`, backgroundColor: disposition.color }]} />
-                  </View>
-                </View>
-                <View style={styles.npcPillsRow}>
-                  {getNpcTypeChips(npc).map((chip) => (
-                    <View key={`${npc.id}-${chip.text}`} style={styles.npcInfoChip}>
-                      {chip.itemId ? (
-                        <GameItemIcon itemId={chip.itemId} size={12} />
-                      ) : (
-                        <MaterialCommunityIcons
-                          name={chip.icon as keyof typeof MaterialCommunityIcons.glyphMap}
-                          size={14}
-                          color={chip.color}
-                        />
-                      )}
-                      <Text style={styles.npcInfoChipText}>{chip.text}</Text>
+                    <View style={styles.npcLicensePanel}>
+                      <View style={styles.npcDispositionHead}>
+                        <View style={styles.npcDispositionHeadLeft}>
+                          <MaterialCommunityIcons name={disposition.icon} size={15} color={disposition.color} />
+                          <Text style={styles.npcDispositionLabel}>Standing</Text>
+                          <Text style={[styles.npcDispositionTier, { color: disposition.color }]}>{disposition.label}</Text>
+                        </View>
+                        <Pressable
+                          onPress={() => showQuickInfo(`${npc.name} • Standing`, disposition.flavor)}
+                          style={styles.npcDispositionInfoButton}
+                        >
+                          <MaterialCommunityIcons name="information-outline" size={15} color="#ffe0af" />
+                        </Pressable>
+                      </View>
+                      <View style={styles.npcDispositionTrack}>
+                        <View style={[styles.npcDispositionFill, { width: `${disposition.score}%`, backgroundColor: disposition.color }]} />
+                      </View>
                     </View>
-                  ))}
+                    <View style={styles.npcLicensePanel}>
+                      <Text style={styles.npcLicenseSectionTitle}>Known For</Text>
+                      <View style={styles.npcKnownForGrid}>
+                        {npcChips.slice(0, 4).map((chip) => (
+                          <View key={`${npc.id}-${chip.text}`} style={styles.npcKnownForChip}>
+                            {chip.itemId ? (
+                              <GameItemIcon itemId={chip.itemId} size={12} />
+                            ) : (
+                              <MaterialCommunityIcons
+                                name={chip.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                                size={14}
+                                color={chip.color}
+                              />
+                            )}
+                            <Text style={styles.npcKnownForChipText}>{chip.text}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.npcAuthBar}>
+                    <View style={styles.npcAuthTextWrap}>
+                      <Text style={styles.npcAuthLabel}>{npc.licenseLabel}</Text>
+                      <Text style={styles.npcAuthValue}>{npc.authBody}</Text>
+                    </View>
+                    <View style={styles.npcSignatureWrap}>
+                      <Text style={styles.npcSignatureText}>{npc.signature}</Text>
+                      <Text style={styles.npcSignatureHint}>Council Sign</Text>
+                    </View>
+                  </View>
                 </View>
                 {npc.id === GUILD_MAGE_NPC_ID ? (
                   <View style={styles.archmageRiteCard}>
@@ -7221,7 +11369,6 @@ const getMechanicSeverity = (mechanic: string): number => {
                     </View>
                   </View>
                 ) : null}
-                <Text style={styles.questMeta}>{getNpcSummaryText(npc)}</Text>
                 {npc.id === RESCUE_REQUEST_NPC_PROFILE.id ? (
                   storyState.aldricQuestPath === "saved" ? (
                     <View style={[styles.sellButton, styles.actionDisabled]}>
@@ -7259,7 +11406,13 @@ const getMechanicSeverity = (mechanic: string): number => {
                 ) : rankTrial && npc.id === rankExaminerProfile.id ? (
                   <Pressable onPress={promptRankVisit} style={styles.actionWrap}>
                     <View style={styles.sellButton}>
-                      <Text style={styles.buyText}>Speak: Open Promotion Desk</Text>
+                      <Text style={styles.buyText}>{rankTrial.id === "rank-trial-a-s" ? "Review Raid Notices" : "Open Trial Board"}</Text>
+                    </View>
+                  </Pressable>
+                ) : npc.id === E_RANK_TRIAL_CHALLENGER_ID ? (
+                  <Pressable onPress={promptRankDuelistVisit} style={styles.actionWrap}>
+                    <View style={styles.sellButton}>
+                      <Text style={styles.buyText}>Meet Hall Duelist</Text>
                     </View>
                   </Pressable>
                 ) : npc.id === QUARTERMASTER_BRAN_NPC_ID ? (
@@ -7333,7 +11486,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                       ]}
                     >
                       <Text style={styles.buyText}>
-                        {npc.id === GUILD_MAGE_NPC_ID ? archmageActionText : "No Active Interaction"}
+                        {npc.id === GUILD_MAGE_NPC_ID ? archmageActionText : "No Current Matter"}
                       </Text>
                     </View>
                   </Pressable>
@@ -7354,142 +11507,690 @@ const getMechanicSeverity = (mechanic: string): number => {
                 end={{ x: 1, y: 1 }}
                 style={styles.cardGradient}
               />
-              <Text style={styles.storeSectionTitle}>Rank Examiner Desk</Text>
-              {rankTrial ? (
-                <View style={styles.chipsRow}>
-                  <View style={styles.rewardChip}>
-                    <MaterialCommunityIcons name="account-tie" size={13} color="#ffd78f" />
-                    <Text style={styles.rewardChipText}>Examiner: {rankExaminerProfile.name}</Text>
-                  </View>
-                  <View style={styles.rewardChip}>
-                    <MaterialCommunityIcons name="office-building-cog-outline" size={13} color="#a8d2ff" />
-                    <Text style={styles.rewardChipText}>Guild Rank Office</Text>
-                  </View>
-                </View>
-              ) : null}
+              <Text style={styles.storeSectionTitle}>{rankTrialPresentation ? `${rankTrialPresentation.title} Trial Board` : "Rank Examiner Desk"}</Text>
               {!rankTrial ? (
                 <Text style={styles.questMeta}>Maximum rank reached. No further promotions available.</Text>
               ) : (
                 <>
-                  <View style={styles.chipsRow}>
-                    <View style={styles.rewardChip}>
-                      <GameItemIcon itemId="tower-crest-fragment" size={12} />
-                      <Text style={styles.rewardChipText}>{rankTrial.fromRank} {"->"} {rankTrial.toRank}</Text>
+                  {rankTrialPresentation ? (
+                    <View style={styles.rankTrialHeroCard}>
+                      <View style={styles.rankTrialHeroHead}>
+                        <View>
+                          <Text style={styles.rankTrialHeroKicker}>{rankTrial.id === "rank-trial-e-d" ? "Guild Duel Notice" : "Live Promotion Trial"}</Text>
+                          <Text style={styles.rankTrialHeroTitle}>{rankTrialPresentation.title}</Text>
+                        </View>
+                        <View style={styles.rankTrialStatePill}>
+                          <Text style={styles.rankTrialStateText}>{rankTrial.fromRank} {"->"} {rankTrial.toRank}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.questMeta}>{rankTrialPresentation.guildTest}</Text>
                     </View>
-                    <View style={styles.rewardChip}>
-                      <GameItemIcon itemId="focus-tonic" size={12} />
-                      <Text style={styles.rewardChipText}>Lv {rankTrial.minLevel}+</Text>
+                  ) : null}
+                  {rankTrialEncounter ? (
+                    <View style={styles.towerProgressCard}>
+                      <Text style={styles.reqTitle}>
+                        {primaryRankTrialAdventurer
+                          ? rankTrial?.id === "rank-trial-e-d"
+                            ? "Guild Duelist"
+                            : rankTrial?.id === "rank-trial-c-b"
+                              ? "Field Lead"
+                              : "Trial Opponent"
+                          : "Trial Opponents"}
+                      </Text>
+                      {primaryRankTrialAdventurer ? (
+                        <View style={styles.rankTrialLicenseCard}>
+                          <View pointerEvents="none" style={styles.rankTrialLicenseSecurityLayer}>
+                            <ImageBackground source={HUD_ASSETS.badges.stamp} style={styles.rankTrialLicenseWatermark} resizeMode="contain">
+                              <MaterialCommunityIcons name="shield-crown-outline" size={30} color="rgba(242, 212, 150, 0.23)" />
+                            </ImageBackground>
+                            <View style={styles.rankTrialLicensePatternArcOne} />
+                            <View style={styles.rankTrialLicensePatternArcTwo} />
+                            <View style={styles.rankTrialLicensePatternGrid} />
+                          </View>
+                          <View style={styles.rankTrialLicenseTopBar}>
+                            <View>
+                              <Text style={styles.licenseTopKicker}>Adventurers Guild</Text>
+                              <Text style={styles.licenseTopTitle}>Adventurer License</Text>
+                            </View>
+                            <ImageBackground source={HUD_ASSETS.badges.rank} style={styles.rankSeal} resizeMode="contain">
+                              <Text style={styles.rankSealLabel}>Rank</Text>
+                              <Text style={styles.rankSealValue}>{primaryRankTrialAdventurer.adventurerRank}</Text>
+                            </ImageBackground>
+                          </View>
+                          <Pressable style={styles.rankTrialLicenseBody} onPress={() => openTrialAdventurerProfile(primaryRankTrialAdventurer)}>
+                            <View style={styles.rankTrialLicensePortraitWrap}>
+                              <AdventurerPortrait
+                                character={primaryRankTrialAdventurerState!}
+                                size={86}
+                                imageOverride={primaryRankTrialAdventurer.avatarOverride}
+                              />
+                            </View>
+                            <View style={styles.rankTrialLicenseTextWrap}>
+                              <Text style={styles.heroName}>{primaryRankTrialAdventurer.name}</Text>
+                              <Text style={styles.heroClass}>
+                                Class: {BASE_CLASSES.find((baseClass) => baseClass.id === primaryRankTrialAdventurer.classId)?.name ?? (primaryRankTrialAdventurer.classId[0].toUpperCase() + primaryRankTrialAdventurer.classId.slice(1))}
+                              </Text>
+                              <Text style={styles.heroJobs}>
+                                {primaryRankTrialAdventurer.warriorPathChoice
+                                  ? `${primaryRankTrialAdventurer.warriorPathChoice[0].toUpperCase() + primaryRankTrialAdventurer.warriorPathChoice.slice(1)} Path`
+                                  : primaryRankTrialAdventurer.licenseLabel}
+                              </Text>
+                              <Text style={styles.licenseIdText}>ID {primaryRankTrialAdventurer.licenseId}</Text>
+                            </View>
+                            <View style={styles.rankTrialLicenseRightBadges}>
+                              <View style={styles.rankTrialLicenseLevelBadge}>
+                                <Text style={styles.rankTrialLicenseBadgeLabel}>Level</Text>
+                                <Text style={styles.rankTrialLicenseLevelValue}>{primaryRankTrialAdventurer.level}</Text>
+                                <View style={styles.rankTrialLicenseLevelMiniTrack}>
+                                  <View
+                                    style={[
+                                      styles.rankTrialLicenseLevelMiniFill,
+                                      {
+                                        width: `${Math.max(
+                                          18,
+                                          Math.min(100, (((primaryRankTrialAdventurer.level - 1) % 10) + 1) * 10),
+                                        )}%`,
+                                      },
+                                    ]}
+                                  />
+                                </View>
+                              </View>
+                              <View style={styles.rankTrialLicenseFloorBadge}>
+                                <View style={styles.rankTrialLicenseFloorBadgeHead}>
+                                  <MaterialCommunityIcons name="stairs" size={11} color="#ffe1a1" />
+                                  <Text style={styles.rankTrialLicenseFloorLabel}>Floor</Text>
+                                </View>
+                                <Text style={styles.rankTrialLicenseFloorValue}>{primaryRankTrialAdventurer.towerFloor}</Text>
+                              </View>
+                            </View>
+                          </Pressable>
+                          {primaryRankTrialAdventurerState ? (
+                            <HealthMeter
+                              current={primaryRankTrialAdventurerState.health}
+                              max={primaryRankTrialAdventurerState.healthCap}
+                              compact
+                              containerStyle={styles.rankTrialLicenseHealthMeter}
+                              footer={
+                                primaryRankTrialHealthEffects.length ? (
+                                  <View style={styles.rankTrialHealthEffectRow}>
+                                    {primaryRankTrialHealthEffects.map((entry) => (
+                                      <Pressable
+                                        key={entry.key}
+                                        style={[
+                                          styles.rankTrialHealthEffectIconChip,
+                                          hoveredEffectBadgeKey === entry.key ? styles.rankTrialHealthEffectIconChipHover : null,
+                                        ]}
+                                        onPress={() => {
+                                          if (entry.type === "item") {
+                                            openItemInfo(entry.itemId);
+                                          } else if (entry.type === "title") {
+                                            openTitleInfo(entry.titleId);
+                                          } else {
+                                            openAbilityInfo(entry.abilityId);
+                                          }
+                                        }}
+                                        onPressIn={() => setHoveredEffectBadgeKey(entry.key)}
+                                        onPressOut={() => setHoveredEffectBadgeKey((currentKey) => (currentKey === entry.key ? null : currentKey))}
+                                        onHoverIn={() => {
+                                          setHoveredEffectBadgeKey(entry.key);
+                                          setBattleStatusHint(entry.summary);
+                                        }}
+                                        onHoverOut={() => {
+                                          setHoveredEffectBadgeKey((currentKey) => (currentKey === entry.key ? null : currentKey));
+                                          setBattleStatusHint((currentHint) => (currentHint === entry.summary ? null : currentHint));
+                                        }}
+                                      >
+                                        <View style={styles.rankTrialHealthEffectIconOnlyWrap}>
+                                          {entry.type === "item" ? (
+                                            <GameItemIcon itemId={entry.itemId} size={18} />
+                                          ) : entry.type === "title" ? (
+                                            <ImageBackground
+                                              source={HUD_ASSETS.slots[TITLE_BY_ID[entry.titleId]?.rarity ?? "common"]}
+                                              style={styles.rankTrialHealthEffectTitleFrame}
+                                              resizeMode="contain"
+                                            >
+                                              <Image source={TITLE_ICON_ART[entry.titleId]} style={styles.rankTrialHealthEffectTitleImage} resizeMode="contain" />
+                                            </ImageBackground>
+                                          ) : (
+                                            <MaterialCommunityIcons
+                                              name={ABILITY_BY_ID[entry.abilityId]?.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                                              size={14}
+                                              color="#d8ffe6"
+                                            />
+                                          )}
+                                        </View>
+                                      </Pressable>
+                                    ))}
+                                  </View>
+                                ) : null
+                              }
+                            />
+                          ) : null}
+                          <View style={styles.rankTrialLicenseLoadoutGrid}>
+                            <View style={styles.rankTrialLicenseWeaponPanel}>
+                                <View style={styles.rankTrialSectionHead}>
+                                <Text style={styles.rankTrialSectionTitle}>Weapon</Text>
+                                <View style={styles.rankTrialWeaponMetaRow}>
+                                  <View
+                                    style={[
+                                      styles.rankTrialWeaponGradePill,
+                                      {
+                                        backgroundColor:
+                                          (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "legendary"
+                                            ? "rgba(86, 62, 16, 0.92)"
+                                            : (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "epic"
+                                              ? "rgba(72, 37, 109, 0.9)"
+                                              : (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "rare"
+                                                ? "rgba(30, 64, 108, 0.9)"
+                                                : "rgba(67, 67, 74, 0.9)",
+                                        borderColor:
+                                          rarityColorMap[
+                                            ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common"
+                                          ],
+                                      },
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.rankTrialWeaponGradeText,
+                                        {
+                                          color:
+                                            rarityColorMap[
+                                              ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common"
+                                            ],
+                                        },
+                                        (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "legendary"
+                                          ? styles.legendaryTextGlow
+                                          : null,
+                                      ]}
+                                    >
+                                      {(ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common").toUpperCase()}
+                                    </Text>
+                                  </View>
+                                  <Text style={styles.rankTrialSectionMeta}>Lv {ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.requiredLevel ?? 1}+</Text>
+                                </View>
+                              </View>
+                              <Pressable
+                                style={[
+                                  styles.rankTrialFeaturedWeaponCard,
+                                  {
+                                    borderColor:
+                                      rarityColorMap[
+                                        ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common"
+                                      ],
+                                    backgroundColor:
+                                      (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "legendary"
+                                        ? "rgba(54, 38, 11, 0.78)"
+                                        : (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "epic"
+                                          ? "rgba(45, 25, 74, 0.82)"
+                                          : (ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common") === "rare"
+                                            ? "rgba(22, 42, 73, 0.82)"
+                                            : "rgba(44, 44, 49, 0.82)",
+                                  },
+                                ]}
+                                onPress={() => openItemInfo(primaryRankTrialAdventurer.weaponId)}
+                              >
+                                <View
+                                  style={[
+                                    styles.rankTrialFeaturedWeaponIconWrap,
+                                    {
+                                      borderColor:
+                                        rarityColorMap[
+                                          ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.rarity ?? "common"
+                                        ],
+                                    },
+                                  ]}
+                                >
+                                  {ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.image ? (
+                                    <Image source={ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.image} style={styles.rankTrialFeaturedWeaponImage} resizeMode="contain" />
+                                  ) : (
+                                    <GameItemIcon itemId={primaryRankTrialAdventurer.weaponId} size={58} />
+                                  )}
+                                </View>
+                                <View style={styles.rankTrialFeaturedWeaponText}>
+                                  <Text style={styles.rankTrialFeaturedWeaponName}>
+                                    {ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.name ?? primaryRankTrialAdventurer.weaponId}
+                                  </Text>
+                                  <Text style={styles.rankTrialFeaturedWeaponMeta}>100% license proficiency</Text>
+                                  {(ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]?.weaponMarkSlots ?? 0) > 0 ? (
+                                    <View style={styles.rankTrialWeaponSocketList}>
+                                      {Array.from({ length: ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]!.weaponMarkSlots ?? 0 }).map((_, index) => {
+                                        const mark = ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]!.weaponMarks?.[index];
+                                        const markColor = mark ? rarityColorMap[mark.rarity] : undefined;
+                                        return (
+                                        <View
+                                          key={mark?.id ?? `empty-mark-${index}`}
+                                          style={styles.rankTrialWeaponSocketRow}
+                                        >
+                                          <View
+                                            style={[
+                                              styles.rankTrialWeaponSocketDiamond,
+                                              mark
+                                                ? {
+                                                    borderColor: markColor ?? mark.accentColor ?? "#d6c07d",
+                                                    backgroundColor: `${markColor ?? mark.accentColor ?? "#d6c07d"}22`,
+                                                  }
+                                                : styles.rankTrialWeaponSocketDiamondEmpty,
+                                            ]}
+                                          >
+                                            {mark ? <View style={[styles.rankTrialWeaponSocketDiamondCore, { backgroundColor: markColor ?? mark.accentColor ?? "#d6c07d" }]} /> : null}
+                                          </View>
+                                          <View style={styles.rankTrialWeaponSocketTextWrap}>
+                                            <Text
+                                              style={[
+                                                styles.rankTrialWeaponSocketText,
+                                                !mark ? styles.rankTrialWeaponSocketTextEmpty : null,
+                                                mark ? { color: markColor ?? "#f7e8bf" } : null,
+                                              ]}
+                                            >
+                                              {mark?.name ?? "Empty Socket"}
+                                            </Text>
+                                            {mark?.effectDescription ? <Text style={styles.rankTrialWeaponSocketSubtext}>{mark.effectDescription}</Text> : null}
+                                          </View>
+                                        </View>
+                                      )})}
+                                    </View>
+                                  ) : null}
+                                  <View style={styles.rankTrialWeaponBonusRow}>
+                                    <View style={styles.rankTrialWeaponBonusChip}>
+                                      <MaterialCommunityIcons name="sword-cross" size={12} color="#ffd58f" />
+                                      <Text style={styles.rankTrialWeaponBonusText}>ATK +{ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]!.weaponStats!.attack}</Text>
+                                    </View>
+                                    <View style={styles.rankTrialWeaponBonusChip}>
+                                      <MaterialCommunityIcons name="star-four-points" size={12} color="#ffb6d8" />
+                                      <Text style={styles.rankTrialWeaponBonusText}>CRIT +{ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]!.weaponStats!.crit}%</Text>
+                                    </View>
+                                    <View style={styles.rankTrialWeaponBonusChip}>
+                                      <MaterialCommunityIcons name="run-fast" size={12} color="#8de9a8" />
+                                      <Text style={styles.rankTrialWeaponBonusText}>SPD +{ITEM_BY_ID[primaryRankTrialAdventurer.weaponId]!.weaponStats!.speed}</Text>
+                                    </View>
+                                  </View>
+                                </View>
+                              </Pressable>
+                            </View>
+
+                            <View style={styles.rankTrialSlotHeader}>
+                              <Text style={styles.rankTrialSlotTitle}>Sigil Slots</Text>
+                              <Text style={styles.rankTrialSlotMeta}>
+                                {primaryRankTrialEquippedSigilIds.length}/{primaryRankTrialSigilSlotLimit} equipped
+                              </Text>
+                            </View>
+                            <View style={styles.rankTrialLicenseSigilRow}>
+                              {Array.from({ length: primaryRankTrialSigilSlotLimit }).map((_, index) => {
+                                const itemId = primaryRankTrialEquippedSigilIds[index];
+                                return (
+                                <Pressable
+                                  key={`trial-sigil-${itemId ?? "empty"}-${index}`}
+                                  style={styles.rankTrialLicenseSigilSlot}
+                                  disabled={!itemId}
+                                  onPress={itemId ? () => openItemInfo(itemId) : undefined}
+                                >
+                                  <View style={styles.rankTrialLicenseSigilIconShell}>
+                                    {itemId ? (
+                                      <GameItemIcon itemId={itemId} size={28} />
+                                    ) : (
+                                      <MaterialCommunityIcons name="plus-circle-outline" size={22} color="#a58961" />
+                                    )}
+                                  </View>
+                                  {itemId ? (
+                                    <View style={styles.rankTrialLicenseSigilGradeBadge}>
+                                      <Text style={styles.rankTrialLicenseSigilGradeText}>
+                                        {(ITEM_BY_ID[itemId]?.rarity ?? "common").slice(0, 1).toUpperCase()}
+                                      </Text>
+                                    </View>
+                                  ) : (
+                                    <Text style={styles.rankTrialLicenseSigilEmptyHint}>Empty</Text>
+                                  )}
+                                </Pressable>
+                              )})}
+                            </View>
+                            {primaryRankTrialEquippedSigilIds.length ? (
+                              <View style={styles.rankTrialEffectChipRow}>
+                                {primaryRankTrialEquippedSigilIds.map((itemId) => (
+                                  <Pressable key={`sigil-effect-${itemId}`} style={styles.rankTrialEffectChip} onPress={() => openItemInfo(itemId)}>
+                                    <View style={styles.rankTrialEffectChipIconWrap}>
+                                      <GameItemIcon itemId={itemId} size={18} />
+                                    </View>
+                                    <Text style={styles.rankTrialEffectChipText}>{getItemEffectSummary(itemId).join(" • ")}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            ) : null}
+
+                            <View style={styles.rankTrialSlotHeader}>
+                              <Text style={styles.rankTrialSlotTitle}>Title Slots</Text>
+                              <Text style={styles.rankTrialSlotMeta}>
+                                {primaryRankTrialEquippedTitleIds.length}/{primaryRankTrialTitleSlotLimit} equipped
+                              </Text>
+                            </View>
+                            <View style={styles.rankTrialLicenseTitleRow}>
+                              {Array.from({ length: primaryRankTrialTitleSlotLimit }).map((_, index) => {
+                                const titleId = primaryRankTrialEquippedTitleIds[index];
+                                return (
+                                <Pressable
+                                  key={`trial-title-${titleId ?? "empty"}-${index}`}
+                                  style={styles.rankTrialLicenseTitleCard}
+                                  disabled={!titleId}
+                                  onPress={titleId ? () => openTitleInfo(titleId) : undefined}
+                                >
+                                  <View style={styles.rankTrialLicenseTitleCardIconWrap}>
+                                    {titleId ? (
+                                      <ImageBackground
+                                        source={HUD_ASSETS.slots[TITLE_BY_ID[titleId]?.rarity ?? "common"]}
+                                        style={styles.rankTrialLicenseTitleIconFrame}
+                                        resizeMode="contain"
+                                      >
+                                        <Image source={TITLE_ICON_ART[titleId]} style={styles.rankTrialLicenseTitleIconImage} resizeMode="contain" />
+                                      </ImageBackground>
+                                    ) : (
+                                      <MaterialCommunityIcons name="plus-circle-outline" size={18} color="#a58961" />
+                                    )}
+                                  </View>
+                                  <View style={styles.rankTrialLicenseTitleTextBlock}>
+                                    <Text
+                                      style={[
+                                        styles.rankTrialLicenseTitleName,
+                                        titleId ? { color: rarityColorMap[TITLE_BY_ID[titleId]?.rarity ?? "common"] } : null,
+                                      ]}
+                                      numberOfLines={1}
+                                    >
+                                      {titleId ? TITLE_BY_ID[titleId]?.name ?? titleId : "Empty Title Slot"}
+                                    </Text>
+                                    {titleId ? (
+                                      <View
+                                        style={[
+                                          styles.rankTrialLicenseTitleGradePill,
+                                          {
+                                            borderColor: rarityColorMap[TITLE_BY_ID[titleId]?.rarity ?? "common"],
+                                            backgroundColor: `${rarityColorMap[TITLE_BY_ID[titleId]?.rarity ?? "common"]}18`,
+                                          },
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.rankTrialLicenseTitleGradeText,
+                                            { color: rarityColorMap[TITLE_BY_ID[titleId]?.rarity ?? "common"] },
+                                          ]}
+                                        >
+                                          {(TITLE_BY_ID[titleId]?.rarity ?? "common").toUpperCase()}
+                                        </Text>
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                </Pressable>
+                              )})}
+                            </View>
+                            {primaryRankTrialEquippedTitleIds.length ? (
+                              <View style={styles.rankTrialEffectChipRow}>
+                                {primaryRankTrialEquippedTitleIds.map((titleId) => (
+                                  <Pressable key={`title-effect-${titleId}`} style={styles.rankTrialEffectChip} onPress={() => openTitleInfo(titleId)}>
+                                    <View style={styles.rankTrialEffectChipIconWrap}>
+                                      <ImageBackground source={HUD_ASSETS.slots[TITLE_BY_ID[titleId]?.rarity ?? "common"]} style={styles.rankTrialEffectTitleIconFrame} resizeMode="contain">
+                                        <Image source={TITLE_ICON_ART[titleId]} style={styles.rankTrialEffectTitleIconImage} resizeMode="contain" />
+                                      </ImageBackground>
+                                    </View>
+                                    <Text style={styles.rankTrialEffectChipText}>{getTitleEffectSummary(titleId).join(" • ")}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            ) : null}
+                          </View>
+                          <View style={styles.rankTrialLicenseAuthBar}>
+                            <View style={styles.rankTrialLicenseAuthTextWrap}>
+                              <Text style={styles.rankTrialLicenseAuthLabel}>{primaryRankTrialAdventurer.licenseLabel}</Text>
+                              <Text style={styles.rankTrialLicenseAuth}>{primaryRankTrialAdventurer.authBody}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.rankTrialInfoCard}>
+                            <Text style={styles.reqTitle}>Battle Kit</Text>
+                            <View style={styles.rankTrialBattleKitChipRow}>
+                              {primaryRankTrialAdventurer.activeSkillId ? (
+                                <Pressable style={styles.rankTrialBattleKitChip} onPress={() => openAbilityInfo(primaryRankTrialAdventurer.activeSkillId!)}>
+                                  <View style={styles.rankTrialBattleKitChipIconWrap}>
+                                    <MaterialCommunityIcons name={ABILITY_BY_ID[primaryRankTrialAdventurer.activeSkillId]?.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={16} color="#9fd7ff" />
+                                  </View>
+                                  <Text style={styles.rankTrialBattleKitChipText}>
+                                    {ABILITY_BY_ID[primaryRankTrialAdventurer.activeSkillId]?.name ?? primaryRankTrialAdventurer.activeSkillId}
+                                  </Text>
+                                </Pressable>
+                              ) : null}
+                              {primaryRankTrialAdventurer.passiveIds.map((abilityId) => (
+                                <Pressable key={`battle-kit-passive-${abilityId}`} style={styles.rankTrialBattleKitChip} onPress={() => openAbilityInfo(abilityId)}>
+                                  <View style={styles.rankTrialBattleKitChipIconWrap}>
+                                    <MaterialCommunityIcons name={ABILITY_BY_ID[abilityId]?.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={16} color="#9ce8c2" />
+                                  </View>
+                                  <Text style={styles.rankTrialBattleKitChipText}>{ABILITY_BY_ID[abilityId]?.name ?? abilityId}</Text>
+                                </Pressable>
+                              ))}
+                              {Object.entries(primaryRankTrialAdventurer.pouchItems).map(([itemId, count]) => (
+                                <Pressable key={`battle-kit-pouch-${itemId}`} style={styles.rankTrialBattleKitChip} onPress={() => openItemInfo(itemId as ItemId)}>
+                                  <View style={styles.rankTrialBattleKitChipIconWrap}>
+                                    <GameItemIcon itemId={itemId as ItemId} size={16} />
+                                  </View>
+                                  <Text style={styles.rankTrialBattleKitChipText}>
+                                    {ITEM_BY_ID[itemId]?.name ?? itemId} x{count}
+                                  </Text>
+                                </Pressable>
+                              ))}
+                            </View>
+                          </View>
+                          {rankTrial.id === "rank-trial-c-b" ? (
+                            <View style={styles.rankTrialInfoCard}>
+                              <Text style={styles.reqTitle}>Field Unit</Text>
+                              {rankTrialEncounter.enemies
+                                .filter((enemy) => !getTrialAdventurerProfile(enemy.id))
+                                .map((enemy) => (
+                                  <View key={`field-unit-${enemy.id}`} style={styles.reqItem}>
+                                    <MaterialCommunityIcons name={enemy.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={12} color="#9fd7ff" />
+                                    <Text style={styles.reqText}>
+                                      {enemy.name}: {enemy.roleTag?.toLowerCase() ?? "support line"} - {enemy.positioning?.note ?? enemy.description}
+                                    </Text>
+                                  </View>
+                                ))}
+                            </View>
+                          ) : null}
+                          {rankTrialStandards.length ? (
+                            <View style={styles.rankTrialInfoCard}>
+                              <Text style={styles.reqTitle}>Record Standard</Text>
+                              {rankTrialStandards.map((entry) => (
+                                <View key={`rank-standard-${entry.label}`} style={styles.reqItem}>
+                                  <MaterialCommunityIcons name="clipboard-check-outline" size={12} color="#9ce8c2" />
+                                  <Text style={styles.reqText}>
+                                    {entry.label}: {entry.value}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          ) : null}
+                          <View style={styles.rankTrialInfoCard}>
+                            <Text style={styles.reqTitle}>{rankTrial?.id === "rank-trial-e-d" ? "Duel Read" : "Known Read"}</Text>
+                            {rankTrialKnownReadLines.map((entry) => (
+                              <View key={`rank-read-${entry.text}`} style={styles.reqItem}>
+                                <MaterialCommunityIcons name={entry.icon} size={12} color={entry.color ?? "#ffd58f"} />
+                                <Text style={styles.reqText}>{entry.text}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                      {!primaryRankTrialAdventurer ? rankTrialEncounter.enemies.map((enemy) => {
+                        const enemyAdventurerProfile = getTrialAdventurerProfile(enemy.id);
+                        const showAdventurerPhaseCard = Boolean(primaryRankTrialAdventurer && enemyAdventurerProfile);
+                        return (
+                        <View key={`rank-trial-enemy-${enemy.id}`} style={styles.rankTrialEnemyCard}>
+                          {!showAdventurerPhaseCard && getTowerEnemyArt(enemy) ? (
+                            <Pressable style={styles.rankTrialEnemyArtWrap} onPress={() => setExpandedTrialEnemy(enemy)}>
+                              <Image source={getTowerEnemyArt(enemy)} style={styles.rankTrialEnemyArt} resizeMode="contain" />
+                              <View style={styles.enemyPortraitTapHint}>
+                                <MaterialCommunityIcons name="magnify-plus-outline" size={13} color="#f7dfad" />
+                                <Text style={styles.enemyPortraitTapHintText}>Tap to expand</Text>
+                              </View>
+                            </Pressable>
+                          ) : null}
+                          <View style={styles.rankTrialEnemyHead}>
+                            <View style={styles.rankTrialEnemyTitleWrap}>
+                              <Text style={styles.rankTrialEnemyLabel}>
+                                {showAdventurerPhaseCard ? "Trial Phase" : enemy.phaseLabel ?? (enemy.role === "subBoss" ? "Final Check" : "Opening Threat")}
+                              </Text>
+                              <Text style={styles.rankTrialEnemyName}>{showAdventurerPhaseCard ? (enemy.phaseLabel ?? enemy.name) : enemy.name}</Text>
+                              {showAdventurerPhaseCard ? <Text style={styles.enemyDossierLoreText}>{enemy.name}</Text> : null}
+                            </View>
+                            <View style={styles.rankTrialEnemyRolePill}>
+                              <Text style={styles.rankTrialEnemyRoleText}>{enemy.roleTag ?? (enemy.role === "subBoss" ? "SENTRY" : "VERMIN")}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.enemyMetaRow}>
+                            <View style={styles.enemyMetaChip}>
+                              <MaterialCommunityIcons name="sword-cross" size={14} color="#8ec8ff" />
+                              <Text style={styles.enemyMetaText}>Lv {enemy.level}</Text>
+                            </View>
+                              <View style={styles.enemyMetaChip}>
+                                <MaterialCommunityIcons name="heart-pulse" size={14} color="#ff9aa5" />
+                                <Text style={styles.enemyMetaText}>HP {enemy.health}</Text>
+                              </View>
+                              <View style={styles.enemyMetaChip}>
+                                <MaterialCommunityIcons name={enemy.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={14} color="#ffd27d" />
+                                <Text style={styles.enemyMetaText}>{enemy.role === "boss" ? "Phase II" : enemy.role === "subBoss" ? "Phase I" : "Fast"}</Text>
+                              </View>
+                              {(enemy.combatStats?.armor ?? 0) > 0 ? (
+                                <View style={styles.enemyMetaChip}>
+                                  <MaterialCommunityIcons name="shield-outline" size={14} color="#9ce8c2" />
+                                  <Text style={styles.enemyMetaText}>ARM {enemy.combatStats?.armor}</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.outcomeText}>{enemy.description}</Text>
+                          {!showAdventurerPhaseCard && enemy.loadoutNotes?.length ? (
+                            <>
+                              <Text style={styles.enemyDossierSectionTitle}>Loadout</Text>
+                              {enemy.loadoutNotes.map((note) => (
+                                <View key={`${enemy.id}-${note}`} style={styles.enemyWeaknessRow}>
+                                  <MaterialCommunityIcons name="briefcase-outline" size={13} color="#9fd7ff" />
+                                  <Text style={styles.enemyDossierLoreText}>{note}</Text>
+                                </View>
+                              ))}
+                            </>
+                          ) : null}
+                          {enemy.lore ? (
+                            <>
+                              <Text style={styles.enemyDossierSectionTitle}>{showAdventurerPhaseCard ? "Phase Read" : "Lore"}</Text>
+                              <Text style={styles.enemyDossierLoreText}>{enemy.lore}</Text>
+                            </>
+                          ) : null}
+                          {enemy.weaknessNotes?.length ? (
+                            <>
+                              <Text style={styles.enemyDossierSectionTitle}>Weakness</Text>
+                              <View style={styles.enemyWeaknessRow}>
+                                <MaterialCommunityIcons name="target-variant" size={13} color="#9fe0b3" />
+                                <Text style={styles.enemyDossierLoreText}>{enemy.weaknessNotes[0]}</Text>
+                              </View>
+                            </>
+                          ) : null}
+                          {enemy.positioning ? (
+                            <View style={styles.rankTrialEnemyInsetCard}>
+                              <Text style={styles.enemyDossierSectionTitle}>Positioning</Text>
+                              {enemy.positioning.note ? (
+                                <Text style={styles.enemyDossierLoreText}>{enemy.positioning.note}</Text>
+                              ) : null}
+                              {enemy.positioning.advantagePositions?.length ? (
+                                <View style={styles.enemyWeaknessRow}>
+                                  <MaterialCommunityIcons name="crosshairs-gps" size={13} color="#9fe0b3" />
+                                  <Text style={styles.enemyDossierLoreText}>
+                                    Strong angle: {enemy.positioning.advantagePositions.map((position) => POSITION_LABELS[position]).join(", ")}
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {enemy.positioning.blockedPositions?.length ? (
+                                <View style={styles.enemyWeaknessRow}>
+                                  <MaterialCommunityIcons name="block-helper" size={13} color="#ffb1a4" />
+                                  <Text style={styles.enemyDossierLoreText}>
+                                    Closed lane: {enemy.positioning.blockedPositions.map((position) => POSITION_LABELS[position]).join(", ")}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
+                          {enemy.mechanics?.length ? (
+                            <View style={[styles.requirementsBlock, styles.enemyDossierMechanicsBlock]}>
+                              <Text style={styles.reqTitle}>Mechanics</Text>
+                              {enemy.mechanics.map((mechanic) => (
+                                <View key={`${enemy.id}-${mechanic}`} style={[styles.reqItem, styles.enemyDossierMechanicItem]}>
+                                  <MaterialCommunityIcons name="star-four-points-outline" size={12} color="#ffd27d" />
+                                  <Text style={styles.reqText}>{mechanic}</Text>
+                                </View>
+                              ))}
+                            </View>
+                          ) : null}
+                        </View>
+                      )}) : null}
                     </View>
-                    <View style={styles.rewardChip}>
-                      <GameItemIcon itemId="remnant-sentinel-shard" size={12} />
-                      <Text style={styles.rewardChipText}>Quests {completedQuestCount}/{rankTrial.minQuestClears}</Text>
-                    </View>
-                    <View style={styles.rewardChip}>
-                      <MaterialCommunityIcons name="alert-octagon-outline" size={18} color="#ffd487" />
-                      <Text style={styles.rewardChipText}>{rankTrial.staminaCost}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.questMeterBlock}>
-                    <View style={styles.meterLabelRow}>
-                      <Text style={styles.meterLabel}>Promotion Success Chance</Text>
-                      <Text style={styles.meterLabel}>{rankTrialChance}%</Text>
-                    </View>
-                    <ProgressBar value={rankTrialChance} max={100} variant="chance" />
-                  </View>
+                  ) : null}
                 </>
               )}
             </View>
             {rankTrial ? (
               <>
-                {rankTrial.requiredItems.length > 0 ? (
-                  <View style={styles.towerProgressCard}>
-                    <Text style={styles.reqTitle}>Required Trial Gear</Text>
+                <View style={styles.rankTrialInfoCard}>
+                  <Text style={styles.reqTitle}>Your Pouch</Text>
+                  <Text style={styles.questMeta}>
+                    This bout pulls consumables from your combat pouch. Anything you do not use stays with you after the trial.
+                  </Text>
+                  {combatPouchEntries.length ? (
                     <View style={styles.requirementsRow}>
-                      {rankTrial.requiredItems.map((requirement) => {
-                        const item = ITEM_BY_ID[requirement.itemId];
-                        const owned = character.inventory[requirement.itemId] ?? 0;
-                        const committed = selectedItemsForRankTrial[requirement.itemId] ?? 0;
-                        const satisfied = committed >= requirement.needed;
-                        return (
-                          <View key={`rank-required-${requirement.itemId}`} style={styles.reqItem}>
-                            <GameItemIcon itemId={requirement.itemId} size={14} />
-                            <Pressable
-                              onPress={() => adjustRankTrialItem(requirement.itemId, -1, requirement.needed, owned)}
-                              style={styles.stepperButton}
-                            >
-                              <Text style={styles.stepperButtonText}>-</Text>
-                            </Pressable>
-                            <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
-                              {committed}/{requirement.needed}
-                            </Text>
-                            <Pressable
-                              onPress={() => adjustRankTrialItem(requirement.itemId, 1, requirement.needed, owned)}
-                              style={styles.stepperButton}
-                            >
-                              <Text style={styles.stepperButtonText}>+</Text>
-                            </Pressable>
-                            <Text style={styles.reqOwnedText}>Owned {owned}</Text>
-                            <IconTooltip text={`${item?.name ?? requirement.itemId} is a key trial requirement.`} />
-                          </View>
-                        );
-                      })}
+                      {combatPouchEntries.map(([itemId, packedCount]) => (
+                        <View key={`rank-pouch-${itemId}`} style={styles.reqItem}>
+                          <GameItemIcon itemId={itemId} size={14} />
+                          <Text style={styles.reqText}>{ITEM_BY_ID[itemId]?.name ?? itemId}</Text>
+                          <Text style={styles.reqOwnedText}>Carried x{packedCount}</Text>
+                        </View>
+                      ))}
                     </View>
-                  </View>
-                ) : null}
-                {rankTrial.recommendedItems && rankTrial.recommendedItems.length > 0 ? (
-                  <View style={styles.towerProgressCard}>
-                    <Text style={styles.reqTitle}>Optional Support</Text>
-                    <View style={styles.requirementsRow}>
-                      {rankTrial.recommendedItems.map((requirement) => {
-                        const item = ITEM_BY_ID[requirement.itemId];
-                        const owned = character.inventory[requirement.itemId] ?? 0;
-                        const committed = selectedItemsForRankTrial[requirement.itemId] ?? 0;
-                        const satisfied = committed >= requirement.needed;
-                        return (
-                          <View key={`rank-optional-${requirement.itemId}`} style={styles.reqItem}>
-                            <GameItemIcon itemId={requirement.itemId} size={14} />
-                            <Pressable
-                              onPress={() => adjustRankTrialItem(requirement.itemId, -1, requirement.needed, owned)}
-                              style={styles.stepperButton}
-                            >
-                              <Text style={styles.stepperButtonText}>-</Text>
-                            </Pressable>
-                            <Text style={[styles.reqText, satisfied ? styles.reqOk : styles.reqMiss]}>
-                              {committed}/{requirement.needed}
-                            </Text>
-                            <Pressable
-                              onPress={() => adjustRankTrialItem(requirement.itemId, 1, requirement.needed, owned)}
-                              style={styles.stepperButton}
-                            >
-                              <Text style={styles.stepperButtonText}>+</Text>
-                            </Pressable>
-                            <Text style={styles.reqOwnedText}>Owned {owned}</Text>
-                            <IconTooltip text={`${item?.name ?? requirement.itemId} gives extra safety in trial attempts.`} />
-                          </View>
-                        );
-                      })}
-                    </View>
-                  </View>
-                ) : null}
+                  ) : (
+                    <Text style={styles.questMeta}>
+                      Your pouch is empty. Pack a consumable from Inventory if you want battle support in this test.
+                    </Text>
+                  )}
+                </View>
                 {!rankTrialAccess.allowed ? (
                   <View style={styles.lockRow}>
                     <MaterialCommunityIcons name="lock-outline" size={14} color="#ff9b92" />
-                    <Text style={styles.lockText}>{rankTrialAccess.reason}</Text>
+                    <Text style={styles.lockText}>Not ready yet.</Text>
                   </View>
+                ) : null}
+                {!rankTrialAccess.allowed ? (
+                  <View style={styles.rankTrialInfoCard}>
+                    <Text style={styles.reqTitle}>Missing Requirements</Text>
+                    {rankTrialRequirementLines.map((line) => (
+                      <View key={`rank-desk-req-${line}`} style={styles.reqItem}>
+                        <MaterialCommunityIcons name="clipboard-alert-outline" size={12} color="#ffb19d" />
+                        <Text style={styles.reqText}>{line}</Text>
+                      </View>
+                    ))}
+                      <Text style={styles.lockText}>{rankTrialAccess.reason}</Text>
+                    </View>
                 ) : null}
                 <Pressable onPress={handleAttemptRankUp} style={styles.actionWrap} disabled={!rankTrialAccess.allowed}>
                   <View style={[styles.startButton, !rankTrialAccess.allowed ? styles.actionDisabled : null]}>
-                    <Text style={styles.startText}>Challenge Promotion Trial</Text>
+                    <Text style={styles.startText}>{rankTrialPresentation ? `Enter ${rankTrialPresentation.title}` : "Enter Promotion Trial"}</Text>
                   </View>
                 </Pressable>
+                {rankTrialPresentation ? (
+                  <View style={styles.rankTrialInfoCard}>
+                    <Text style={styles.reqTitle}>On Promotion</Text>
+                    {rankTrialPresentation.unlocks.map((unlock) => (
+                      <View key={`${rankTrial.id}-${unlock}`} style={styles.reqItem}>
+                        <MaterialCommunityIcons name="check-decagram-outline" size={12} color="#9ce8c2" />
+                        <Text style={styles.reqText}>{unlock}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
                 {lastRankUpOutcome ? (
                   <View style={styles.outcomeCard}>
                     <Text style={[styles.outcomeTitle, lastRankUpOutcome.success ? styles.ok : styles.fail]}>
                       Rank Trial {lastRankUpOutcome.success ? "Cleared" : "Failed"}
                     </Text>
-                    <Text style={styles.outcomeText}>
-                      {lastRankUpOutcome.fromRank} {"->"} {lastRankUpOutcome.toRank} • {lastRankUpOutcome.successChance}%
-                    </Text>
+                    <Text style={styles.outcomeText}>{lastRankUpOutcome.fromRank} {"->"} {lastRankUpOutcome.toRank}</Text>
                     <Text style={styles.outcomeText}>{lastRankUpOutcome.summary}</Text>
                   </View>
                 ) : null}
@@ -7648,8 +12349,31 @@ const getMechanicSeverity = (mechanic: string): number => {
                       <View style={styles.titleRewardTextWrap}>
                         <View style={styles.titleRewardTopRow}>
                           <Text style={styles.titleRewardLabel}>TITLE EARNED</Text>
+                          <View
+                            style={[
+                              styles.titleRewardGradePill,
+                              {
+                                borderColor: rarityColorMap[TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.rarity ?? "common"],
+                                backgroundColor: `${rarityColorMap[TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.rarity ?? "common"]}18`,
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.titleRewardGradeText,
+                                { color: rarityColorMap[TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.rarity ?? "common"] },
+                              ]}
+                            >
+                              {(TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.rarity ?? "common").toUpperCase()}
+                            </Text>
+                          </View>
                         </View>
-                        <Text style={styles.titleRewardName}>
+                        <Text
+                          style={[
+                            styles.titleRewardName,
+                            { color: rarityColorMap[TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.rarity ?? "common"] },
+                          ]}
+                        >
                           {TITLE_BY_ID[lastTowerOutcome.titleRewardId]?.name ?? lastTowerOutcome.titleRewardId}
                         </Text>
                         <Text style={styles.titleRewardMeta}>
@@ -7689,7 +12413,7 @@ const getMechanicSeverity = (mechanic: string): number => {
               </View>
               {lastTowerOutcome.supplyUsage && lastTowerOutcome.supplyUsage.length > 0 ? (
                 <View style={styles.requirementsBlock}>
-                  <Text style={styles.reqTitle}>Supply Loadout</Text>
+                  <Text style={styles.reqTitle}>Supplies Brought In</Text>
                   <View style={styles.encounterSupplyRow}>
                     {lastTowerOutcome.supplyUsage
                       .filter((entry) => entry.committed > 0)
@@ -7697,12 +12421,12 @@ const getMechanicSeverity = (mechanic: string): number => {
                         <View key={`outcome-supply-${entry.itemId}`} style={styles.encounterSupplyChip}>
                           <GameItemIcon itemId={entry.itemId} size={14} />
                           <Text style={styles.encounterSupplyText}>
-                            {entry.committed}/{entry.needed}
+                            {entry.committed} carried
                           </Text>
                         </View>
                       ))}
                     {lastTowerOutcome.supplyUsage.every((entry) => entry.committed <= 0) ? (
-                      <Text style={styles.questMeta}>No supplies committed.</Text>
+                      <Text style={styles.questMeta}>No supplies brought in.</Text>
                     ) : null}
                   </View>
                 </View>
@@ -7916,6 +12640,160 @@ const getMechanicSeverity = (mechanic: string): number => {
           </View>
         </Modal>
       ) : null}
+      {huntDossierPanel ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setHuntDossierPanel(null)}
+        >
+          <View style={styles.resultOverlay}>
+            <View style={styles.huntDossierCard}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(88, 45, 19, 0.22)", "rgba(43, 32, 74, 0.12)", "rgba(18, 14, 29, 0.04)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <ScrollView style={styles.huntDossierScroll} contentContainerStyle={styles.huntDossierScrollContent} showsVerticalScrollIndicator={false}>
+                <Pressable
+                  onPress={() => {
+                    if (huntDossierPanel.artSource) {
+                      setHuntArtExpandedPanel({
+                        title: huntDossierPanel.title,
+                        artSource: huntDossierPanel.artSource,
+                      });
+                    }
+                  }}
+                  style={styles.huntDossierArtWrap}
+                >
+                  {huntDossierPanel.artSource ? (
+                    <ImageBackground source={huntDossierPanel.artSource} style={styles.huntDossierArt} resizeMode="cover">
+                      <LinearGradient
+                        pointerEvents="none"
+                        colors={["rgba(7, 8, 18, 0.04)", "rgba(7, 8, 18, 0.1)", "rgba(8, 10, 18, 0.74)"]}
+                        locations={[0, 0.48, 1]}
+                        start={{ x: 0.5, y: 0 }}
+                        end={{ x: 0.5, y: 1 }}
+                        style={styles.huntDossierArtOverlay}
+                      />
+                      <View style={styles.huntDossierArtFooter}>
+                        <Text style={styles.huntDossierTitle}>{huntDossierPanel.title}</Text>
+                        <Text style={styles.huntDossierArtHint}>Tap the artwork to expand it.</Text>
+                      </View>
+                    </ImageBackground>
+                  ) : (
+                    <View style={styles.huntDossierArtFallback}>
+                      <MaterialCommunityIcons name="image-outline" size={68} color="#ffd48f" />
+                    </View>
+                  )}
+                </Pressable>
+
+                <View style={styles.huntDossierSection}>
+                  <Text style={styles.huntDossierSectionTitle}>Record</Text>
+                  <Text style={styles.huntDossierSummary}>{huntDossierPanel.loreSummary}</Text>
+                </View>
+
+                {huntDossierPanel.signatureMechanics.length ? (
+                  <View style={styles.huntDossierSection}>
+                    <Text style={styles.huntDossierSectionTitle}>Known Threats</Text>
+                    <View style={styles.huntDossierChipRow}>
+                      {huntDossierPanel.signatureMechanics.map((entry) => (
+                        <View key={`${huntDossierPanel.title}-threat-${entry}`} style={styles.huntDossierChip}>
+                          <Text style={styles.huntDossierChipText}>{entry}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                {huntDossierPanel.encounterStages.length ? (
+                  <View style={styles.huntDossierSection}>
+                    <Text style={styles.huntDossierSectionTitle}>Stages</Text>
+                    <View style={styles.huntDossierChipRow}>
+                      {huntDossierPanel.encounterStages.map((entry) => (
+                        <View key={`${huntDossierPanel.title}-stage-${entry}`} style={styles.huntDossierChip}>
+                          <Text style={styles.huntDossierChipText}>{entry}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                {huntDossierPanel.suggestedSupplies.length ? (
+                  <View style={styles.huntDossierSection}>
+                    <Text style={styles.huntDossierSectionTitle}>Suggested Supplies</Text>
+                    <View style={styles.huntDossierList}>
+                      {huntDossierPanel.suggestedSupplies.map((entry) => (
+                        <Pressable
+                          key={`${huntDossierPanel.title}-supply-${entry.itemId}`}
+                          style={styles.huntDossierListRow}
+                          onPress={() =>
+                            showQuickInfo(
+                              getItemDisplayName(entry.itemId),
+                              `${getItemDisplayDescription(entry.itemId)}\n\nWhy it matters here: ${entry.note}`,
+                              getItemDisplayRarity(entry.itemId),
+                              entry.itemId,
+                            )
+                          }
+                        >
+                          <GameItemIcon itemId={entry.itemId} size={14} />
+                          <View style={styles.huntDossierSupplyTextWrap}>
+                            <Text style={styles.huntDossierListText}>{getItemDisplayName(entry.itemId)}</Text>
+                            <Text style={styles.huntDossierSupplyReason}>{entry.note}</Text>
+                          </View>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                {huntDossierPanel.proofItemIds.length ? (
+                  <View style={styles.huntDossierSection}>
+                    <Text style={styles.huntDossierSectionTitle}>Raid Proof</Text>
+                    <View style={styles.huntDossierProofRow}>
+                      {huntDossierPanel.proofItemIds.map((itemId) => (
+                        <Pressable
+                          key={`${huntDossierPanel.title}-proof-${itemId}`}
+                          style={styles.huntDossierProofCard}
+                          onPress={() =>
+                            showQuickInfo(
+                              getItemDisplayName(itemId),
+                              getItemDisplayDescription(itemId),
+                              getItemDisplayRarity(itemId),
+                              itemId,
+                            )
+                          }
+                        >
+                          <GameItemIcon itemId={itemId} size={18} />
+                          <Text style={styles.huntDossierProofText}>{getItemDisplayName(itemId)}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+              </ScrollView>
+              <Pressable onPress={() => setHuntDossierPanel(null)} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>Close</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {huntArtExpandedPanel?.artSource ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setHuntArtExpandedPanel(null)}>
+          <Pressable style={styles.expandedArtOverlay} onPress={() => setHuntArtExpandedPanel(null)}>
+            <View style={styles.expandedArtCard}>
+              <Text style={styles.expandedArtTitle}>{huntArtExpandedPanel.title}</Text>
+              <Image source={huntArtExpandedPanel.artSource} style={styles.expandedArtImage} resizeMode="contain" />
+              <Text style={styles.expandedArtHint}>Tap anywhere to close</Text>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
       {infoPanel ? (
         <Modal
           visible
@@ -7928,10 +12806,39 @@ const getMechanicSeverity = (mechanic: string): number => {
         >
           <View style={styles.resultOverlay}>
             <View style={styles.infoModalCard}>
+              {infoPanel.itemId && ITEM_BY_ID[infoPanel.itemId]?.category === "weapon" ? (
+                <ScrollView style={styles.weaponRecordScroll} contentContainerStyle={styles.weaponRecordScrollContent} showsVerticalScrollIndicator={false}>
+                  <WeaponRecordPanel
+                    item={ITEM_BY_ID[infoPanel.itemId]!}
+                    proficiencyPercent={getWeaponPreview(infoPanel.itemId)?.proficiencyPercent ?? 100}
+                    warningText={
+                      getWeaponPreview(infoPanel.itemId)?.classLocked
+                        ? `Wrong class. This weapon gives no combat benefit on ${character.classId.toUpperCase()}.`
+                        : getWeaponPreview(infoPanel.itemId)?.underleveled
+                          ? `Underleveled. You are using it at ${getWeaponPreview(infoPanel.itemId)?.proficiencyPercent}% proficiency until Level ${getWeaponPreview(infoPanel.itemId)?.requiredLevel}.`
+                          : null
+                    }
+                    onClose={() => {
+                      setInfoArtExpanded(false);
+                      setInfoPanel(null);
+                    }}
+                    onPressArt={() => {
+                      if (ITEM_BY_ID[infoPanel.itemId!]?.image) {
+                        setInfoArtExpanded(true);
+                      }
+                    }}
+                  />
+                </ScrollView>
+              ) : (
+                <>
               {(() => {
                 const displayTitle = infoPanel.itemId ? getItemDisplayName(infoPanel.itemId) : infoPanel.title;
                 const displayRarity = infoPanel.itemId ? getItemDisplayRarity(infoPanel.itemId) : infoPanel.rarity;
                 const displayDescription = infoPanel.itemId ? getItemDisplayDescription(infoPanel.itemId) : "";
+                const displayArtSource = infoPanel.itemId ? ITEM_BY_ID[infoPanel.itemId]?.image : infoPanel.artSource;
+                const displayItem = infoPanel.itemId ? ITEM_BY_ID[infoPanel.itemId] : undefined;
+                const displayWeaponMarks = displayItem?.category === "weapon" ? displayItem.weaponMarks ?? [] : [];
+                const weaponPreview = displayItem?.category === "weapon" ? getWeaponPreview(displayItem.id) : null;
                 const needsAppraisal = infoPanel.itemId ? !!ITEM_BY_ID[infoPanel.itemId]?.requiresAppraisal && !isItemAppraised(infoPanel.itemId) : false;
                 const detailLines = infoPanel.body
                   .split("\n")
@@ -7967,11 +12874,11 @@ const getMechanicSeverity = (mechanic: string): number => {
                   <MaterialCommunityIcons name="close-circle" size={20} color="#f1d8a8" />
                 </Pressable>
               </View>
-              {infoPanel.itemId ? (
+              {infoPanel.itemId || displayArtSource ? (
                 <View style={styles.infoItemShowcase}>
                   <Pressable
                     onPress={() => {
-                      if (ITEM_BY_ID[infoPanel.itemId!]?.image) {
+                      if (displayArtSource) {
                         setInfoArtExpanded(true);
                       }
                     }}
@@ -7981,10 +12888,10 @@ const getMechanicSeverity = (mechanic: string): number => {
                       needsAppraisal ? styles.appraisalGlow : null,
                     ]}
                   >
-                    {ITEM_BY_ID[infoPanel.itemId]?.image ? (
-                      <Image source={ITEM_BY_ID[infoPanel.itemId]?.image} style={styles.infoItemArt} resizeMode="contain" />
+                    {displayArtSource ? (
+                      <Image source={displayArtSource} style={styles.infoItemArt} resizeMode="contain" />
                     ) : (
-                      <GameItemIcon itemId={infoPanel.itemId} size={82} />
+                      <GameItemIcon itemId={infoPanel.itemId!} size={82} />
                     )}
                   </Pressable>
                   {displayDescription ? (
@@ -8039,18 +12946,20 @@ const getMechanicSeverity = (mechanic: string): number => {
                   <Text style={styles.claimText}>Close</Text>
                 </View>
               </Pressable>
+                </>
+              )}
             </View>
           </View>
         </Modal>
       ) : null}
-      {infoArtExpanded && infoPanel?.itemId && ITEM_BY_ID[infoPanel.itemId]?.image ? (
+      {infoArtExpanded && ((infoPanel?.itemId && ITEM_BY_ID[infoPanel.itemId]?.image) || infoPanel?.artSource) ? (
         <Modal visible transparent animationType="fade" onRequestClose={() => setInfoArtExpanded(false)}>
           <Pressable style={styles.expandedArtOverlay} onPress={() => setInfoArtExpanded(false)}>
             {(() => {
-              const expandedRarity = getItemDisplayRarity(infoPanel.itemId) ?? "common";
+              const expandedRarity = infoPanel.itemId ? getItemDisplayRarity(infoPanel.itemId) ?? "common" : infoPanel.rarity ?? "common";
               return (
                 <View style={styles.expandedArtCard}>
-                  <Text style={styles.expandedArtTitle}>{getItemDisplayName(infoPanel.itemId)}</Text>
+                  <Text style={styles.expandedArtTitle}>{infoPanel.itemId ? getItemDisplayName(infoPanel.itemId) : infoPanel.title}</Text>
                   <View style={[styles.expandedArtRarityPill, { borderColor: rarityColorMap[expandedRarity] }]}>
                     <Text
                       style={[
@@ -8062,7 +12971,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                       {expandedRarity.toUpperCase()}
                     </Text>
                   </View>
-                  <Image source={ITEM_BY_ID[infoPanel.itemId]?.image} style={styles.expandedArtImage} resizeMode="contain" />
+                  <Image source={(infoPanel.itemId ? ITEM_BY_ID[infoPanel.itemId]?.image : infoPanel.artSource)!} style={styles.expandedArtImage} resizeMode="contain" />
                   <Text style={styles.expandedArtHint}>Tap anywhere to close</Text>
                 </View>
               );
@@ -8127,7 +13036,7 @@ const getMechanicSeverity = (mechanic: string): number => {
             <View style={styles.resultModal}>
               {(() => {
                 const activeTelegraph = liveTowerBattle.telegraphs[liveTowerBattle.activeIndex] ?? null;
-                const currentEnemy = liveTowerBattle.enemies.find((enemy) => enemy.id === activeTelegraph?.enemyId);
+                const currentEnemy = liveTowerBattle.enemies.find((enemy) => enemy.id === activeTelegraph?.enemyId) ?? null;
                 const battleSkills = unlockedBattleSkills;
                 const battleWon = Object.values(liveTowerBattle.enemyHpById).every((hp) => hp <= 0);
                 const battleLost = liveTowerBattle.playerHp <= 0;
@@ -8136,7 +13045,59 @@ const getMechanicSeverity = (mechanic: string): number => {
                 const effectNowMs = getLiveBattleEffectClockMs(liveTowerBattle, nowMs);
                 const currentEnemyHp = currentEnemy ? liveTowerBattle.enemyHpById[currentEnemy.id] ?? currentEnemy.health ?? 1 : 0;
                 const isPlayerTurn = liveTowerBattle.turnOwner === "player";
+                const currentEnemyProfile = currentEnemy ? getTrialAdventurerProfile(currentEnemy.id) : null;
                 const currentEnemyStatusFx = currentEnemy ? pruneExpiredStatusFx(liveTowerBattle.enemyStatusFxById[currentEnemy.id] ?? [], effectNowMs) : [];
+                const currentEnemyStatusSnapshot = getBattleStatusSnapshot(currentEnemyStatusFx);
+                const currentEnemyActiveSkillBonuses = getCombinedLiveSkillBonuses(
+                  currentEnemyStatusFx,
+                  currentEnemyProfile?.activeSkillId ? [currentEnemyProfile.activeSkillId] : [],
+                  effectNowMs,
+                );
+                const currentEnemyArmorBonus = getActiveArmorBonusFromStatuses(currentEnemyStatusFx);
+                const currentEnemyArmor = currentEnemy
+                  ? (liveTowerBattle.enemyStatsById[currentEnemy.id]?.armor ?? 0) + currentEnemyArmorBonus
+                  : 0;
+                const currentEnemyDamage = currentEnemy
+                  ? (liveTowerBattle.enemyStatsById[currentEnemy.id]?.damage ?? 0) +
+                    currentEnemyStatusSnapshot.weaponMarkDamageFlatBonus +
+                    currentEnemyActiveSkillBonuses.attackBonus
+                  : 0;
+                const currentEnemyCritBonus = currentEnemyActiveSkillBonuses.critBonus + currentEnemyStatusSnapshot.statusCritFlatBonus;
+                const currentEnemySpeedBonus = currentEnemyActiveSkillBonuses.speedBonus + currentEnemyStatusSnapshot.statusSpeedFlatBonus;
+                const currentEnemyBaseEffects = getTrialAdventurerHealthEffects(currentEnemyProfile).map((entry) => ({
+                  key: `enemy-base-${entry.key}`,
+                  detail: entry.summary,
+                  tone: "good" as const,
+                  render: () =>
+                    entry.type === "item" ? (
+                      <GameItemIcon itemId={entry.itemId} size={14} />
+                    ) : entry.type === "title" ? (
+                      <ImageBackground
+                        source={HUD_ASSETS.slots[TITLE_BY_ID[entry.titleId]?.rarity ?? "common"]}
+                        style={styles.rankTrialHealthEffectTitleFrame}
+                        resizeMode="contain"
+                      >
+                        <Image source={TITLE_ICON_ART[entry.titleId]} style={styles.rankTrialHealthEffectTitleImage} resizeMode="contain" />
+                      </ImageBackground>
+                    ) : (
+                      <MaterialCommunityIcons
+                        name={ABILITY_BY_ID[entry.abilityId]?.icon as keyof typeof MaterialCommunityIcons.glyphMap}
+                        size={14}
+                        color="#d8ffe6"
+                      />
+                    ),
+                }));
+                const currentEnemyEffectIcons = [
+                  ...currentEnemyBaseEffects,
+                  ...currentEnemyStatusFx.map((effect) => ({
+                    key: `enemy-fx-${currentEnemy?.id}-${effect.id}`,
+                    detail: formatStatusDetail(effect, effectNowMs),
+                    tone: effect.tone,
+                    render: () => <MaterialCommunityIcons name={effect.icon} size={13} color="#ffe6bf" />,
+                  })),
+                ];
+                const currentEnemySpecialMeter = currentEnemy ? getEnemySpecialMeterPreview(liveTowerBattle, currentEnemy) : null;
+                const displayTelegraph = getEnemyDisplayTelegraph(liveTowerBattle, currentEnemy, activeTelegraph);
                 const equippedBattleWeapon = character.equippedWeaponId ? ITEM_BY_ID[character.equippedWeaponId] : null;
                 const visiblePlayerStatusFx = pruneExpiredStatusFx(liveTowerBattle.playerStatusFx, effectNowMs);
                 const activeSkillBonuses = getCombinedLiveSkillBonuses(
@@ -8145,11 +13106,12 @@ const getMechanicSeverity = (mechanic: string): number => {
                   effectNowMs,
                 );
                 const playerStatusSnapshot = getBattleStatusSnapshot(visiblePlayerStatusFx);
+                const livePlayerArmor = liveTowerBattle.playerStats.armor + playerStatusSnapshot.weaponMarkArmorFlatBonus;
                 const livePlayerAttackBonus =
-                  activeSkillBonuses.attackBonus + (playerStatusSnapshot.hasFrenzied ? 4 : 0);
+                  activeSkillBonuses.attackBonus + (playerStatusSnapshot.hasFrenzied ? 4 : 0) + playerStatusSnapshot.weaponMarkDamageFlatBonus;
                 const livePlayerCritBonus =
-                  activeSkillBonuses.critBonus + (playerStatusSnapshot.hasFrenzied ? 3 : 0);
-                const livePlayerSpeedBonus = activeSkillBonuses.speedBonus;
+                  activeSkillBonuses.critBonus + (playerStatusSnapshot.hasFrenzied ? 3 : 0) + playerStatusSnapshot.statusCritFlatBonus;
+                const livePlayerSpeedBonus = activeSkillBonuses.speedBonus + playerStatusSnapshot.statusSpeedFlatBonus;
                 const skillStateEntries = battleSkills.map((skill) => {
                   const profile = getLiveBattleSkillProfile(skill.id);
                   const activeEffect = profile ? visiblePlayerStatusFx.find((effect) => effect.id === profile.effectId) : null;
@@ -8173,7 +13135,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                         {
                           key: `battle-weapon-${equippedBattleWeapon.id}`,
                           label: equippedBattleWeapon.name,
-                          detail: "Equipped weapon effect",
+                          detail: getWeaponEffectSummary(equippedBattleWeapon),
                           kind: "item" as const,
                           itemId: equippedBattleWeapon.id,
                           tone: "neutral" as const,
@@ -8183,7 +13145,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                   ...activeBuffIds.map((buffId) => ({
                     key: `battle-buff-${buffId}`,
                     label: ITEM_BY_ID[buffId]?.name ?? "Active Sigil",
-                    detail: "Active before and during the run",
+                    detail: getBuffItemEffectSummary(buffId),
                     kind: "item" as const,
                     itemId: buffId,
                     tone: "good" as const,
@@ -8220,7 +13182,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                       <View style={styles.encounterHeadLeft}>
                         <MaterialCommunityIcons name="sword-cross" size={20} color="#ffd58f" />
                         <Text style={styles.resultTitle}>
-                          {liveTowerBattle.source === "quest"
+                          {liveTowerBattle.source === "quest" || liveTowerBattle.source === "rank"
                             ? liveTowerBattle.encounterTitle ?? "Live Contract"
                             : liveTowerBattle.encounterTitle ??
                               (liveTowerBattle.wave === "normal"
@@ -8232,12 +13194,16 @@ const getMechanicSeverity = (mechanic: string): number => {
                       </View>
                       <View style={[styles.encounterStatusPill, isPlayerTurn ? styles.towerPhaseResultOk : styles.towerPhaseResultFail]}>
                         <Text style={styles.encounterStatusText}>
-                          {isPlayerTurn ? "YOUR TURN" : "ENEMY TURN"}
+                          {isPlayerTurn
+                            ? "YOUR TURN"
+                            : liveTowerBattle.source === "rank"
+                              ? "OPPONENT TURN"
+                              : "ENEMY TURN"}
                         </Text>
                       </View>
                     </View>
                     <ScrollView style={styles.waveResolveScroll} contentContainerStyle={styles.waveResolveScrollContent} showsVerticalScrollIndicator={false}>
-                      {liveTowerBattle.source === "quest" && liveTowerBattle.encounterSummary ? (
+                      {(liveTowerBattle.source === "quest" || liveTowerBattle.source === "rank") && liveTowerBattle.encounterSummary ? (
                         <Text style={styles.questMeta}>{liveTowerBattle.encounterSummary}</Text>
                       ) : null}
                       {initiativePreview.length ? (
@@ -8257,7 +13223,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                                 ]}
                               >
                                 {entry === "player" ? (
-                                  <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                  <AdventurerPortrait character={character} size={40} showArmorBadge={false} />
                                 ) : currentEnemy && getTowerEnemyArt(currentEnemy) ? (
                                   <Image source={getTowerEnemyArt(currentEnemy)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
                                 ) : (
@@ -8278,7 +13244,7 @@ const getMechanicSeverity = (mechanic: string): number => {
                                 ]}
                               >
                                 {entry.actor === "player" ? (
-                                  <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
+                                  <AdventurerPortrait character={character} size={40} showArmorBadge={false} />
                                 ) : currentEnemy && getTowerEnemyArt(currentEnemy) ? (
                                   <Image source={getTowerEnemyArt(currentEnemy)} style={styles.liveBattleInitiativeAvatar} resizeMode="cover" />
                                 ) : (
@@ -8293,14 +13259,19 @@ const getMechanicSeverity = (mechanic: string): number => {
                         <View style={styles.liveBattleEnemyCardWrap}>
                           {currentEnemy ? (
                             <View style={styles.liveBattleEnemyCard}>
+                              {(() => {
+                                const queuedPhaseShift = getQueuedPhaseShiftState(liveTowerBattle, currentEnemy);
+                                const displayEnemyHp = currentEnemyHp <= 0 && queuedPhaseShift ? 1 : currentEnemyHp;
+                                return (
+                                  <>
                               {getTowerEnemyArt(currentEnemy) ? (
                                 <View style={styles.liveBattleEnemyArtWrap}>
                                   <Image
                                     source={getTowerEnemyArt(currentEnemy)}
-                                    style={[styles.liveBattleEnemyArt, currentEnemyHp <= 0 ? styles.liveBattleEnemyArtDowned : null]}
+                                    style={[styles.liveBattleEnemyArt, currentEnemyHp <= 0 && !queuedPhaseShift ? styles.liveBattleEnemyArtDowned : null]}
                                     resizeMode="contain"
                                   />
-                                  {currentEnemyHp <= 0 ? (
+                                  {currentEnemyHp <= 0 && !queuedPhaseShift ? (
                                     <View style={styles.liveBattleEnemyDownedMark}>
                                       <MaterialCommunityIcons name="close-thick" size={34} color="#ff8f9a" />
                                     </View>
@@ -8310,74 +13281,151 @@ const getMechanicSeverity = (mechanic: string): number => {
                               <Text style={styles.liveBattleEnemyName}>{currentEnemy.name}</Text>
                               <View style={styles.liveBattleEnemyMetaRow}>
                                 <Text style={styles.liveBattleEnemyMeta}>Lv {currentEnemy.level}</Text>
-                                <Text style={styles.liveBattleEnemyHpText}>Enemy HP</Text>
+                                <Text style={styles.liveBattleEnemyHpText}>
+                                  {liveTowerBattle.source === "rank" ? "Opponent HP" : "Enemy HP"}
+                                </Text>
                               </View>
                               <HealthMeter
-                                current={currentEnemyHp}
+                                current={displayEnemyHp}
                                 max={currentEnemy.health}
-                                title="Enemy HP"
+                                title={liveTowerBattle.source === "rank" ? "Opponent HP" : "Enemy HP"}
+                                containerStyle={styles.liveBattleEnemyHealthMeter}
                                 hideValues={currentEnemy.level > character.progression.level}
-                                meta={currentEnemy.level > character.progression.level ? "Unknown endurance. Damage still lands in real time." : `Current HP ${currentEnemyHp}/${currentEnemy.health}`}
+                                meta={
+                                  currentEnemy.level > character.progression.level
+                                    ? liveTowerBattle.source === "rank"
+                                      ? "The guild keeps the full endurance read to itself until you prove the measure."
+                                      : "Unknown endurance. Damage still lands in real time."
+                                    : currentEnemyHp <= 0 && queuedPhaseShift
+                                      ? liveTowerBattle.source === "rank"
+                                        ? "The measure turns and the office pushes the next pass into you without pause."
+                                        : "The next threat is already moving before the dust can settle."
+                                      : `${liveTowerBattle.source === "rank" ? "Current Measure" : "Current HP"} ${displayEnemyHp}/${currentEnemy.health}`
+                                }
+                                trackFooter={
+                                  currentEnemySpecialMeter ? (
+                                    <View style={styles.liveBattleSpecialMeterInlineWrap}>
+                                      <View style={styles.liveBattleSpecialMeterTrack}>
+                                        <View
+                                          style={[
+                                            styles.liveBattleSpecialMeterFill,
+                                            currentEnemySpecialMeter.ready ? styles.liveBattleSpecialMeterFillReady : null,
+                                            {
+                                              width: `${Math.max(
+                                                0,
+                                                Math.min(100, (currentEnemySpecialMeter.current / Math.max(1, currentEnemySpecialMeter.max)) * 100),
+                                              )}%`,
+                                            },
+                                          ]}
+                                        />
+                                      </View>
+                                    </View>
+                                  ) : null
+                                }
+                                themeOverrides={getEnemyHealthTheme(currentEnemy)}
                               />
                               <View style={styles.liveBattleDamageMetaRow}>
                                 <Text style={styles.liveBattleEnemyMeta}>
                                   {currentEnemyHp <= 0
-                                    ? "Downed"
+                                    ? queuedPhaseShift
+                                      ? "Phase shift"
+                                      : liveTowerBattle.source === "rank"
+                                        ? "Driven back"
+                                        : "Downed"
                                     : liveTowerBattle.lastPlayerDamage
                                       ? `Last hit ${liveTowerBattle.lastPlayerDamage}`
-                                      : "Awaiting strike"}
+                                      : liveTowerBattle.source === "rank"
+                                        ? "Awaiting exchange"
+                                        : "Awaiting strike"}
                                 </Text>
-                                {liveTowerBattle.lastCrit ? <Text style={styles.liveBattleCritText}>CRIT</Text> : null}
+                                {liveTowerBattle.lastCrit && !(currentEnemyHp <= 0 && queuedPhaseShift) ? <Text style={styles.liveBattleCritText}>CRIT</Text> : null}
                               </View>
                               <View style={styles.waveBattleStatsRow}>
-                                <View style={styles.waveBattleStatChip}>
-                                  <MaterialCommunityIcons name="sword-cross" size={13} color="#99dcff" />
-                                  <Text style={styles.waveBattleStatText}>ATK {liveTowerBattle.enemyStatsById[currentEnemy.id]?.damage ?? 0}</Text>
+                                <View style={styles.liveBattleStatWrap}>
+                                  <View style={styles.waveBattleStatChip}>
+                                    <MaterialCommunityIcons name="sword-cross" size={13} color="#99dcff" />
+                                    <Text style={styles.waveBattleStatText}>ATK {liveTowerBattle.enemyStatsById[currentEnemy.id]?.damage ?? 0}</Text>
+                                  </View>
+                                  {currentEnemyStatusSnapshot.weaponMarkDamageFlatBonus + currentEnemyActiveSkillBonuses.attackBonus > 0 ? (
+                                    <Text style={styles.liveBattleStatBonus}>
+                                      +{currentEnemyStatusSnapshot.weaponMarkDamageFlatBonus + currentEnemyActiveSkillBonuses.attackBonus}
+                                    </Text>
+                                  ) : null}
                                 </View>
-                                <View style={styles.waveBattleStatChip}>
-                                  <MaterialCommunityIcons name="creation" size={13} color="#ffd58f" />
-                                  <Text style={styles.waveBattleStatText}>CRIT {liveTowerBattle.enemyStatsById[currentEnemy.id]?.critChance ?? 0}%</Text>
+                                <View style={styles.liveBattleStatWrap}>
+                                  <View style={styles.waveBattleStatChip}>
+                                    <MaterialCommunityIcons name="creation" size={13} color="#ffd58f" />
+                                    <Text style={styles.waveBattleStatText}>CRIT {liveTowerBattle.enemyStatsById[currentEnemy.id]?.critChance ?? 0}%</Text>
+                                  </View>
+                                  {currentEnemyCritBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{currentEnemyCritBonus}%</Text> : null}
                                 </View>
-                                <View style={styles.waveBattleStatChip}>
-                                  <MaterialCommunityIcons name="run-fast" size={13} color="#ffb1b1" />
-                                  <Text style={styles.waveBattleStatText}>
-                                    SPD {liveTowerBattle.enemyStatsById[currentEnemy.id]?.speed ?? 0}
-                                    {liveTowerBattle.enemyStatsById[currentEnemy.id] && liveTowerBattle.enemyStatsById[currentEnemy.id].speed > liveTowerBattle.playerStats.speed ? " • Extra turns" : ""}
-                                  </Text>
+                                <View style={styles.liveBattleStatWrap}>
+                                  <View style={styles.waveBattleStatChip}>
+                                    <MaterialCommunityIcons name="run-fast" size={13} color="#ffb1b1" />
+                                    <Text style={styles.waveBattleStatText}>
+                                      SPD {liveTowerBattle.enemyStatsById[currentEnemy.id]?.speed ?? 0}
+                                      {liveTowerBattle.enemyStatsById[currentEnemy.id] &&
+                                      (liveTowerBattle.enemyStatsById[currentEnemy.id].speed + currentEnemySpeedBonus) > liveTowerBattle.playerStats.speed
+                                        ? " • Extra turns"
+                                        : ""}
+                                    </Text>
+                                  </View>
+                                  {currentEnemySpeedBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{currentEnemySpeedBonus}</Text> : null}
                                 </View>
+                                {currentEnemyArmor > 0 ? (
+                                  <View style={styles.liveBattleStatWrap}>
+                                    <View style={styles.waveBattleStatChip}>
+                                      <MaterialCommunityIcons name="shield-outline" size={13} color="#9ce8c2" />
+                                      <Text style={styles.waveBattleStatText}>ARM {liveTowerBattle.enemyStatsById[currentEnemy.id]?.armor ?? 0}</Text>
+                                    </View>
+                                    {currentEnemyArmorBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{currentEnemyArmorBonus}</Text> : null}
+                                  </View>
+                                ) : null}
                               </View>
-                              {currentEnemyStatusFx.length ? (
-                                <View style={styles.liveBattleStatusFxRow}>
-                                  {currentEnemyStatusFx.map((effect) => (
-                                    <Pressable
-                                      key={`enemy-fx-${currentEnemy.id}-${effect.id}`}
-                                      onHoverIn={() => setBattleStatusHint(formatStatusDetail(effect, effectNowMs))}
-                                      onHoverOut={() =>
-                                        setBattleStatusHint((currentHint) =>
-                                          currentHint === formatStatusDetail(effect, effectNowMs) ? null : currentHint,
-                                        )
-                                      }
-                                      onPress={() => setBattleStatusHint(formatStatusDetail(effect, effectNowMs))}
-                                      style={[styles.towerStatusIconBadge, getStatusToneBadgeStyle(effect.tone)]}
-                                    >
-                                      <MaterialCommunityIcons name={effect.icon} size={13} color="#ffe6bf" />
-                                    </Pressable>
-                                  ))}
-                                </View>
+                              {currentEnemyEffectIcons.length ? (
+                                <>
+                                  <View style={styles.liveBattleStatusFxRow}>
+                                    {currentEnemyEffectIcons.map((effect) => (
+                                      <Pressable
+                                        key={effect.key}
+                                        onPress={() => setBattleStatusHint(effect.detail)}
+                                        onPressIn={() => setHoveredEffectBadgeKey(effect.key)}
+                                        onPressOut={() => setHoveredEffectBadgeKey((currentKey) => (currentKey === effect.key ? null : currentKey))}
+                                        onHoverIn={() => {
+                                          setHoveredEffectBadgeKey(effect.key);
+                                          setBattleStatusHint(effect.detail);
+                                        }}
+                                        onHoverOut={() => {
+                                          setHoveredEffectBadgeKey((currentKey) => (currentKey === effect.key ? null : currentKey));
+                                          setBattleStatusHint((currentHint) =>
+                                            currentHint === effect.detail ? null : currentHint,
+                                          );
+                                        }}
+                                        style={[
+                                          styles.towerStatusIconBadge,
+                                          getStatusToneBadgeStyle(effect.tone),
+                                          hoveredEffectBadgeKey === effect.key ? styles.towerStatusIconBadgeHover : null,
+                                        ]}
+                                      >
+                                        {effect.render()}
+                                      </Pressable>
+                                    ))}
+                                  </View>
+                                  {battleStatusHint ? <Text style={styles.liveBattleInlineStatusHint}>{battleStatusHint}</Text> : null}
+                                </>
                               ) : null}
+                                  </>
+                                );
+                              })()}
                             </View>
                           ) : null}
                         </View>
                       </View>
-                      {activeTelegraph ? (
+                      {displayTelegraph ? (
                         <View style={styles.liveBattleCallout}>
                           <Text style={styles.liveBattleCalloutLabel}>Telegraph</Text>
-                          <Text style={styles.liveBattleCalloutTitle}>{activeTelegraph.enemyName}: {activeTelegraph.mechanic.split(":")[0]}</Text>
-                          <Text style={styles.liveBattleCalloutBody}>
-                            {awaitingNextEnemy
-                              ? `${activeTelegraph.enemyName} is down. Read the lane, then advance when you're ready.`
-                              : "Choose your turn. If your read is wrong, you eat the consequence."}
-                          </Text>
+                          <Text style={styles.liveBattleCalloutTitle}>{displayTelegraph.title}</Text>
+                          <Text style={styles.liveBattleCalloutBody}>{displayTelegraph.body}</Text>
                         </View>
                       ) : null}
                       <View style={styles.liveBattleActionSection}>
@@ -8421,10 +13469,45 @@ const getMechanicSeverity = (mechanic: string): number => {
                               <Text style={styles.liveBattleActionText}>Attack</Text>
                             </View>
                           </Pressable>
+                          {currentEnemySpecialMeter ? (
+                            <Pressable
+                              disabled={!isPlayerTurn || awaitingNextEnemy}
+                              onPress={() => recordLiveBattleResponse("interrupt", "interrupt")}
+                              onHoverIn={() =>
+                                setBattleEffectHint(
+                                  `Interrupt: The strongest way to break ${currentEnemy?.name ?? "the target"}'s build. Hard hits and clean answers also shave the meter, but less.`,
+                                )
+                              }
+                              onHoverOut={() =>
+                                setBattleEffectHint((currentHint) =>
+                                  currentHint ===
+                                  `Interrupt: The strongest way to break ${currentEnemy?.name ?? "the target"}'s build. Hard hits and clean answers also shave the meter, but less.`
+                                    ? null
+                                    : currentHint,
+                                )
+                              }
+                              onPressIn={() =>
+                                setBattleEffectHint(
+                                  `Interrupt: The strongest way to break ${currentEnemy?.name ?? "the target"}'s build. Hard hits and clean answers also shave the meter, but less.`,
+                                )
+                              }
+                              style={[
+                                styles.liveBattleActionButton,
+                                styles.liveBattleActionButtonInterrupt,
+                                currentEnemySpecialMeter.ready ? styles.liveBattleActionButtonInterruptReady : null,
+                                !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null,
+                              ]}
+                            >
+                              <View style={styles.liveBattleActionButtonInner}>
+                                <MaterialCommunityIcons name="flash-alert" size={16} color="#ffe6bf" />
+                                <Text style={styles.liveBattleActionText}>Interrupt</Text>
+                              </View>
+                            </Pressable>
+                          ) : null}
                           {(["front", "mid", "rear"] as TowerBattlePosition[]).map((position) => {
-                            const positionBlocked = getEnemyBlockedPositions(currentEnemy).includes(position);
+                            const positionBlocked = getEnemyBlockedPositions(currentEnemy ?? undefined).includes(position);
                             const positionHint =
-                              describePositionRead(currentEnemy, position) ??
+                              describePositionRead(currentEnemy ?? undefined, position) ??
                               `Shift ${position[0].toUpperCase()}${position.slice(1)}: Reposition before the enemy acts.`;
                             return (
                             <Pressable
@@ -8590,36 +13673,53 @@ const getMechanicSeverity = (mechanic: string): number => {
                       <View style={styles.liveBattleActionSection}>
                         <View style={styles.liveBattleSectionHead}>
                           <MaterialCommunityIcons name="bag-personal-outline" size={15} color="#9effc4" />
-                          <Text style={styles.reqTitle}>Items</Text>
+                          <Text style={styles.reqTitle}>Pouch Items</Text>
                         </View>
                         <View style={styles.liveBattleItemRow}>
-                          {Object.keys(liveTowerBattle.committedItems).length ? (
-                            (Object.keys(liveTowerBattle.committedItems) as ItemId[]).map((itemId) => (
+                          {Object.keys(liveTowerBattle.pouchItems).length ? (
+                            Object.entries(liveTowerBattle.pouchItems).map(([itemId, packedCount]) => (
                               <Pressable
                                 key={`live-battle-item-${itemId}`}
-                                disabled={!isPlayerTurn || awaitingNextEnemy}
+                                disabled={
+                                  !isPlayerTurn ||
+                                  awaitingNextEnemy ||
+                                  (liveTowerBattle.usedPouchItemCounts[itemId as ItemId] ?? 0) >= packedCount
+                                }
                                 onPress={() => recordLiveBattleResponse("item", itemId)}
-                                style={[styles.liveBattleItemButton, !isPlayerTurn || awaitingNextEnemy ? styles.actionDisabled : null]}
+                                style={[
+                                  styles.liveBattleItemButton,
+                                  !isPlayerTurn ||
+                                  awaitingNextEnemy ||
+                                  (liveTowerBattle.usedPouchItemCounts[itemId as ItemId] ?? 0) >= packedCount
+                                    ? styles.actionDisabled
+                                    : null,
+                                ]}
                               >
                                 <GameItemIcon itemId={itemId} size={24} />
                                 <View style={styles.liveBattleItemTextWrap}>
                                   <Text style={styles.liveBattleItemText}>{ITEM_BY_ID[itemId]?.name ?? itemId}</Text>
-                                  <Text style={styles.liveBattleItemSubtext}>Battle Item</Text>
+                                  <Text style={styles.liveBattleItemSubtext}>
+                                    x{Math.max(0, packedCount - (liveTowerBattle.usedPouchItemCounts[itemId as ItemId] ?? 0))} left
+                                  </Text>
                                 </View>
                               </Pressable>
                             ))
                           ) : (
-                            <Text style={styles.questMeta}>No counter items committed for this wave.</Text>
+                            <Text style={styles.questMeta}>
+                              {liveTowerBattle.source === "rank"
+                                ? "Your combat pouch is empty. Pack items in Inventory if you want trial support."
+                                : "No pouch items packed for this battle."}
+                            </Text>
                           )}
                         </View>
                       </View>
                       <View style={styles.liveBattlePlayerCard}>
                         <View style={styles.liveBattleCombatHead}>
-                          <Image source={getAvatarSprite(character.avatarId, character.classId)} style={styles.liveBattlePlayerAvatar} resizeMode="cover" />
+                          <AdventurerPortrait character={character} size={68} />
                           <View style={styles.liveBattleCombatText}>
                             <Text style={styles.liveBattleCombatLabel}>Adventurer</Text>
                             <Text style={styles.liveBattleCombatName}>{character.name}</Text>
-                            <Text style={styles.liveBattleCombatMeta}>Current HP {liveTowerBattle.playerHp}/{character.healthCap}</Text>
+                            <Text style={styles.liveBattleCombatMeta}>Lv {character.progression.level}</Text>
                           </View>
                         </View>
                         {equippedBattleWeapon?.image ? (
@@ -8699,6 +13799,13 @@ const getMechanicSeverity = (mechanic: string): number => {
                             </View>
                             {livePlayerSpeedBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{livePlayerSpeedBonus}</Text> : null}
                           </View>
+                          <View style={styles.liveBattleStatWrap}>
+                            <View style={styles.waveBattleStatChip}>
+                              <MaterialCommunityIcons name="shield-half-full" size={13} color="#f6d08a" />
+                              <Text style={styles.waveBattleStatText}>ARM {liveTowerBattle.playerStats.armor}</Text>
+                            </View>
+                            {playerStatusSnapshot.weaponMarkArmorFlatBonus > 0 ? <Text style={styles.liveBattleStatBonus}>+{playerStatusSnapshot.weaponMarkArmorFlatBonus}</Text> : null}
+                          </View>
                         </View>
                         {playerEffectIcons.length ? (
                           <View style={styles.liveBattleStatusFxRow}>
@@ -8752,21 +13859,80 @@ const getMechanicSeverity = (mechanic: string): number => {
                       <View style={styles.liveBattleLogCard}>
                         <Text style={styles.reqTitle}>Battle Log</Text>
                         <ScrollView style={styles.liveBattleLogScroll} contentContainerStyle={styles.liveBattleLogList} showsVerticalScrollIndicator={false}>
-                          {liveTowerBattle.turnLog.map((line, index) => (
-                            <View key={`live-log-${index}-${line}`} style={styles.liveBattleLogEntry}>
-                              <View style={styles.liveBattleLogEntryDot} />
-                              <Text style={styles.liveBattleLogEntryText}>{line}</Text>
-                            </View>
-                          ))}
+                          {liveTowerBattle.turnLog.map((line, index) => {
+                            const displayLine = formatBattleLogLine(line);
+                            const visual = getBattleLogVisual(displayLine);
+                            return (
+                              <View
+                                key={`live-log-${index}-${line}`}
+                                style={[
+                                  styles.liveBattleLogEntry,
+                                  visual.tone === "good"
+                                    ? styles.liveBattleLogEntryGood
+                                    : visual.tone === "bad"
+                                      ? styles.liveBattleLogEntryBad
+                                      : visual.tone === "warn"
+                                        ? styles.liveBattleLogEntryWarn
+                                        : visual.tone === "offense"
+                                          ? styles.liveBattleLogEntryOffense
+                                          : styles.liveBattleLogEntryNeutral,
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.liveBattleLogEntryIconWrap,
+                                    visual.tone === "good"
+                                      ? styles.liveBattleLogEntryIconWrapGood
+                                      : visual.tone === "bad"
+                                        ? styles.liveBattleLogEntryIconWrapBad
+                                        : visual.tone === "warn"
+                                          ? styles.liveBattleLogEntryIconWrapWarn
+                                          : visual.tone === "offense"
+                                            ? styles.liveBattleLogEntryIconWrapOffense
+                                            : styles.liveBattleLogEntryIconWrapNeutral,
+                                  ]}
+                                >
+                                  <MaterialCommunityIcons
+                                    name={visual.icon}
+                                    size={13}
+                                    color={
+                                      visual.tone === "good"
+                                        ? "#b9ffd2"
+                                        : visual.tone === "bad"
+                                          ? "#ffccd4"
+                                          : visual.tone === "warn"
+                                            ? "#ffe0ab"
+                                            : visual.tone === "offense"
+                                              ? "#ffe1bf"
+                                              : "#d8d7e8"
+                                    }
+                                  />
+                                </View>
+                                <Text style={styles.liveBattleLogEntryText}>{displayLine}</Text>
+                              </View>
+                            );
+                          })}
                         </ScrollView>
                       </View>
                     </ScrollView>
                     {awaitingNextEnemy ? (
+                      currentEnemy && getQueuedPhaseShiftState(liveTowerBattle, currentEnemy) ? (
+                        <View style={styles.actionWrap}>
+                          <View style={[styles.claimButton, styles.actionDisabled]}>
+                            <Text style={styles.claimText}>{getQueuedPhaseShiftState(liveTowerBattle, currentEnemy)?.forcedLabel}</Text>
+                          </View>
+                        </View>
+                      ) : (
                       <Pressable onPress={advanceLiveBattleEnemy} style={styles.actionWrap}>
                         <View style={styles.claimButton}>
-                          <Text style={styles.claimText}>Advance To Next Enemy</Text>
+                          <Text style={styles.claimText}>
+                            {currentEnemy && getQueuedPhaseShiftState(liveTowerBattle, currentEnemy)
+                              ? getQueuedPhaseShiftState(liveTowerBattle, currentEnemy)?.buttonText
+                              : "Advance To Next Enemy"}
+                          </Text>
                         </View>
                       </Pressable>
+                      )
                     ) : isPlayerTurn ? (
                       <Pressable onPress={resolveLiveTowerBattle} style={styles.actionWrap} disabled={!battleFinished}>
                         <View style={[styles.claimButton, !battleFinished ? styles.actionDisabled : null]}>
@@ -9064,6 +14230,23 @@ const getMechanicSeverity = (mechanic: string): number => {
               </Pressable>
             </View>
           </View>
+        </Modal>
+      ) : null}
+      {expandedTrialEnemy && getTowerEnemyArt(expandedTrialEnemy) ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setExpandedTrialEnemy(null)}>
+          <Pressable style={styles.enemyArtOverlayInline} onPress={() => setExpandedTrialEnemy(null)}>
+            <View style={styles.enemyArtLightbox}>
+              <Image
+                source={getTowerEnemyArt(expandedTrialEnemy)}
+                style={styles.enemyArtLightboxImage}
+                resizeMode="contain"
+              />
+              <View style={styles.enemyArtLightboxCaption}>
+                <Text style={styles.enemyArtLightboxTitle}>{expandedTrialEnemy.name}</Text>
+                <Text style={styles.enemyArtLightboxHint}>Tap anywhere to close</Text>
+              </View>
+            </View>
+          </Pressable>
         </Modal>
       ) : null}
       {floorLoreOpenFor !== null ? (
@@ -9399,13 +14582,33 @@ const getMechanicSeverity = (mechanic: string): number => {
                   style={styles.npcDialogHeroAvatar}
                   resizeMode="cover"
                 />
-                <Text style={styles.npcDialogHeroName}>Examiner {rankExaminerProfile.name}</Text>
+                <View style={styles.rankExaminerDialogHead}>
+                  <Text style={styles.npcDialogHeroName}>Examiner {rankExaminerProfile.name}</Text>
+                  {rankTrialPresentation ? (
+                    <Text style={styles.rankExaminerDialogSubhead}>{rankTrialPresentation.title}</Text>
+                  ) : null}
+                </View>
               </View>
               <Text style={styles.outcomeText}>{`"${examinerDialogLine}"`}</Text>
-              {rankTrial && !examinerReadyForTrial ? (
-                <Text style={styles.questMeta}>{rankTrialAccess.reason ?? "Complete your requirements, then return."}</Text>
+              {rankTrialPresentation ? (
+                <View style={styles.rankExaminerDialogCard}>
+                  <Text style={styles.reqTitle}>Guild Test</Text>
+                  <Text style={styles.questMeta}>{rankTrialPresentation.guildTest}</Text>
+                </View>
               ) : null}
-              {rankTrial && !examinerReadyForTrial ? (
+              {rankTrial && !examinerCanOpenDesk ? (
+                <View style={styles.rankExaminerDialogCard}>
+                  <Text style={styles.reqTitle}>Missing Requirements</Text>
+                  {rankTrialRequirementLines.map((line) => (
+                    <View key={`examiner-rank-req-${line}`} style={styles.reqItem}>
+                      <MaterialCommunityIcons name="clipboard-alert-outline" size={12} color="#ffb19d" />
+                      <Text style={styles.reqText}>{line}</Text>
+                    </View>
+                  ))}
+                  <Text style={styles.questMeta}>{rankTrialAccess.reason ?? "Complete your requirements, then return."}</Text>
+                </View>
+              ) : null}
+              {rankTrial && !examinerCanOpenDesk ? (
                 <Pressable onPress={() => handleExaminerDialogChoice(false)} style={styles.actionWrap}>
                   <View style={styles.claimButton}>
                     <Text style={styles.claimText}>Understood. I'll Return.</Text>
@@ -9424,10 +14627,82 @@ const getMechanicSeverity = (mechanic: string): number => {
                     disabled={!rankTrial}
                   >
                     <View style={[styles.dialogChoiceButton, styles.dialogChoiceAcceptButton, !rankTrial ? styles.actionDisabled : null]}>
-                      <Text style={styles.dialogChoiceText}>{rankTrial ? "Open Trial Desk" : "No Trial Available"}</Text>
+                      <Text style={styles.dialogChoiceText}>
+                        {rankTrial
+                          ? rankTrial.id === "rank-trial-a-s"
+                            ? "Review Raid Notices"
+                            : "Open Trial Board"
+                          : "No Trial Available"}
+                      </Text>
                     </View>
                   </Pressable>
                 </View>
+              )}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {guildDialog === "rank-duelist" ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setGuildDialog(null)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(114, 167, 222, 0.14)", "rgba(96, 64, 154, 0.08)", "rgba(25, 18, 41, 0.03)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <View style={styles.npcDialogHero}>
+                <Image
+                  source={E_RANK_DUELIST_PROFILE.avatarOverride ?? getAvatarSprite(E_RANK_DUELIST_PROFILE.avatarId, E_RANK_DUELIST_PROFILE.classId)}
+                  style={styles.npcDialogHeroAvatar}
+                  resizeMode="cover"
+                />
+                <View style={styles.rankExaminerDialogHead}>
+                  <Text style={styles.npcDialogHeroName}>{E_RANK_DUELIST_PROFILE.name}</Text>
+                  <Text style={styles.rankExaminerDialogSubhead}>Hall Duelist</Text>
+                </View>
+              </View>
+              <Text style={styles.outcomeText}>
+                {lastRankUpOutcome?.fromRank === "E"
+                  ? lastRankUpOutcome.success
+                    ? `"You took the D-mark in steel, not on paper. That's the whole point of me standing in that ring."`
+                    : `"Nyra doesn't use me to flatter E-ranks. She uses me to punish the habits that would get them killed a floor later."`
+                  : rankTrial?.id === "rank-trial-e-d"
+                    ? `"Monsters teach one kind of read. Another adventurer teaches the rest. If you want D-rank, step into the circle and take it off me under Nyra's watch."`
+                    : `"Nyra calls me in when the office wants a real duel instead of a tidy ledger answer."`}
+              </Text>
+              <Text style={styles.outcomeText}>
+                {rankTrial?.id === "rank-trial-e-d"
+                  ? `"I carry sigils, drink through the hurt, and come back harder once I draw the reserve mark. That's the test. Keep me from choosing the pace."`
+                  : `"If you ever see me in the ring, it means the office has decided monsters are no longer enough for the question they're asking."`}
+              </Text>
+              {rankTrial?.id === "rank-trial-e-d" ? (
+                <View style={styles.dualActionRow}>
+                  <Pressable onPress={() => setGuildDialog(null)} style={styles.dualActionButton}>
+                    <View style={[styles.dialogChoiceButton, styles.dialogChoiceRefuseButton]}>
+                      <Text style={styles.dialogChoiceText}>Maybe Later</Text>
+                    </View>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      setGuildDialog(null);
+                      setGuildTab("rank");
+                    }}
+                    style={styles.dualActionButton}
+                  >
+                    <View style={[styles.dialogChoiceButton, styles.dialogChoiceAcceptButton]}>
+                      <Text style={styles.dialogChoiceText}>Open Trial Board</Text>
+                    </View>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable onPress={() => setGuildDialog(null)} style={styles.actionWrap}>
+                  <View style={styles.claimButton}>
+                    <Text style={styles.claimText}>Understood</Text>
+                  </View>
+                </Pressable>
               )}
             </View>
           </View>
@@ -9846,6 +15121,181 @@ const getMechanicSeverity = (mechanic: string): number => {
                   This is a special rescue encounter. Results will be filed through the quest report when the final wave settles.
                 </Text>
               </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {lastRankUpOutcome ? (
+        <Modal visible={rankTrialResultOpen} transparent animationType="fade" onRequestClose={() => setRankTrialResultOpen(false)}>
+          <View style={styles.resultOverlay}>
+            <View style={styles.resultModal}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(214, 160, 81, 0.13)", "rgba(96, 64, 154, 0.08)", "rgba(25, 18, 41, 0.02)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              />
+              <ScrollView style={styles.encounterScroll} contentContainerStyle={styles.rankResultScrollContent} showsVerticalScrollIndicator={false}>
+                <View style={styles.rankResultHeroCard}>
+                  <View style={styles.rankResultHeroPortraitWrap}>
+                    <Image
+                      source={
+                        rankTrialResultExaminerProfile.avatarOverride ??
+                        getAvatarSprite(rankTrialResultExaminerProfile.avatarId, rankTrialResultExaminerProfile.classId)
+                      }
+                      style={styles.rankResultHeroPortrait}
+                      resizeMode="cover"
+                    />
+                    <View style={styles.rankResultHeroSeal}>
+                      <MaterialCommunityIcons
+                        name={rankTrialResultPresentation?.resultIcon ?? (lastRankUpOutcome.success ? "shield-crown" : "sword-cross")}
+                        size={20}
+                        color={rankTrialResultPresentation?.resultAccent ?? "#ffe1a0"}
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.rankResultHeroText}>
+                    <Text style={styles.rankResultHeroKicker}>
+                      {lastRankUpOutcome.success ? "Promotion Confirmed" : "Trial Filed"}
+                    </Text>
+                    <Text style={styles.rankResultHeroTitle}>
+                      {rankTrialResultPresentation?.title ?? "Field Trial"}
+                    </Text>
+                    <Text style={[styles.resultTitle, lastRankUpOutcome.success ? styles.ok : styles.fail]}>
+                      {lastRankUpOutcome.success ? "Rank Trial Cleared" : "Rank Trial Failed"}
+                    </Text>
+                    <View style={styles.rewardChipRow}>
+                      <View style={styles.rewardChip}>
+                        <MaterialCommunityIcons name="shield-crown-outline" size={14} color="#ffe2a5" />
+                        <Text style={styles.rewardChipText}>Rank {lastRankUpOutcome.fromRank} {"->"} {lastRankUpOutcome.toRank}</Text>
+                      </View>
+                      <View style={styles.rewardChip}>
+                        <MaterialCommunityIcons
+                          name={lastRankUpOutcome.success ? "seal-variant" : "alert-circle-outline"}
+                          size={14}
+                          color={lastRankUpOutcome.success ? "#9ce8c2" : "#ffb6ad"}
+                        />
+                        <Text style={styles.rewardChipText}>
+                          {lastRankUpOutcome.success ? "Approved" : "Retry Required"}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.rankPromotionCrestCard}>
+                  <View
+                    style={[
+                      styles.rankPromotionCrestSeal,
+                      {
+                        borderColor: `${rankTrialResultPresentation?.resultAccent ?? "#ffe1a0"}55`,
+                      },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={rankTrialResultPresentation?.resultIcon ?? (lastRankUpOutcome.success ? "shield-crown" : "shield-alert-outline")}
+                      size={28}
+                      color={lastRankUpOutcome.success ? rankTrialResultPresentation?.resultAccent ?? "#ffe1a0" : "#ffb8ac"}
+                    />
+                  </View>
+                  <View style={styles.rankPromotionCrestText}>
+                    <Text style={styles.rankPromotionCrestLabel}>
+                      {lastRankUpOutcome.success
+                        ? rankTrialResultPresentation?.recordLabelSuccess ?? "Guild Crest Record"
+                        : rankTrialResultPresentation?.recordLabelFailure ?? "Filed Trial Record"}
+                    </Text>
+                    <Text style={styles.rankPromotionCrestTitle}>
+                      {lastRankUpOutcome.success
+                        ? `${lastRankUpOutcome.toRank}-Rank Standing Confirmed`
+                        : `${lastRankUpOutcome.fromRank}-Rank Standing Retained`}
+                    </Text>
+                    <Text style={styles.questMeta}>
+                      {lastRankUpOutcome.success
+                        ? `Examiner ${rankTrialResultExaminerProfile.name} has entered your promotion into the guild ledger.`
+                        : `Examiner ${rankTrialResultExaminerProfile.name} has filed the failed attempt and kept your current standing.`}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.resultRewardsWrap}>
+                  <Text style={styles.reqTitle}>{lastRankUpOutcome.success ? "Promotion Summary" : "Trial Summary"}</Text>
+                  <View style={styles.resultRewardGrid}>
+                    <View style={styles.resultRewardCard}>
+                      <MaterialCommunityIcons name="shield-crown-outline" size={16} color="#ffe2a5" />
+                      <Text style={styles.resultRewardLabel}>Rank Standing</Text>
+                      <Text style={styles.resultRewardValue}>
+                        {lastRankUpOutcome.success ? lastRankUpOutcome.toRank : lastRankUpOutcome.fromRank}
+                      </Text>
+                    </View>
+                    <View style={styles.resultRewardCard}>
+                      <MaterialCommunityIcons
+                        name={lastRankUpOutcome.success ? "check-decagram-outline" : "restart"}
+                        size={16}
+                        color={lastRankUpOutcome.success ? "#9ce8c2" : "#ffb6ad"}
+                      />
+                      <Text style={styles.resultRewardLabel}>Guild Status</Text>
+                      <Text style={styles.resultRewardValue}>
+                        {lastRankUpOutcome.success ? "Approved" : "Try Again"}
+                      </Text>
+                    </View>
+                    {typeof lastRankUpOutcome.healthDelta === "number" ? (
+                      <View style={styles.resultRewardCard}>
+                        <MaterialCommunityIcons
+                          name={lastRankUpOutcome.healthDelta < 0 ? "heart-broken-outline" : "heart-plus-outline"}
+                          size={16}
+                          color={lastRankUpOutcome.healthDelta < 0 ? "#ff9b92" : "#86efb0"}
+                        />
+                        <Text style={styles.resultRewardLabel}>Health Change</Text>
+                        <Text style={styles.resultRewardValue}>
+                          {lastRankUpOutcome.healthDelta > 0 ? "+" : ""}{lastRankUpOutcome.healthDelta}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+                {rankTrialAssessmentSummary && lastRankUpOutcome.fromRank === "D" && lastRankUpOutcome.toRank === "C" ? (
+                  <View style={styles.rankTrialInfoCard}>
+                    <Text style={styles.reqTitle}>{rankTrialAssessmentSummary.title}</Text>
+                    {rankTrialAssessmentSummary.lines.map((line) => (
+                      <View key={`rank-assessment-${line.label}`} style={styles.reqItem}>
+                        <MaterialCommunityIcons
+                          name={line.passed ? "check-decagram-outline" : "close-octagon-outline"}
+                          size={12}
+                          color={line.passed ? "#9ce8c2" : "#ffb6ad"}
+                        />
+                        <Text style={styles.reqText}>
+                          {line.label}: {line.value}
+                        </Text>
+                      </View>
+                    ))}
+                    <Text style={styles.outcomeText}>{rankTrialAssessmentSummary.summary}</Text>
+                  </View>
+                ) : null}
+                <View style={styles.rankTrialInfoCard}>
+                  <Text style={styles.reqTitle}>Examiner's Word</Text>
+                  <Text style={styles.outcomeText}>{rankTrialExaminerResultLine}</Text>
+                </View>
+                {lastRankUpOutcome.success && rankTrialResultPresentation?.unlocks?.length ? (
+                  <View style={styles.rankTrialInfoCard}>
+                    <Text style={styles.reqTitle}>On Promotion</Text>
+                    {rankTrialResultPresentation.unlocks.map((unlock) => (
+                      <View key={`rank-result-${lastRankUpOutcome.fromRank}-${lastRankUpOutcome.toRank}-${unlock}`} style={styles.reqItem}>
+                        <MaterialCommunityIcons name="check-decagram-outline" size={12} color="#9ce8c2" />
+                        <Text style={styles.reqText}>{unlock}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.rankTrialInfoCard}>
+                    <Text style={styles.reqTitle}>Next Step</Text>
+                    <Text style={styles.outcomeText}>Recover, adjust your loadout, and return when you can finish the field test cleanly.</Text>
+                  </View>
+                )}
+              </ScrollView>
+              <Pressable onPress={handleCloseRankTrialResult} style={styles.actionWrap}>
+                <View style={styles.claimButton}>
+                  <Text style={styles.claimText}>{lastRankUpOutcome.success ? "Accept Promotion Record" : "Understood"}</Text>
+                </View>
+              </Pressable>
             </View>
           </View>
         </Modal>
@@ -10682,15 +16132,23 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: "800",
   },
-  npcBody: {
-    flexDirection: "row",
-    alignItems: "center",
+  npcLicenseShell: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(201, 169, 103, 0.62)",
+    backgroundColor: "rgba(35, 24, 50, 0.92)",
+    padding: 10,
     gap: 10,
   },
+  npcBody: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
   npcAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 13,
+    width: 72,
+    height: 72,
+    borderRadius: 16,
     backgroundColor: "rgba(26, 20, 35, 0.95)",
     borderWidth: 1,
     borderColor: "#9a7b48",
@@ -10704,11 +16162,16 @@ const styles = StyleSheet.create({
   },
   npcTextWrap: {
     flex: 1,
-    gap: 2,
+    gap: 3,
+  },
+  npcRoleLine: {
+    color: "#d9c5a2",
+    fontSize: 12,
+    fontWeight: "700",
   },
   npcRightBadges: {
     alignItems: "center",
-    gap: 4,
+    gap: 6,
   },
   npcLevelBadge: {
     minWidth: 62,
@@ -10834,14 +16297,39 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textTransform: "uppercase",
   },
-  npcDispositionCard: {
-    borderRadius: 10,
+  npcLicenseInfoGrid: {
+    gap: 8,
+  },
+  npcLicensePanelFull: {
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(169, 131, 78, 0.34)",
-    backgroundColor: "rgba(44, 31, 20, 0.55)",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 5,
+    backgroundColor: "rgba(44, 31, 20, 0.42)",
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 6,
+  },
+  npcLicensePanel: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(169, 131, 78, 0.34)",
+    backgroundColor: "rgba(31, 23, 44, 0.74)",
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 7,
+  },
+  npcLicenseSectionTitle: {
+    color: "#f1dfb8",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  npcLicenseNoteText: {
+    color: "#e6d4b2",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
   },
   npcDispositionHead: {
     flexDirection: "row",
@@ -10887,27 +16375,26 @@ const styles = StyleSheet.create({
     height: "100%",
     borderRadius: 999,
   },
-  npcPillsRow: {
+  npcKnownForGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 6,
-    alignItems: "stretch",
-    justifyContent: "space-between",
+    alignItems: "flex-start",
   },
-  npcInfoChip: {
-    width: "48.6%",
-    minHeight: 30,
+  npcKnownForChip: {
+    width: "48.7%",
+    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 5,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#8d6f40",
     backgroundColor: "rgba(47, 35, 22, 0.9)",
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 6,
   },
-  npcInfoChipText: {
+  npcKnownForChipText: {
     color: colors.textPrimary,
     fontSize: 10,
     fontWeight: "700",
@@ -11002,6 +16489,25 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: "900",
     textAlign: "center",
+  },
+  rankExaminerDialogHead: {
+    alignItems: "center",
+    gap: 3,
+  },
+  rankExaminerDialogSubhead: {
+    color: "#ffd68f",
+    fontSize: 14,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  rankExaminerDialogCard: {
+    gap: 5,
+    marginBottom: 6,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(212, 166, 92, 0.26)",
+    backgroundColor: "rgba(48, 34, 20, 0.4)",
   },
   dialogInlineRequestWrap: {
     flexDirection: "row",
@@ -11285,11 +16791,456 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
     flexShrink: 1,
   },
+  rewardChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    alignItems: "flex-start",
+    marginTop: 8,
+    marginBottom: 4,
+  },
   rewardChipText: {
     color: colors.textPrimary,
     fontSize: 11,
     fontWeight: "700",
     flexShrink: 1,
+  },
+  raidQuestCard: {
+    backgroundColor: "rgba(27, 20, 37, 0.98)",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(215, 171, 102, 0.8)",
+    overflow: "hidden",
+    position: "relative",
+    width: "100%",
+    maxWidth: 1220,
+    alignSelf: "center",
+    padding: 14,
+    gap: 14,
+  },
+  raidQuestShowcase: {
+    width: "100%",
+    minHeight: 520,
+    borderRadius: 22,
+    overflow: "hidden",
+    backgroundColor: "rgba(17, 14, 28, 0.9)",
+  },
+  raidQuestShowcaseCompact: {
+    minHeight: 460,
+  },
+  raidQuestShowcaseArt: {
+    flex: 1,
+    justifyContent: "space-between",
+  },
+  raidQuestShowcaseOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  raidQuestArtFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(33, 25, 45, 0.95)",
+  },
+  raidQuestBadgeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  raidQuestLedgerBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(32, 23, 14, 0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(240, 202, 145, 0.8)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  raidQuestLedgerBadgeText: {
+    color: "#ffe8bf",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  raidQuestHuntBadge: {
+    borderRadius: 999,
+    backgroundColor: "rgba(75, 20, 24, 0.92)",
+    borderWidth: 1,
+    borderColor: "#ffb7bf",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  raidQuestHuntBadgeText: {
+    color: "#fff0f3",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  raidQuestShowcaseCorner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  raidQuestShowcaseFooter: {
+    paddingHorizontal: 18,
+    paddingBottom: 18,
+    gap: 12,
+  },
+  raidQuestShowcaseTextBlock: {
+    gap: 6,
+  },
+  raidQuestShowcaseMeta: {
+    color: "#d7ebff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  raidQuestTitle: {
+    color: "#fff1cf",
+    fontSize: 40,
+    lineHeight: 46,
+    fontWeight: "900",
+    maxWidth: 920,
+  },
+  raidQuestRankSeal: {
+    minWidth: 44,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#f0c991",
+    backgroundColor: "rgba(73, 53, 26, 0.94)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignItems: "center",
+  },
+  raidQuestRankSealText: {
+    color: "#ffe7bf",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  raidQuestSummary: {
+    color: "#e7d7b6",
+    fontSize: 16,
+    lineHeight: 24,
+  },
+  raidQuestStatRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  raidQuestStatPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(45, 33, 21, 0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(174, 138, 81, 0.85)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  raidQuestStatText: {
+    color: "#f3e4bf",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  raidQuestBody: {
+    flexDirection: "row",
+    gap: 14,
+  },
+  raidQuestBodyStack: {
+    flexDirection: "column",
+  },
+  raidQuestColumn: {
+    flex: 1,
+    gap: 12,
+  },
+  raidQuestSection: {
+    backgroundColor: "rgba(37, 27, 22, 0.78)",
+    borderRadius: 16,
+    padding: 12,
+    gap: 10,
+  },
+  raidQuestSectionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  raidQuestSectionTitle: {
+    color: "#ffe1a8",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  raidQuestProofRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    backgroundColor: "rgba(58, 40, 20, 0.88)",
+  },
+  raidQuestProofTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  raidQuestProofName: {
+    color: "#fff2d2",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  raidQuestProofMeta: {
+    color: "#dccba8",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  raidQuestStageList: {
+    gap: 8,
+  },
+  raidQuestStageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  raidQuestStageIndex: {
+    width: 22,
+    color: "#ffda9d",
+    fontSize: 12,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  raidQuestStageText: {
+    color: "#f1e5cb",
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+  },
+  raidSupplyList: {
+    gap: 8,
+  },
+  raidSupplyRow: {
+    borderRadius: 14,
+    backgroundColor: "rgba(51, 38, 24, 0.84)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  raidSupplyIdentity: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    flex: 1,
+  },
+  raidSupplyTextWrap: {
+    flex: 1,
+    gap: 3,
+  },
+  raidSupplyName: {
+    color: "#f3e9d2",
+    fontSize: 13,
+    fontWeight: "800",
+    flex: 1,
+  },
+  raidSupplyReason: {
+    color: "#d3c0a0",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "600",
+  },
+  raidSupplyMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  raidSupplyOwned: {
+    color: "#cdbd9d",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  raidQuestRewardRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  raidQuestRewardChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(50, 38, 24, 0.88)",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    maxWidth: "100%",
+  },
+  raidQuestRewardChipText: {
+    color: "#f2e7cb",
+    fontSize: 12,
+    fontWeight: "700",
+    maxWidth: 180,
+  },
+  raidQuestFooter: {
+    gap: 10,
+  },
+  raidQuestReadiness: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  raidQuestReadinessLabel: {
+    color: "#ffe2ad",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  raidQuestReadinessValue: {
+    color: "#f6ebcc",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  huntDossierCard: {
+    width: "100%",
+    maxWidth: 860,
+    maxHeight: "90%",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#c89b5f",
+    backgroundColor: "rgba(28, 20, 40, 0.98)",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+    overflow: "hidden",
+    position: "relative",
+  },
+  huntDossierScroll: {
+    flexGrow: 0,
+  },
+  huntDossierScrollContent: {
+    paddingBottom: 6,
+    gap: 12,
+  },
+  huntDossierArtWrap: {
+    width: "100%",
+    minHeight: 460,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "rgba(17, 14, 28, 0.9)",
+  },
+  huntDossierArt: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  huntDossierArtOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  huntDossierArtFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(17, 14, 28, 0.92)",
+  },
+  huntDossierArtFooter: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 6,
+  },
+  huntDossierTitle: {
+    color: "#fff2cf",
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: "900",
+  },
+  huntDossierArtHint: {
+    color: "#dcebff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  huntDossierSection: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(197, 157, 97, 0.32)",
+    backgroundColor: "rgba(36, 25, 20, 0.76)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  huntDossierSectionTitle: {
+    color: "#ffe1a8",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  huntDossierSummary: {
+    color: "#f2e5cb",
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "700",
+  },
+  huntDossierChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  huntDossierChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(201, 162, 100, 0.45)",
+    backgroundColor: "rgba(57, 41, 23, 0.86)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxWidth: "100%",
+  },
+  huntDossierChipText: {
+    color: "#f6ebcf",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  huntDossierList: {
+    gap: 8,
+  },
+  huntDossierListRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  huntDossierListText: {
+    color: "#f2e5cb",
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+  },
+  huntDossierSupplyTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  huntDossierSupplyReason: {
+    color: "#cdbda4",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "600",
+  },
+  huntDossierProofRow: {
+    gap: 8,
+  },
+  huntDossierProofCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 14,
+    backgroundColor: "rgba(58, 40, 20, 0.9)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  huntDossierProofText: {
+    color: "#fff2d2",
+    fontSize: 14,
+    fontWeight: "800",
+    flex: 1,
   },
   wantedDetailsList: {
     gap: 4,
@@ -11463,6 +17414,818 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 880,
     alignSelf: "center",
+  },
+  rankTrialHeroCard: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(214, 169, 98, 0.3)",
+    backgroundColor: "rgba(58, 41, 24, 0.42)",
+  },
+  rankTrialHeroHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  rankTrialHeroKicker: {
+    color: "#d9c399",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  rankTrialHeroTitle: {
+    color: "#fff0cf",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  rankTrialStatePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(235, 205, 151, 0.36)",
+    backgroundColor: "rgba(33, 24, 42, 0.88)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  rankTrialStateText: {
+    color: "#ffe9bc",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  rankTrialInfoGrid: {
+    gap: 8,
+  },
+  rankTrialInfoCard: {
+    gap: 6,
+    padding: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(205, 161, 86, 0.22)",
+    backgroundColor: "rgba(36, 27, 47, 0.58)",
+  },
+  rankTrialLicenseCard: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(214, 169, 98, 0.34)",
+    backgroundColor: "rgba(46, 31, 66, 0.97)",
+    marginTop: 8,
+    marginBottom: 10,
+    overflow: "hidden",
+    position: "relative",
+  },
+  rankTrialLicenseSecurityLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  rankTrialLicenseWatermark: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: 220,
+    height: 220,
+    marginLeft: -110,
+    marginTop: -110,
+    opacity: 0.2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicensePatternArcOne: {
+    position: "absolute",
+    width: 190,
+    height: 190,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(234, 199, 132, 0.16)",
+    top: -114,
+    right: -82,
+  },
+  rankTrialLicensePatternArcTwo: {
+    position: "absolute",
+    width: 130,
+    height: 130,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(103, 205, 255, 0.16)",
+    bottom: -66,
+    left: -40,
+  },
+  rankTrialLicensePatternGrid: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    top: 12,
+    bottom: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(247, 227, 180, 0.06)",
+  },
+  rankTrialLicenseTopBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
+  rankTrialLicenseBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  rankTrialLicensePortraitWrap: {
+    width: 86,
+    height: 86,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicenseTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  rankTrialLicenseRightBadges: {
+    alignItems: "center",
+    gap: 4,
+  },
+  rankTrialLicenseLevelBadge: {
+    minWidth: 52,
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#b89a62",
+    backgroundColor: "rgba(66, 49, 27, 0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    gap: 2,
+  },
+  rankTrialLicenseBadgeLabel: {
+    color: "#f0ddb2",
+    fontSize: 8,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  rankTrialLicenseLevelValue: {
+    color: "#ffe9be",
+    fontSize: 18,
+    lineHeight: 19,
+    fontWeight: "900",
+  },
+  rankTrialLicenseLevelMiniTrack: {
+    width: "100%",
+    height: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(246, 214, 148, 0.45)",
+    backgroundColor: "rgba(61, 43, 22, 0.92)",
+    overflow: "hidden",
+  },
+  rankTrialLicenseLevelMiniFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#f1c978",
+  },
+  rankTrialLicenseFloorBadge: {
+    minWidth: 52,
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#8ab5d8",
+    backgroundColor: "rgba(32, 54, 83, 0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    gap: 2,
+  },
+  rankTrialLicenseFloorBadgeHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  rankTrialLicenseFloorLabel: {
+    color: "#c9e4ff",
+    fontSize: 8,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  rankTrialLicenseFloorValue: {
+    color: "#e6f4ff",
+    fontSize: 18,
+    lineHeight: 19,
+    fontWeight: "900",
+  },
+  rankTrialLicenseAuthBar: {
+    marginTop: 2,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  rankTrialLicenseAuthTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  rankTrialLicenseAuthLabel: {
+    color: "rgba(223, 228, 239, 0.7)",
+    fontSize: 9,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+  },
+  rankTrialLicenseAuth: {
+    color: "rgba(242, 246, 255, 0.9)",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  rankTrialLicenseHealthMeter: {
+    marginTop: 2,
+  },
+  rankTrialHealthEffectRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  rankTrialHealthEffectIconChip: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "rgba(156, 225, 173, 0.32)",
+    backgroundColor: "rgba(10, 25, 14, 0.42)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialHealthEffectIconChipHover: {
+    borderColor: "#f4e0ab",
+    backgroundColor: "rgba(56, 77, 49, 0.92)",
+    shadowColor: "#f0d18b",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    transform: [{ translateY: -1 }, { scale: 1.05 }],
+    elevation: 5,
+  },
+  rankTrialHealthEffectIconChipPressed: {
+    transform: [{ scale: 0.97 }],
+  },
+  rankTrialHealthEffectIconOnlyWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  rankTrialHealthEffectTitleFrame: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialHealthEffectTitleImage: {
+    width: 12,
+    height: 12,
+  },
+  rankTrialLicenseStatsRow: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  rankTrialLicenseStatCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#a48251",
+    backgroundColor: "rgba(63, 45, 26, 0.95)",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    flex: 1,
+    minWidth: 92,
+  },
+  rankTrialLicenseStatIconWrap: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicenseStatTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  rankTrialLicenseStatValue: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  rankTrialLicenseStatLabel: {
+    color: "#cdb88f",
+    fontSize: 9,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
+  rankTrialLicenseLoadoutGrid: {
+    marginTop: 2,
+    gap: 6,
+  },
+  rankTrialLicenseWeaponPanel: {
+    width: "100%",
+    gap: 4,
+  },
+  rankTrialSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  rankTrialSectionTitle: {
+    color: "#f6e2b7",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
+  rankTrialSectionMeta: {
+    color: "#ceb68b",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  rankTrialWeaponMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  rankTrialWeaponGradePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d48d43",
+    backgroundColor: "rgba(107, 63, 19, 0.92)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  rankTrialWeaponGradeText: {
+    color: "#ffd89a",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+  },
+  rankTrialFeaturedWeaponCard: {
+    minHeight: 92,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(213, 171, 103, 0.28)",
+    backgroundColor: "rgba(33, 24, 44, 0.82)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  rankTrialFeaturedWeaponIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(214, 169, 98, 0.34)",
+    backgroundColor: "rgba(25, 19, 36, 0.96)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  rankTrialFeaturedWeaponImage: {
+    width: 56,
+    height: 56,
+  },
+  rankTrialFeaturedWeaponText: {
+    flex: 1,
+    gap: 3,
+  },
+  rankTrialFeaturedWeaponName: {
+    color: "#fff0cf",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  rankTrialFeaturedWeaponMeta: {
+    color: "#ceb68b",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  rankTrialWeaponSocketList: {
+    gap: 5,
+    marginTop: 4,
+  },
+  rankTrialWeaponSocketRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  rankTrialWeaponSocketTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  rankTrialWeaponSocketDiamond: {
+    width: 14,
+    height: 14,
+    transform: [{ rotate: "45deg" }],
+    borderWidth: 1.5,
+    borderColor: "#d7c78f",
+    backgroundColor: "rgba(74, 56, 28, 0.62)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialWeaponSocketDiamondEmpty: {
+    borderColor: "rgba(176, 153, 107, 0.5)",
+    backgroundColor: "rgba(53, 42, 25, 0.24)",
+  },
+  rankTrialWeaponSocketDiamondCore: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    transform: [{ rotate: "-45deg" }],
+  },
+  rankTrialWeaponSocketText: {
+    color: "#f7e8bf",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  rankTrialWeaponSocketTextEmpty: {
+    color: "#b9ab8a",
+  },
+  rankTrialWeaponSocketSubtext: {
+    color: "#d7c9a7",
+    fontSize: 9,
+    lineHeight: 13,
+    fontWeight: "700",
+  },
+  rankTrialWeaponBonusRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 2,
+  },
+  rankTrialWeaponBonusChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(214, 169, 98, 0.26)",
+    backgroundColor: "rgba(47, 35, 22, 0.88)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  rankTrialWeaponBonusText: {
+    color: "#fff0cf",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  rankTrialSlotHeader: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  rankTrialSlotTitle: {
+    color: "#f6e2b7",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
+  rankTrialSlotMeta: {
+    color: "#ceb68b",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  rankTrialLicenseSigilRow: {
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  rankTrialLicenseSigilSlot: {
+    width: 60,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    position: "relative",
+  },
+  rankTrialLicenseSigilIconShell: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(159, 127, 75, 0.34)",
+    backgroundColor: "rgba(28, 20, 39, 0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicenseSigilGradeBadge: {
+    position: "absolute",
+    right: 2,
+    top: -2,
+    minWidth: 14,
+    height: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#af8a4e",
+    backgroundColor: "rgba(63, 46, 23, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 2,
+  },
+  rankTrialLicenseSigilGradeText: {
+    color: "#f8dfaa",
+    fontSize: 8,
+    fontWeight: "900",
+    lineHeight: 9,
+  },
+  rankTrialLicenseSigilEmptyHint: {
+    marginTop: 4,
+    color: "#c9b089",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+  rankTrialLicenseTitleRow: {
+    marginTop: 5,
+    gap: 10,
+  },
+  rankTrialLicenseTitleCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#8f7243",
+    backgroundColor: "rgba(44, 32, 56, 0.93)",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  rankTrialLicenseTitleCardIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "#9f7f4b",
+    backgroundColor: "rgba(28, 20, 39, 0.88)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicenseTitleIconFrame: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialLicenseTitleIconImage: {
+    width: 18,
+    height: 18,
+  },
+  rankTrialLicenseTitleTextBlock: {
+    flex: 1,
+    gap: 2,
+  },
+  rankTrialLicenseTitleName: {
+    color: "#e7d7b8",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  rankTrialLicenseTitleGradePill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#af8a4e",
+    backgroundColor: "rgba(63, 46, 23, 0.92)",
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  rankTrialLicenseTitleGradeText: {
+    color: "#f8dfaa",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+  rankTrialEffectChipRow: {
+    marginTop: 4,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  rankTrialEffectChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(205, 161, 86, 0.22)",
+    backgroundColor: "rgba(42, 29, 22, 0.74)",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    maxWidth: "100%",
+  },
+  rankTrialEffectChipIconWrap: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(24, 18, 33, 0.88)",
+    overflow: "hidden",
+  },
+  rankTrialEffectChipText: {
+    color: "#f0dfc0",
+    fontSize: 10,
+    fontWeight: "800",
+    flexShrink: 1,
+  },
+  rankTrialEffectTitleIconFrame: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankTrialEffectTitleIconImage: {
+    width: 12,
+    height: 12,
+  },
+  rankTrialBattleKitChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  rankTrialBattleKitChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(205, 161, 86, 0.22)",
+    backgroundColor: "rgba(42, 29, 22, 0.74)",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    maxWidth: "100%",
+  },
+  rankTrialBattleKitChipIconWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(24, 18, 33, 0.88)",
+    overflow: "hidden",
+  },
+  rankTrialBattleKitChipText: {
+    color: "#f0dfc0",
+    fontSize: 10,
+    fontWeight: "800",
+    flexShrink: 1,
+  },
+  rankTrialLoadoutRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  rankTrialLoadoutIconFrame: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "rgba(214, 169, 98, 0.34)",
+    backgroundColor: "rgba(31, 24, 43, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  rankTrialLoadoutIconFrameLarge: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(214, 169, 98, 0.38)",
+    backgroundColor: "rgba(31, 24, 43, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  rankTrialLoadoutWeaponImage: {
+    width: 44,
+    height: 44,
+  },
+  rankPromotionCrestCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(224, 193, 131, 0.32)",
+    backgroundColor: "rgba(46, 31, 22, 0.76)",
+  },
+  rankPromotionCrestSeal: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(235, 205, 151, 0.36)",
+    backgroundColor: "rgba(27, 22, 35, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankPromotionCrestText: {
+    flex: 1,
+    gap: 2,
+  },
+  rankPromotionCrestLabel: {
+    color: "#d9c399",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+  },
+  rankPromotionCrestTitle: {
+    color: "#fff0cf",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  rankTrialEnemyCard: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(214, 169, 98, 0.38)",
+    backgroundColor: "rgba(52, 35, 22, 0.72)",
+    shadowColor: "#000",
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+  rankTrialEnemyArtWrap: {
+    width: "100%",
+    minHeight: 190,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(238, 202, 141, 0.5)",
+    backgroundColor: "rgba(29, 21, 39, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    marginBottom: 8,
+  },
+  rankTrialEnemyArt: {
+    width: "94%",
+    height: 176,
+  },
+  rankTrialEnemyHead: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  rankTrialEnemyTitleWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  rankTrialEnemyLabel: {
+    color: "#d9c399",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+  },
+  rankTrialEnemyName: {
+    color: "#fff0cf",
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  rankTrialEnemyRolePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(235, 205, 151, 0.32)",
+    backgroundColor: "rgba(33, 24, 42, 0.9)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  rankTrialEnemyRoleText: {
+    color: "#ffe9bc",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+  },
+  rankTrialEnemyInsetCard: {
+    gap: 4,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(205, 161, 86, 0.22)",
+    backgroundColor: "rgba(36, 27, 47, 0.58)",
   },
   meterLabelRow: {
     flexDirection: "row",
@@ -11727,6 +18490,9 @@ const styles = StyleSheet.create({
     gap: 10,
     flexWrap: "wrap",
   },
+  liveBattleEnemyHealthMeter: {
+    width: "100%",
+  },
   liveBattleEnemyHpText: {
     color: "#ffe9cd",
     fontSize: 15,
@@ -11736,6 +18502,27 @@ const styles = StyleSheet.create({
     color: "#ffe9cd",
     fontSize: 13,
     fontWeight: "900",
+  },
+  liveBattleSpecialMeterInlineWrap: {
+    width: "100%",
+    marginTop: 1,
+  },
+  liveBattleSpecialMeterTrack: {
+    width: "100%",
+    height: 7,
+    borderRadius: 999,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255, 152, 118, 0.44)",
+    backgroundColor: "rgba(65, 28, 22, 0.82)",
+  },
+  liveBattleSpecialMeterFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#ff875e",
+  },
+  liveBattleSpecialMeterFillReady: {
+    backgroundColor: "#ff5168",
   },
   liveBattleDamageMetaRow: {
     flexDirection: "row",
@@ -11881,6 +18668,14 @@ const styles = StyleSheet.create({
   liveBattleActionButtonGuard: {
     borderColor: "rgba(134, 214, 179, 0.46)",
     backgroundColor: "rgba(24, 58, 45, 0.82)",
+  },
+  liveBattleActionButtonInterrupt: {
+    borderColor: "rgba(255, 145, 103, 0.58)",
+    backgroundColor: "rgba(88, 38, 27, 0.86)",
+  },
+  liveBattleActionButtonInterruptReady: {
+    borderColor: "rgba(255, 95, 118, 0.86)",
+    backgroundColor: "rgba(109, 27, 43, 0.9)",
   },
   liveBattleActionButtonSkillDefense: {
     borderColor: "rgba(214, 192, 118, 0.48)",
@@ -12085,17 +18880,57 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(189, 149, 86, 0.22)",
-    backgroundColor: "rgba(28, 21, 38, 0.78)",
     paddingHorizontal: 8,
     paddingVertical: 7,
   },
-  liveBattleLogEntryDot: {
-    width: 6,
-    height: 6,
+  liveBattleLogEntryNeutral: {
+    borderColor: "rgba(189, 149, 86, 0.22)",
+    backgroundColor: "rgba(28, 21, 38, 0.78)",
+  },
+  liveBattleLogEntryGood: {
+    borderColor: "rgba(124, 226, 170, 0.32)",
+    backgroundColor: "rgba(20, 53, 41, 0.82)",
+  },
+  liveBattleLogEntryBad: {
+    borderColor: "rgba(244, 135, 149, 0.34)",
+    backgroundColor: "rgba(73, 28, 39, 0.82)",
+  },
+  liveBattleLogEntryWarn: {
+    borderColor: "rgba(235, 182, 103, 0.32)",
+    backgroundColor: "rgba(69, 47, 24, 0.82)",
+  },
+  liveBattleLogEntryOffense: {
+    borderColor: "rgba(160, 188, 255, 0.28)",
+    backgroundColor: "rgba(28, 37, 66, 0.84)",
+  },
+  liveBattleLogEntryIconWrap: {
+    width: 22,
+    height: 22,
     borderRadius: 999,
-    backgroundColor: "#ffd58f",
-    marginTop: 5,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+    borderWidth: 1,
+  },
+  liveBattleLogEntryIconWrapNeutral: {
+    borderColor: "rgba(216, 215, 232, 0.25)",
+    backgroundColor: "rgba(59, 53, 77, 0.9)",
+  },
+  liveBattleLogEntryIconWrapGood: {
+    borderColor: "rgba(124, 226, 170, 0.35)",
+    backgroundColor: "rgba(31, 83, 59, 0.9)",
+  },
+  liveBattleLogEntryIconWrapBad: {
+    borderColor: "rgba(244, 135, 149, 0.38)",
+    backgroundColor: "rgba(102, 43, 58, 0.9)",
+  },
+  liveBattleLogEntryIconWrapWarn: {
+    borderColor: "rgba(235, 182, 103, 0.35)",
+    backgroundColor: "rgba(102, 71, 31, 0.92)",
+  },
+  liveBattleLogEntryIconWrapOffense: {
+    borderColor: "rgba(160, 188, 255, 0.35)",
+    backgroundColor: "rgba(47, 63, 110, 0.9)",
   },
   liveBattleLogEntryText: {
     flex: 1,
@@ -12108,6 +18943,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 6,
+  },
+  liveBattleInlineStatusHint: {
+    color: "#f2e1bd",
+    fontSize: 10,
+    fontWeight: "800",
+    marginTop: 6,
+    lineHeight: 14,
   },
   liveBattleStatWrap: {
     flexDirection: "row",
@@ -13273,6 +20115,65 @@ const styles = StyleSheet.create({
     gap: 7,
     marginTop: 1,
   },
+  rankResultScrollContent: {
+    gap: 10,
+    paddingBottom: 8,
+  },
+  rankResultHeroCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(214, 169, 98, 0.32)",
+    backgroundColor: "rgba(58, 39, 23, 0.62)",
+  },
+  rankResultHeroPortraitWrap: {
+    width: 108,
+    height: 124,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(222, 189, 124, 0.58)",
+    backgroundColor: "rgba(27, 20, 37, 0.94)",
+    overflow: "hidden",
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankResultHeroPortrait: {
+    width: "100%",
+    height: "100%",
+  },
+  rankResultHeroSeal: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 231, 188, 0.38)",
+    backgroundColor: "rgba(24, 20, 33, 0.86)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rankResultHeroText: {
+    flex: 1,
+    gap: 4,
+  },
+  rankResultHeroKicker: {
+    color: "#d8c18c",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+  },
+  rankResultHeroTitle: {
+    color: "#fff0cf",
+    fontSize: 24,
+    fontWeight: "900",
+  },
   resultRewardGrid: {
     flexDirection: "row",
     gap: 8,
@@ -13800,6 +20701,18 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "hidden",
   },
+  towerStatusIconBadgeHover: {
+    transform: [{ translateY: -1 }, { scale: 1.08 }],
+    borderColor: "#ffe6bf",
+    backgroundColor: "rgba(112, 84, 42, 0.92)",
+    shadowColor: "#ffd58f",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  towerStatusIconBadgePressed: {
+    transform: [{ scale: 0.97 }],
+  },
   towerStatusIconBadgeGood: {
     borderColor: "rgba(103, 199, 144, 0.85)",
     backgroundColor: "rgba(26, 84, 58, 0.72)",
@@ -14178,6 +21091,7 @@ const styles = StyleSheet.create({
   infoModalCard: {
     width: "100%",
     maxWidth: 420,
+    maxHeight: "86%",
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "#bf9351",
@@ -14187,6 +21101,12 @@ const styles = StyleSheet.create({
     gap: 8,
     overflow: "hidden",
     position: "relative",
+  },
+  weaponRecordScroll: {
+    flexGrow: 0,
+  },
+  weaponRecordScrollContent: {
+    paddingBottom: 10,
   },
   infoModalHead: {
     flexDirection: "row",
@@ -14294,6 +21214,106 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     lineHeight: 16,
+  },
+  infoMarkSection: {
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 214, 147, 0.18)",
+    paddingTop: 12,
+    gap: 8,
+  },
+  infoMarkSectionTitle: {
+    color: "#ffe5b9",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.55,
+  },
+  infoMarkEntry: {
+    gap: 3,
+  },
+  infoMarkName: {
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  infoMarkEffect: {
+    color: "#ffe1a3",
+    fontSize: 12,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  infoWeaponMetaBlock: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(154, 124, 76, 0.5)",
+    backgroundColor: "rgba(26, 18, 40, 0.72)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  infoWeaponMetaLine: {
+    color: "#ecd8b2",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  infoWeaponMetaWarn: {
+    color: "#ffd4a4",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
+  },
+  infoWeaponStatsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  infoWeaponStatCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#977442",
+    backgroundColor: "rgba(58, 41, 23, 0.88)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 2,
+    alignItems: "center",
+  },
+  infoWeaponStatLabel: {
+    color: "#e7d4af",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  infoWeaponStatValue: {
+    color: "#fff1cb",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  infoWeaponLoreBlock: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#866c42",
+    backgroundColor: "rgba(42, 31, 20, 0.9)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  infoWeaponLoreTitle: {
+    color: "#ffe5b9",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.55,
+  },
+  infoWeaponLoreText: {
+    color: "#f0ddbe",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  infoMarkFlavor: {
+    color: "#d9c8ae",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
   },
   expandedArtOverlay: {
     flex: 1,

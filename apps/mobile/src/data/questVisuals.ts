@@ -3,6 +3,9 @@ import { s3AssetWithFallback } from "../lib/assetSource";
 
 export interface QuestVisualTheme {
   backdrop: ImageSourcePropType;
+  backdropLandscape?: ImageSourcePropType;
+  backdropPortrait?: ImageSourcePropType;
+  detailArt?: ImageSourcePropType;
   sceneLabel: string;
   overlay: [string, string, string];
 }
@@ -49,8 +52,27 @@ export const QUEST_BACKGROUND_ART: Record<string, QuestVisualTheme> = {
     overlay: ["rgba(53, 36, 19, 0.54)", "rgba(28, 27, 48, 0.76)", "rgba(12, 11, 22, 0.88)"],
   },
   "hunt-leviathor-coiling-deep": {
-    backdrop: s3AssetWithFallback("game/quests/retrieve-ancient-relay-core.png", require("../../assets/game/quests/retrieve-ancient-relay-core.png")),
+    backdrop: s3AssetWithFallback("game/quests/hunts/leviathor-coiling-deep-landscape-v1.png", require("../../assets/game/quests/hunts/leviathor-coiling-deep-landscape-v1.png")),
+    backdropLandscape: s3AssetWithFallback("game/quests/hunts/leviathor-coiling-deep-landscape-v1.png", require("../../assets/game/quests/hunts/leviathor-coiling-deep-landscape-v1.png")),
+    backdropPortrait: s3AssetWithFallback("game/quests/hunts/leviathor-coiling-deep-portrait-v1.png", require("../../assets/game/quests/hunts/leviathor-coiling-deep-portrait-v1.png")),
+    detailArt: s3AssetWithFallback("game/quests/hunts/leviathor-coiling-deep-square-v1.png", require("../../assets/game/quests/hunts/leviathor-coiling-deep-square-v1.png")),
     sceneLabel: "The Coiling Deep",
     overlay: ["rgba(16, 39, 70, 0.52)", "rgba(28, 23, 48, 0.76)", "rgba(8, 12, 24, 0.9)"],
+  },
+  "hunt-ashen-gate-tyrant": {
+    backdrop: s3AssetWithFallback("game/quests/hunts/ashen-gate-tyrant-landscape-v1.png", require("../../assets/game/quests/hunts/ashen-gate-tyrant-landscape-v1.png")),
+    backdropLandscape: s3AssetWithFallback("game/quests/hunts/ashen-gate-tyrant-landscape-v1.png", require("../../assets/game/quests/hunts/ashen-gate-tyrant-landscape-v1.png")),
+    backdropPortrait: s3AssetWithFallback("game/quests/hunts/ashen-gate-tyrant-portrait-v1.png", require("../../assets/game/quests/hunts/ashen-gate-tyrant-portrait-v1.png")),
+    detailArt: s3AssetWithFallback("game/quests/hunts/ashen-gate-tyrant-square-v1.png", require("../../assets/game/quests/hunts/ashen-gate-tyrant-square-v1.png")),
+    sceneLabel: "The Ninth Gate Breach",
+    overlay: ["rgba(74, 32, 20, 0.56)", "rgba(42, 24, 40, 0.76)", "rgba(16, 11, 21, 0.9)"],
+  },
+  "hunt-bell-warden-hollow-choir": {
+    backdrop: s3AssetWithFallback("game/quests/hunts/bell-warden-hollow-choir-landscape-v1.png", require("../../assets/game/quests/hunts/bell-warden-hollow-choir-landscape-v1.png")),
+    backdropLandscape: s3AssetWithFallback("game/quests/hunts/bell-warden-hollow-choir-landscape-v1.png", require("../../assets/game/quests/hunts/bell-warden-hollow-choir-landscape-v1.png")),
+    backdropPortrait: s3AssetWithFallback("game/quests/hunts/bell-warden-hollow-choir-portrait-v1.png", require("../../assets/game/quests/hunts/bell-warden-hollow-choir-portrait-v1.png")),
+    detailArt: s3AssetWithFallback("game/quests/hunts/bell-warden-hollow-choir-square-v1.png", require("../../assets/game/quests/hunts/bell-warden-hollow-choir-square-v1.png")),
+    sceneLabel: "Hollow Choir Vault",
+    overlay: ["rgba(38, 34, 62, 0.58)", "rgba(24, 25, 45, 0.76)", "rgba(10, 10, 23, 0.9)"],
   },
 };

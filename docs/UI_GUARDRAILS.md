@@ -33,3 +33,9 @@ These are resolved UI decisions that should not regress during later refactors.
 
 - Prefer larger creature/weapon art over extra framing.
 - Avoid adding extra borders or nested bordered boxes unless specifically needed.
+- Promotion/result modals must not clip the bottom of the content.
+  - If the content can exceed shorter screens, make the modal body scrollable.
+- Promotion/result modals should be art-led.
+  - lead with character/examiner/creature art
+  - keep copy supportive and shorter
+  - do not stack multiple large text boxes when one art-led card plus concise summary will do

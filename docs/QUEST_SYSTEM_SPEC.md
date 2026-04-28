@@ -1,6 +1,12 @@
-# Quest System Spec (Current + Next)
+# Quest System Spec (Current Guild-Board Model)
 
-This document is the reference spec for how questing works in the Guild Quest Board.
+Status: current implemented board model, but no longer the long-term world direction.
+
+This document is the reference spec for how the current guild-board quest loop works.
+For the floor-local direction that should replace it over time, use:
+
+- [/Users/kin/web-rpg/docs/FLOOR_LOCAL_WORLD_REWORK.md](/Users/kin/web-rpg/docs/FLOOR_LOCAL_WORLD_REWORK.md)
+- [/Users/kin/web-rpg/docs/QUEST_SYSTEM_REWORK.md](/Users/kin/web-rpg/docs/QUEST_SYSTEM_REWORK.md)
 
 ## Core Loop
 
@@ -32,7 +38,7 @@ Current formula:
 - Weapon bonus:
   - type bonus (`gather=3`, `adventure=6`, `dungeon=8`)
   - rarity bonus (`common=1`, `rare=2`, `epic=4`, `legendary=6`)
-  - both scaled by proficiency (`100%` if level requirement met, else `25%`)
+  - both scaled by proficiency (gradually rises with player level until it reaches `100%` at the weapon's required level)
 - Weapon attack contribution: `min(10, round(effectiveWeaponAttack / 4))`
 - Final clamp: `8..98`
 

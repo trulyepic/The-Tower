@@ -3,7 +3,7 @@ import { ITEM_BY_ID } from "../data/items";
 import { TITLE_BY_ID } from "../data/titles";
 import { getAbilityComboProfile, getPassiveAbilityBonuses } from "./abilities";
 import { getEquippedBuffBonuses } from "./buffs";
-import { AdventurerRank, CharacterState } from "../types/game";
+import { AdventurerRank, CharacterState, ItemDefinition } from "../types/game";
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const RANK_ATTRIBUTE_BONUS: Record<AdventurerRank, number> = {
@@ -80,13 +80,10 @@ export const getDerivedSkillResourceCap = (character: CharacterState): number =>
   return Math.max(8, Math.round(8 + character.progression.level * 0.25 + attrs.intelligence / 12));
 };
 
-export const getWeaponProficiency = (character: CharacterState): number => {
-  const weaponId = character.equippedWeaponId;
-  if (!weaponId) {
-    return 0;
-  }
-
-  const weapon = ITEM_BY_ID[weaponId];
+export const getWeaponProficiencyForItem = (
+  character: CharacterState,
+  weapon: ItemDefinition | undefined,
+): number => {
   if (!weapon || weapon.category !== "weapon") {
     return 0;
   }
@@ -95,7 +92,25 @@ export const getWeaponProficiency = (character: CharacterState): number => {
     return 0;
   }
 
-  return character.progression.level >= (weapon.requiredLevel ?? 1) ? 1 : 0.25;
+  const requiredLevel = Math.max(1, weapon.requiredLevel ?? 1);
+  if (character.progression.level >= requiredLevel) {
+    return 1;
+  }
+  if (requiredLevel <= 1) {
+    return 1;
+  }
+  const progressToRequirement = Math.max(0, Math.min(1, (character.progression.level - 1) / (requiredLevel - 1)));
+  return 0.25 + progressToRequirement * 0.75;
+};
+
+export const getWeaponProficiency = (character: CharacterState): number => {
+  const weaponId = character.equippedWeaponId;
+  if (!weaponId) {
+    return 0;
+  }
+
+  const weapon = ITEM_BY_ID[weaponId];
+  return getWeaponProficiencyForItem(character, weapon);
 };
 
 export const getCharacterCombatStats = (character: CharacterState) => {
@@ -178,11 +193,13 @@ export const getCharacterCombatStats = (character: CharacterState) => {
         titleBonuses.speedFlat,
     ),
   );
+  const armor = Math.max(0, buffBonuses.armorFlat);
 
   return {
     damage,
     critChance,
     speed,
+    armor,
     weaponProficiencyPercent: Math.round(weaponProficiency * 100),
     effectiveWeaponAttack,
     effectiveWeaponCrit,

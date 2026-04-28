@@ -139,6 +139,7 @@ export interface StoryState {
   mainQuestLog: MainQuestLogEntry[];
   mainQuestUnreadCount: number;
   warriorPathGuideNoticeShown?: boolean;
+  unlockedRaidQuestIds?: string[];
   climberRivals: ClimberEntry[];
   lastLeaderboardRank?: number;
   floorAttemptByNumber: Record<string, number>;
@@ -290,6 +291,11 @@ export interface CharacterState {
   equippedPassiveAbilityIds?: AbilityId[];
   affinity: number;
   inventory: Record<ItemId, number>;
+  combatPouchItems?: Record<ItemId, number>;
+  combatPouchCapacity?: number;
+  devBuffSlotLimitOverride?: number;
+  sigilAppearanceMode?: "dynamic" | "default_frame";
+  sigilAppearanceItemId?: ItemId | null;
   knownTowerEnemyIds?: string[];
   appraisedItemIds?: ItemId[];
   purchasedFloorIntelNumbers?: number[];
@@ -378,11 +384,21 @@ export interface TowerEnemyPositioningProfile {
   note?: string;
 }
 
+export interface TowerEnemySpecialMeterProfile {
+  label: string;
+  triggerLabel: string;
+  startValue?: number;
+  maxValue?: number;
+  fillPerEnemyTurn: number;
+  interruptPerTurn: number;
+  resetValue?: number;
+}
+
 export interface TowerLiveBattleResponse {
   telegraphId?: string;
   enemyId: string;
   mechanic: string;
-  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass";
+  responseType: "attack" | "item" | "skill" | "move" | "brace" | "pass" | "interrupt";
   responseId?: ItemId | AbilityId | TowerBattlePosition;
   success: boolean;
 }
@@ -435,11 +451,54 @@ export interface ItemDefinition {
     crit: number;
     speed: number;
   };
+  weaponMarkSlots?: number;
+  weaponMarks?: Array<{
+    id: string;
+    name: string;
+    rarity: ItemRarity;
+    icon: string;
+    detail: string;
+    effectDescription?: string;
+    accentColor?: string;
+    combatEffect?:
+      | {
+          kind: "below-half-armor";
+          armorFlat: number;
+          durationTurns: number;
+          triggerThresholdRatio?: number;
+          triggerLimit?: number;
+        }
+      | {
+          kind: "below-half-damage";
+          damageFlat: number;
+          durationTurns: number;
+          triggerThresholdRatio?: number;
+          triggerLimit?: number;
+        }
+      | {
+          kind: "battle-start-armor";
+          armorFlat: number;
+          durationTurns: number;
+        }
+      | {
+          kind: "battle-start-damage";
+          damageFlat: number;
+          durationTurns: number;
+        }
+      | {
+          kind: "battle-start-negate-hit";
+        };
+  }>;
   buffStats?: {
     damageFlat?: number;
     critFlat?: number;
     speedFlat?: number;
     questSuccessFlat?: number;
+    armorFlat?: number;
+  };
+  sigilVisual?: {
+    frameShape: "square" | "diamond" | "crest" | "hex";
+    accentColor: string;
   };
   buffDurationSeconds?: number;
   image?: ImageSourcePropType;
@@ -530,6 +589,16 @@ export interface TowerEnemyUnit {
   weaknessNotes?: string[];
   weaknessItemIds?: ItemId[];
   mechanics?: string[];
+  phaseLabel?: string;
+  roleTag?: string;
+  loadoutNotes?: string[];
+  specialMeter?: TowerEnemySpecialMeterProfile;
+  combatStats?: {
+    damage: number;
+    critChance: number;
+    speed: number;
+    armor?: number;
+  };
   positioning?: TowerEnemyPositioningProfile;
 }
 

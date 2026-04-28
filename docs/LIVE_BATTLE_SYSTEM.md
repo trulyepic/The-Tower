@@ -1,10 +1,10 @@
 # Live Battle System
 
-This file defines the first interactive tower battle layer.
+This file defines the current shared live turn-based combat standard.
 
 ## Purpose
 
-Tower combat should not feel like:
+Live combat should not feel like:
 - click once
 - wait
 - read a summary
@@ -13,35 +13,56 @@ It should feel like:
 - read the enemy
 - answer the mechanic
 - manage position
-- commit the right item or skill at the right time
+- use the right pouch item or skill at the right time
 - then review the result
 
-## V1 Scope
+## Current Scope
 
-V1 applies to:
-- `Floor 1`
-- tower wave battles only
+The shared live combat runtime now applies to:
+- tower battles
+- live quest battles
+- live rank trials
 
-V1 does not replace the whole combat engine.
-It adds an interactive response layer before the existing wave resolver finalizes the outcome.
+This is no longer a temporary response layer.
+It is the current real-time turn-based combat runtime used by the implemented live battle surfaces in the game.
 
 ## Core Loop
 
 1. Player enters a live clash.
-2. Enemy telegraphs a mechanic.
-3. The player takes one explicit turn:
+2. The opponent telegraphs the incoming move.
+3. The telegraph stays locked on that move until the opponent actually spends it.
+4. The player takes one explicit turn:
    - attack
    - movement
-   - brace
+   - guard
    - class skill
-   - committed item
-   - let the mechanic through
-4. HP and damage update immediately during the turn flow.
-5. The resolver uses those answers when calculating:
-   - counters
-   - incoming damage
-   - enemy pressure
-6. The player reviews the battle result afterward.
+   - pouch item
+   - interrupt, when a special pressure meter is present on a standout enemy
+5. HP, status, and pressure update immediately during the turn flow.
+6. Source-specific aftermath resolves after the live battle ends:
+   - tower wave/floor outcome
+   - live quest outcome
+   - rank trial outcome
+
+## Standing Rule
+
+The live-combat standard going forward is:
+- art-first enemy presentation
+- telegraph-first turn readability
+- combat pouch usage instead of pre-committing supplies
+- icon-first status/effect language
+- selective pressure meters on standout enemies
+- stronger identity for named duelists, sub-bosses, and bosses
+
+Do not treat extra interaction UI as the default answer.
+If combat needs more excitement, prefer:
+- better telegraphs
+- stronger enemy identity
+- clearer counters
+- pressure meters on standout fights
+
+Reference:
+- [/Users/kin/web-rpg/docs/COMBAT_INTERACTION_EXPANSION.md](/Users/kin/web-rpg/docs/COMBAT_INTERACTION_EXPANSION.md)
 
 ## Player Actions
 
@@ -72,15 +93,14 @@ Current rule:
 - not every monster needs a positional weakness
 - sub-bosses and bosses should use positioning more deliberately than filler enemies
 
-### Brace
+### Guard
 
-- `Brace` is the universal defensive action.
+- `Guard` is the universal defensive action.
 - It is especially useful against:
   - rush
   - sweep
   - heavy line pressure
-- `Brace` is not a damage action.
-- It should log as a defensive choice, not as an attack on the enemy.
+- It should always log as a defensive choice, not as an attack on the enemy.
 
 ### Skills
 
@@ -114,14 +134,22 @@ Current V1 starter skill identity:
 - If a skill is active, its icon should also appear in the player's status row.
 - Starter skill durations currently match their listed cooldown windows so the player sees one clear timer rather than two conflicting ones.
 
-### Items
+### Pouch Items
 
-Committed counter items can now be used as live mechanic answers.
+Combat items now come from the shared `Combat Pouch`.
 
-Floor 1 examples:
+Rules:
+- pouch items can be used in:
+  - tower live combat
+  - live quest combat
+  - live rank trials
+- pouch items are only spent if actually used
+- they are not pre-burned at battle start
+
+Examples:
+- `Healing Herb`
+- `Health Potion`
 - `Antitoxin Vial`
-- `Torch`
-- `Lockpick`
 - `Guard Tonic`
 - `Grounding Tonic`
 - `Ward Charm`
@@ -133,7 +161,7 @@ Floor 1 examples:
 - `Move`
   - changes lane position
   - should not read as direct damage unless a specific movement skill says otherwise
-- `Brace`
+- `Guard`
   - defensive action
   - no direct damage
 - `Skill`
@@ -143,7 +171,7 @@ Floor 1 examples:
   - support items used on the player should log as self-use
   - they should not read like they were thrown at the monster unless that item is explicitly offensive
 
-## Status Rules
+## Status And Effect Rules
 
 - Statuses must show their actual effect in hover/tap text.
 - The player should not have to guess what a status is doing.
@@ -183,6 +211,9 @@ Current baseline examples:
 
 - Positive and negative statuses may stack where it makes sense.
 - Statuses must carry through the current wave until they expire or are cleared.
+- Opponent build effects should be shown as icon-first context where appropriate.
+  - duelists and authored named opponents can show base sigil/title/passive effects plus temporary statuses in the live HUD
+  - future standout enemies should follow the same icon-first rule instead of collapsing back to plain text summaries
 - Warrior path passives are not just flat background bonuses.
   - `Combat Discipline` improves guard and steadiness
   - `Shield Doctrine` improves guard and counter punishment
@@ -194,17 +225,16 @@ Current baseline examples:
   - answer with `Antitoxin Vial`
   - or safer rear positioning
 - `Pack Rush`
-  - answer with `Brace`
+  - answer with `Guard`
   - or a Warrior response
 - `Burrow Ambush`
-  - answer with `Torch`
-  - or rear repositioning
+  - answer with rear repositioning
+  - or a clean intel read
 - `Fortress Bulwark`
-  - answer with `Lockpick`
-  - or a Mage control response
+  - answer with repeated pressure or a Mage control response
 - `Crushing Sweep`
   - answer with `Guard Tonic`
-  - or `Brace`
+  - or `Guard`
 - `Arc Overcharge`
   - answer with `Grounding Tonic`
   - or a Mage response
@@ -224,6 +254,24 @@ Current baseline examples:
   - status effects
   - reduced damage
   - enemy holding the lane longer
+
+## Shared Core, Source-Specific Resolution
+
+The live battle runtime is shared across:
+- tower
+- live quest
+- rank trial
+
+The aftermath is intentionally source-specific.
+
+Standing rule:
+- keep one shared combat core
+- keep mode-specific result handling after combat ends
+
+That means:
+- tower owns wave and floor outcome logic
+- live quests own quest outcome logic
+- rank trials own promotion and examiner outcome logic
 
 ## Result Presentation Rules
 

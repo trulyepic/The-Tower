@@ -227,9 +227,12 @@ Floor 2 rewards should feel like:
 - Mage: `Rootglass Staff`
 
 ### Sigil Step
-- `Embershard Sigil`
+- `Thornward Seal`
 - role:
-  - early tower-compatible sigil reward that feels meaningfully better than pure novice supplies
+  - first real Floor 2 sigil reward
+  - low-rate drop, not common floor filler
+  - defense-first and tied directly to Thorn Corridor identity
+  - feels meaningfully better than pure novice supplies without turning early floors into a sigil shower
 
 ### Future System Hook
 - Floor 2 should be the first place where remnants start clearly supporting:

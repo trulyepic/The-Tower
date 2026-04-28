@@ -1,25 +1,28 @@
+import { ITEM_BY_ID } from "../data/items";
 import { ItemId } from "../types/game";
 
-const BUFF_ACCENT_PALETTE = [
-  { primary: "#ff7aa8", border: "#ff9fca", softBg: "rgba(255, 122, 168, 0.18)" },
-  { primary: "#68d3ff", border: "#94e2ff", softBg: "rgba(104, 211, 255, 0.18)" },
-  { primary: "#8dff95", border: "#b5ffc0", softBg: "rgba(141, 255, 149, 0.18)" },
-  { primary: "#c59bff", border: "#d8bcff", softBg: "rgba(197, 155, 255, 0.18)" },
-  { primary: "#ffd27d", border: "#ffe0a8", softBg: "rgba(255, 210, 125, 0.2)" },
-  { primary: "#7df4df", border: "#a4fcee", softBg: "rgba(125, 244, 223, 0.18)" },
-  { primary: "#ff9f6e", border: "#ffc19f", softBg: "rgba(255, 159, 110, 0.2)" },
-  { primary: "#9eb3ff", border: "#becdff", softBg: "rgba(158, 179, 255, 0.2)" },
-] as const;
-
-const hashItemId = (value: string): number => {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash;
-};
+const alpha = (hex: string, opacityHex: string) => `${hex}${opacityHex}`;
 
 export const getBuffAccent = (itemId: ItemId) => {
-  const index = hashItemId(itemId) % BUFF_ACCENT_PALETTE.length;
-  return BUFF_ACCENT_PALETTE[index];
+  const item = ITEM_BY_ID[itemId];
+  const accentColor = item?.category === "buff" ? item.sigilVisual?.accentColor : null;
+
+  if (accentColor) {
+    return {
+      primary: accentColor,
+      border: alpha(accentColor, "dd"),
+      softBg: alpha(accentColor, "22"),
+    };
+  }
+
+  switch (item?.rarity) {
+    case "legendary":
+      return { primary: "#f0cb76", border: "#ffe0a8", softBg: "rgba(240, 203, 118, 0.2)" };
+    case "epic":
+      return { primary: "#b68cff", border: "#d1b0ff", softBg: "rgba(182, 140, 255, 0.2)" };
+    case "rare":
+      return { primary: "#78bbff", border: "#a5d2ff", softBg: "rgba(120, 187, 255, 0.18)" };
+    default:
+      return { primary: "#8f816c", border: "#b8ac98", softBg: "rgba(143, 129, 108, 0.18)" };
+  }
 };

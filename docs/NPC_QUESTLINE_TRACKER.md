@@ -17,6 +17,24 @@ Each dedicated questline document should capture the full arc, branch outcomes, 
 
 ## Active Questlines
 
+### Riven Hale
+- dedicated doc:
+  - [RIVEN_HALE_QUESTLINE.md](/Users/kin/web-rpg/docs/RIVEN_HALE_QUESTLINE.md)
+- current status:
+  - `Phase I active`
+- current implementation status:
+  - `Implemented in-game`
+- current player-facing arc:
+  - sanctioned E-rank duel introduction
+  - `Earn The D-Mark`
+  - post-duel hall continuity
+- next return point:
+  - `Later hall-side sparring / higher-rank callback`
+- notes:
+  - Riven is a recurring hall duelist, not a disposable trial enemy.
+  - Nyra Sol should continue to frame him as part of the rank office's live promotion circuit.
+  - His dialogue should change after the duel result and stay aligned with the guild record.
+
 ### Tamsin Vale
 - dedicated doc:
   - [TAMSIN_VALE_QUESTLINE.md](/Users/kin/web-rpg/docs/TAMSIN_VALE_QUESTLINE.md)

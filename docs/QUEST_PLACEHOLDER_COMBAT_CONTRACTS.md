@@ -12,6 +12,7 @@ Related:
 - `docs/QUEST_SYSTEM_REWORK.md`
 - `docs/SEQUENTIAL_CONTENT_PLAN.md`
 - `docs/ROADMAP.md`
+- `docs/HIGH_RANK_RAID_SYSTEM.md`
 
 ## Why These Placeholders Exist
 
@@ -183,3 +184,15 @@ Current intent:
 - visible in data and UI structure where appropriate
 - not yet converted into full live quest combat
 - ready for later quest-combat implementation slices
+
+## Promotion Link
+
+This placeholder raid should now be treated as a likely early anchor for the high-rank raid system.
+
+That means:
+- it is a strong candidate for one of the fixed proof encounters used in `A -> S`
+- it should eventually award a named proof item, not just ordinary materials
+- the raid's value in progression should come from the record it proves, not random farming volume
+
+Reference:
+- [/Users/kin/web-rpg/docs/HIGH_RANK_RAID_SYSTEM.md](/Users/kin/web-rpg/docs/HIGH_RANK_RAID_SYSTEM.md)

@@ -12,7 +12,12 @@ const BUFF_SLOT_LIMIT_BY_RANK: Record<AdventurerRank, number> = {
   SS: 6,
 };
 
-export const getBuffSlotLimit = (rank: AdventurerRank): number => BUFF_SLOT_LIMIT_BY_RANK[rank] ?? 2;
+export const getBuffSlotLimit = (rank: AdventurerRank, override?: number | null): number => {
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.max(1, Math.floor(override));
+  }
+  return BUFF_SLOT_LIMIT_BY_RANK[rank] ?? 2;
+};
 
 export const getEquippedBuffItems = (character: CharacterState) =>
   (character.equippedBuffIds ?? [])
@@ -80,8 +85,9 @@ export const pruneExpiredBuffs = (character: CharacterState, nowMs = Date.now())
 };
 
 export const getEquippedBuffBonuses = (character: CharacterState) => {
-  const buffs = getActiveBuffItems(character);
-  return buffs.reduce(
+  const activeBuffs = getActiveBuffItems(character);
+  const equippedBuffs = getEquippedBuffItems(character);
+  const activeBonuses = activeBuffs.reduce(
     (sum, buff) => ({
       damageFlat: sum.damageFlat + (buff?.buffStats?.damageFlat ?? 0),
       critFlat: sum.critFlat + (buff?.buffStats?.critFlat ?? 0),
@@ -95,4 +101,9 @@ export const getEquippedBuffBonuses = (character: CharacterState) => {
       questSuccessFlat: 0,
     },
   );
+  const armorFlat = equippedBuffs.reduce((sum, buff) => sum + (buff?.buffStats?.armorFlat ?? 0), 0);
+  return {
+    ...activeBonuses,
+    armorFlat,
+  };
 };
